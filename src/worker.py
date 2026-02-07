@@ -21,10 +21,6 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
-# Verify MediaPipe is properly loaded
-if not hasattr(mp, 'solutions'):
-    raise RuntimeError("MediaPipe not properly installed - missing 'solutions' module. Please reinstall: pip install mediapipe>=0.10.30")
-
 AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 
