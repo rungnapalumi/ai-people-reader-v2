@@ -13,7 +13,17 @@ import boto3
 # Heavy libs
 import cv2
 import numpy as np
-import mediapipe as mp
+try:
+    # Try new MediaPipe API first (0.10.8+)
+    from mediapipe.python.solutions import pose as mp_pose_module
+    from mediapipe.python.solutions.pose import Pose, PoseLandmark
+except ImportError:
+    # Fall back to old API
+    import mediapipe as mp
+    mp_pose_module = mp.solutions.pose
+    Pose = mp_pose_module.Pose
+    PoseLandmark = mp_pose_module.PoseLandmark
+
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -127,39 +137,37 @@ def write_mp4(out_path: str, fps: float, w: int, h: int) -> cv2.VideoWriter:
 # -----------------------------
 # Dots / Skeleton overlay (simple, stable)
 # -----------------------------
-mp_pose = mp.solutions.pose
-
 POSE_LANDMARK_IDS = [
-    mp_pose.PoseLandmark.NOSE,
-    mp_pose.PoseLandmark.LEFT_EYE,
-    mp_pose.PoseLandmark.RIGHT_EYE,
-    mp_pose.PoseLandmark.LEFT_SHOULDER,
-    mp_pose.PoseLandmark.RIGHT_SHOULDER,
-    mp_pose.PoseLandmark.LEFT_ELBOW,
-    mp_pose.PoseLandmark.RIGHT_ELBOW,
-    mp_pose.PoseLandmark.LEFT_WRIST,
-    mp_pose.PoseLandmark.RIGHT_WRIST,
-    mp_pose.PoseLandmark.LEFT_HIP,
-    mp_pose.PoseLandmark.RIGHT_HIP,
-    mp_pose.PoseLandmark.LEFT_KNEE,
-    mp_pose.PoseLandmark.RIGHT_KNEE,
-    mp_pose.PoseLandmark.LEFT_ANKLE,
-    mp_pose.PoseLandmark.RIGHT_ANKLE,
+    PoseLandmark.NOSE,
+    PoseLandmark.LEFT_EYE,
+    PoseLandmark.RIGHT_EYE,
+    PoseLandmark.LEFT_SHOULDER,
+    PoseLandmark.RIGHT_SHOULDER,
+    PoseLandmark.LEFT_ELBOW,
+    PoseLandmark.RIGHT_ELBOW,
+    PoseLandmark.LEFT_WRIST,
+    PoseLandmark.RIGHT_WRIST,
+    PoseLandmark.LEFT_HIP,
+    PoseLandmark.RIGHT_HIP,
+    PoseLandmark.LEFT_KNEE,
+    PoseLandmark.RIGHT_KNEE,
+    PoseLandmark.LEFT_ANKLE,
+    PoseLandmark.RIGHT_ANKLE,
 ]
 
 SKELETON_EDGES = [
-    (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
-    (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW),
-    (mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
-    (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW),
-    (mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
-    (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP),
-    (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
-    (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
-    (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE),
-    (mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
-    (mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE),
-    (mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE),
+    (PoseLandmark.LEFT_SHOULDER, PoseLandmark.RIGHT_SHOULDER),
+    (PoseLandmark.LEFT_SHOULDER, PoseLandmark.LEFT_ELBOW),
+    (PoseLandmark.LEFT_ELBOW, PoseLandmark.LEFT_WRIST),
+    (PoseLandmark.RIGHT_SHOULDER, PoseLandmark.RIGHT_ELBOW),
+    (PoseLandmark.RIGHT_ELBOW, PoseLandmark.RIGHT_WRIST),
+    (PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP),
+    (PoseLandmark.LEFT_SHOULDER, PoseLandmark.LEFT_HIP),
+    (PoseLandmark.RIGHT_SHOULDER, PoseLandmark.RIGHT_HIP),
+    (PoseLandmark.LEFT_HIP, PoseLandmark.LEFT_KNEE),
+    (PoseLandmark.LEFT_KNEE, PoseLandmark.LEFT_ANKLE),
+    (PoseLandmark.RIGHT_HIP, PoseLandmark.RIGHT_KNEE),
+    (PoseLandmark.RIGHT_KNEE, PoseLandmark.RIGHT_ANKLE),
 ]
 
 
@@ -175,7 +183,7 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    with mp_pose.Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
+    with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -206,7 +214,7 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    with mp_pose.Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
+    with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -268,7 +276,7 @@ def analyze_first_impression(input_path: str, sample_every_n: int = 3, max_frame
     upright_ok = 0
     ankle_dist: List[float] = []
 
-    with mp_pose.Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
+    with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
         i = 0
         while True:
             ok, frame = cap.read()
@@ -284,15 +292,15 @@ def analyze_first_impression(input_path: str, sample_every_n: int = 3, max_frame
                 continue
 
             lms = res.pose_landmarks.landmark
-            nose = lms[mp_pose.PoseLandmark.NOSE]
-            leye = lms[mp_pose.PoseLandmark.LEFT_EYE]
-            reye = lms[mp_pose.PoseLandmark.RIGHT_EYE]
-            lsh = lms[mp_pose.PoseLandmark.LEFT_SHOULDER]
-            rsh = lms[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            lhip = lms[mp_pose.PoseLandmark.LEFT_HIP]
-            rhip = lms[mp_pose.PoseLandmark.RIGHT_HIP]
-            lank = lms[mp_pose.PoseLandmark.LEFT_ANKLE]
-            rank = lms[mp_pose.PoseLandmark.RIGHT_ANKLE]
+            nose = lms[PoseLandmark.NOSE]
+            leye = lms[PoseLandmark.LEFT_EYE]
+            reye = lms[PoseLandmark.RIGHT_EYE]
+            lsh = lms[PoseLandmark.LEFT_SHOULDER]
+            rsh = lms[PoseLandmark.RIGHT_SHOULDER]
+            lhip = lms[PoseLandmark.LEFT_HIP]
+            rhip = lms[PoseLandmark.RIGHT_HIP]
+            lank = lms[PoseLandmark.LEFT_ANKLE]
+            rank = lms[PoseLandmark.RIGHT_ANKLE]
 
             # count only if main landmarks are visible enough
             if min(nose.visibility, leye.visibility, reye.visibility, lsh.visibility, rsh.visibility, lhip.visibility, rhip.visibility) < 0.5:
