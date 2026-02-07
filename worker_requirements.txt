@@ -1,4 +1,7 @@
+streamlit
 boto3
+python-dotenv
+
 numpy
 pandas
 pytz
@@ -11,4 +14,3 @@ python-docx
 matplotlib
 openpyxl==3.1.5
 
-tflite-runtime==2.14.0

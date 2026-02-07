@@ -1,3 +1,16 @@
 streamlit
 boto3
 python-dotenv
+
+opencv-python-headless
+numpy
+pandas
+matplotlib
+Pillow
+
+mediapipe>=0.10.30,<0.11
+python-docx
+moviepy
+pytz
+
+openpyxl==3.1.5
