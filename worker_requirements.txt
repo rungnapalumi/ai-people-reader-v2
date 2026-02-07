@@ -5,7 +5,7 @@ streamlit
 boto3
 python-dotenv
 
-numpy==1.24.3
+numpy==1.26.4
 pandas
 pytz
 Pillow
