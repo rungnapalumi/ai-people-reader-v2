@@ -283,39 +283,23 @@ if run:
         "user_name": user_name or "",
     }
 
-    job_rep_en = {
+    job_report_bundle = {
         "job_id": new_job_id(),
         "group_id": group_id,
         "created_at": created_at,
         "status": "pending",
-        "mode": "report",
-        "language": "en",
+        "mode": "report_bundle",
         "input_key": input_key,
-        "output_docx_key": outputs["report_en_docx"],
+        "output_en_key": outputs["report_en_docx"],
+        "output_th_key": outputs["report_th_docx"],
         "output_debug_key": outputs["debug_en"],
         "user_name": user_name or "",
-        "include_first_impression": True,
-    }
-
-    job_rep_th = {
-        "job_id": new_job_id(),
-        "group_id": group_id,
-        "created_at": created_at,
-        "status": "pending",
-        "mode": "report",
-        "language": "th",
-        "input_key": input_key,
-        "output_docx_key": outputs["report_th_docx"],
-        "output_debug_key": outputs["debug_th"],
-        "user_name": user_name or "",
-        "include_first_impression": True,
     }
 
     try:
         k1 = enqueue_legacy_job(job_dots)
         k2 = enqueue_legacy_job(job_skel)
-        k3 = enqueue_legacy_job(job_rep_en)
-        k4 = enqueue_legacy_job(job_rep_th)
+        k3 = enqueue_legacy_job(job_report_bundle)
     except Exception as e:
         note.error(f"Enqueue job failed: {e}")
         st.stop()
@@ -325,14 +309,12 @@ if run:
     st.session_state["last_jobs"] = {
         "dots": job_dots["job_id"],
         "skeleton": job_skel["job_id"],
-        "report_en": job_rep_en["job_id"],
-        "report_th": job_rep_th["job_id"],
+        "report_bundle": job_report_bundle["job_id"],
     }
     st.session_state["last_job_json_keys"] = {
         "dots": k1,
         "skeleton": k2,
-        "report_en": k3,
-        "report_th": k4,
+        "report_bundle": k3,
     }
 
     note.success(f"Submitted! group_id = {group_id}")
