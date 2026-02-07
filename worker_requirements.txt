@@ -11,7 +11,7 @@ pytz
 Pillow
 
 opencv-python-headless==4.10.0.84
-mediapipe==0.10.9
+mediapipe==0.10.30
 
 python-docx
 matplotlib
