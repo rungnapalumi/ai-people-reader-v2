@@ -479,14 +479,23 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
             out_th_key = job["output_th_key"]
             debug_key = job.get("output_debug_key", "")
 
+            logging.info("Report bundle: EN=%s TH=%s", out_en_key, out_th_key)
+
             fi = analyze_first_impression(in_path)
+
+            logging.info("First impression: eye_contact=%.1f%% upright=%.1f%% stance=%.1f", 
+                        fi.eye_contact_pct, fi.upright_pct, fi.stance_stability)
 
             meta = {"group_id": group_id, "user_name": user_name}
             en_bytes = build_report_en(fi, meta)
             th_bytes = build_report_th(fi, meta)
 
+            logging.info("Built reports: EN=%d bytes TH=%d bytes", len(en_bytes), len(th_bytes))
+
             s3_put_bytes(out_en_key, en_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
             s3_put_bytes(out_th_key, th_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+            logging.info("Uploaded reports to S3")
 
             if debug_key:
                 dbg = {
