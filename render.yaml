@@ -1,0 +1,13 @@
+services:
+  # Worker service
+  - type: worker
+    name: ai-people-reader-v2-worker
+    env: python
+    region: singapore
+    plan: starter
+    buildCommand: chmod +x build.sh && ./build.sh
+    startCommand: python src/worker.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
