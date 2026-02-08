@@ -352,8 +352,10 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     doc.add_page_break()
     
     # Page 4: Effort graph
-    doc.add_paragraph("Effort Motion Detection Results").runs[0].font.size = Pt(16)
-    doc.add_paragraph().runs[0].bold = True
+    title4 = doc.add_paragraph("Effort Motion Detection Results")
+    title4.runs[0].font.size = Pt(16)
+    title4.runs[0].bold = True
+    doc.add_paragraph()  # spacing
     if os.path.exists(graph1_path):
         doc.add_picture(graph1_path, width=Inches(6))
     
@@ -361,8 +363,10 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     doc.add_page_break()
     
     # Page 5: Shape graph
-    doc.add_paragraph("Shape Motion Detection Results").runs[0].font.size = Pt(16)
-    doc.add_paragraph().runs[0].bold = True
+    title5 = doc.add_paragraph("Shape Motion Detection Results")
+    title5.runs[0].font.size = Pt(16)
+    title5.runs[0].bold = True
+    doc.add_paragraph()  # spacing
     if os.path.exists(graph2_path):
         doc.add_picture(graph2_path, width=Inches(6))
     
