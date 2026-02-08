@@ -171,34 +171,65 @@ def build_output_keys(group_id: str) -> Dict[str, str]:
 def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
     """Find the finished report job and extract actual output paths"""
     try:
-        # List all finished jobs
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_FINISHED_PREFIX):
-            for item in page.get("Contents", []):
-                key = item["Key"]
-                if not key.endswith(".json"):
-                    continue
-                
-                # Read job JSON
-                obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
-                job_data = json.loads(obj["Body"].read().decode("utf-8"))
-                
-                # Check if this job belongs to our group and is a report job
-                if (job_data.get("group_id") == group_id and 
-                    job_data.get("mode") in ("report", "report_th_en", "report_generator")):
+        # Search in both finished and failed jobs
+        prefixes = [JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
+        
+        for prefix in prefixes:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = item["Key"]
+                    if not key.endswith(".json"):
+                        continue
                     
-                    # Extract output paths from job
-                    outputs = job_data.get("outputs", {})
-                    reports = outputs.get("reports", {})
+                    # Read job JSON
+                    obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
+                    job_data = json.loads(obj["Body"].read().decode("utf-8"))
                     
-                    return {
-                        "report_en_docx": reports.get("EN", {}).get("docx_key", ""),
-                        "report_th_docx": reports.get("TH", {}).get("docx_key", ""),
-                    }
+                    # Check if this job belongs to our group and is a report job
+                    if (job_data.get("group_id") == group_id and 
+                        job_data.get("mode") in ("report", "report_th_en", "report_generator")):
+                        
+                        # Extract output paths from job
+                        outputs = job_data.get("outputs", {})
+                        reports = outputs.get("reports", {})
+                        
+                        # If outputs exist, return them
+                        if reports:
+                            return {
+                                "report_en_docx": reports.get("EN", {}).get("docx_key", ""),
+                                "report_th_docx": reports.get("TH", {}).get("docx_key", ""),
+                            }
+                        
+                        # If no outputs structure, try to construct paths from output_prefix
+                        output_prefix = job_data.get("output_prefix", "")
+                        if output_prefix:
+                            # Try to find the actual files by listing S3
+                            return find_report_files_in_s3(output_prefix)
     except Exception as e:
         st.error(f"Error reading report job: {e}")
     
     return {"report_en_docx": "", "report_th_docx": ""}
+
+
+def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
+    """Find report files by scanning S3 with prefix"""
+    try:
+        result = {"report_en_docx": "", "report_th_docx": ""}
+        paginator = s3.get_paginator("list_objects_v2")
+        
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+            for item in page.get("Contents", []):
+                key = item["Key"]
+                if key.endswith(".docx"):
+                    if "_EN.docx" in key:
+                        result["report_en_docx"] = key
+                    elif "_TH.docx" in key:
+                        result["report_th_docx"] = key
+        
+        return result
+    except Exception:
+        return {"report_en_docx": "", "report_th_docx": ""}
 
 
 def ensure_session_defaults() -> None:
