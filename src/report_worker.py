@@ -253,6 +253,10 @@ def generate_reports_for_lang(
 
     # Run First Impression analysis
     first_impression = analyze_first_impression_from_video(video_path, sample_every_n=5, max_frames=200)
+    
+    # Log the actual detected values for debugging
+    logger.info("[first_impression] Eye Contact: %.1f%%, Uprightness: %.1f%%, Stance: %.1f%%", 
+                first_impression.eye_contact_pct, first_impression.upright_pct, first_impression.stance_stability)
 
     categories = _build_categories_from_result(result, total=total)
     report = ReportData(
