@@ -605,6 +605,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     subsection2.runs[0].font.size = Pt(14)
     
     if report.first_impression:
+        fi = report.first_impression
         upright_texts = generate_uprightness_text(fi.upright_pct)
         # First bullet on page 1
         doc.add_paragraph(upright_texts[0])
@@ -645,6 +646,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     subsection3.runs[0].font.size = Pt(14)
     
     if report.first_impression:
+        fi = report.first_impression
         stance_texts = generate_stance_text(fi.stance_stability)
         for text in stance_texts:
             doc.add_paragraph(text)
