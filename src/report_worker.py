@@ -388,6 +388,11 @@ def process_job(job_json_key: str) -> None:
 
     logger.info("[process_job] job_id=%s mode=%s key=%s", job_id, mode, job_json_key)
 
+    # Check if this worker should handle this job type
+    if mode not in ("report", "report_th_en", "report_generator"):
+        logger.info("[process_job] Skipping job_id=%s mode=%s (not a report job)", job_id, mode)
+        return  # Leave job in pending for other workers
+
     # Move to processing
     job = dict(raw_job)
     job = update_status(job, "processing", error=None)
@@ -395,11 +400,8 @@ def process_job(job_json_key: str) -> None:
     move_json(job_json_key, processing_key, job)
 
     try:
-        # Only handle report modes here
-        if mode in ("report", "report_th_en", "report_generator"):
-            job = process_report_job(job)
-        else:
-            raise ValueError(f"Unsupported mode for report_worker: {mode}")
+        # Process report job
+        job = process_report_job(job)
 
         job = update_status(job, "finished", error=None)
         finished_key = f"{FINISHED_PREFIX}/{job_id}.json"
