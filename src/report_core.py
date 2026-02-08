@@ -75,7 +75,7 @@ def get_video_duration_seconds(video_path: str) -> float:
 
 # Analysis functions
 def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: int = 300, **kwargs) -> Dict[str, Any]:
-    """Real MediaPipe analysis"""
+    """Real MediaPipe analysis with proper Laban Movement Analysis"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("Cannot open video")
@@ -95,6 +95,8 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     shape_counts = {"Directing": 0, "Enclosing": 0, "Spreading": 0, "Indirecting": 0, "Advancing": 0, "Retreating": 0}
     
     analyzed = 0
+    prev_landmarks = None
+    
     with Pose(static_image_mode=False, model_complexity=1) as pose:
         frame_idx = 0
         while analyzed < max_frames:
@@ -107,29 +109,117 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                 results = pose.process(rgb)
                 
                 if results.pose_landmarks:
-                    # Simple heuristic analysis based on pose
                     lms = results.pose_landmarks.landmark
                     
-                    # Detect "Directing" if hands move forward
-                    if lms[PoseLandmark.LEFT_WRIST].z < lms[PoseLandmark.LEFT_SHOULDER].z:
-                        effort_counts["Directing"] += 1
-                        shape_counts["Directing"] += 1
+                    # Calculate movement vectors if we have previous frame
+                    if prev_landmarks is not None:
+                        # Get key points
+                        left_wrist = lms[PoseLandmark.LEFT_WRIST]
+                        right_wrist = lms[PoseLandmark.RIGHT_WRIST]
+                        left_elbow = lms[PoseLandmark.LEFT_ELBOW]
+                        right_elbow = lms[PoseLandmark.RIGHT_ELBOW]
+                        left_shoulder = lms[PoseLandmark.LEFT_SHOULDER]
+                        right_shoulder = lms[PoseLandmark.RIGHT_SHOULDER]
+                        nose = lms[PoseLandmark.NOSE]
+                        
+                        # Previous frame landmarks
+                        prev_left_wrist = prev_landmarks[PoseLandmark.LEFT_WRIST]
+                        prev_right_wrist = prev_landmarks[PoseLandmark.RIGHT_WRIST]
+                        
+                        # Calculate velocities (movement speed)
+                        left_wrist_vel = math.sqrt(
+                            (left_wrist.x - prev_left_wrist.x)**2 +
+                            (left_wrist.y - prev_left_wrist.y)**2 +
+                            (left_wrist.z - prev_left_wrist.z)**2
+                        )
+                        right_wrist_vel = math.sqrt(
+                            (right_wrist.x - prev_right_wrist.x)**2 +
+                            (right_wrist.y - prev_right_wrist.y)**2 +
+                            (right_wrist.z - prev_right_wrist.z)**2
+                        )
+                        avg_velocity = (left_wrist_vel + right_wrist_vel) / 2
+                        
+                        # Spatial measurements
+                        wrist_dist = abs(left_wrist.x - right_wrist.x)
+                        shoulder_width = abs(left_shoulder.x - right_shoulder.x)
+                        body_expansion = wrist_dist / max(shoulder_width, 0.1)
+                        
+                        # Hand height relative to shoulders
+                        avg_hand_y = (left_wrist.y + right_wrist.y) / 2
+                        avg_shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+                        hands_above_shoulders = avg_hand_y < avg_shoulder_y
+                        
+                        # Hand depth (Z-axis) relative to body
+                        avg_hand_z = (left_wrist.z + right_wrist.z) / 2
+                        avg_shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
+                        hands_forward = avg_hand_z < avg_shoulder_z
+                        
+                        # Movement direction
+                        forward_movement = (left_wrist.z - prev_left_wrist.z) < -0.01 or (right_wrist.z - prev_right_wrist.z) < -0.01
+                        backward_movement = (left_wrist.z - prev_left_wrist.z) > 0.01 or (right_wrist.z - prev_right_wrist.z) > 0.01
+                        upward_movement = (left_wrist.y - prev_left_wrist.y) < -0.01 or (right_wrist.y - prev_right_wrist.y) < -0.01
+                        downward_movement = (left_wrist.y - prev_left_wrist.y) > 0.01 or (right_wrist.y - prev_right_wrist.y) > 0.01
+                        
+                        # Effort qualities
+                        is_sudden = avg_velocity > 0.08  # Fast movement
+                        is_sustained = 0.02 < avg_velocity <= 0.08  # Moderate movement
+                        is_strong = body_expansion > 1.2 or hands_above_shoulders
+                        is_light = body_expansion < 0.8
+                        
+                        # === EFFORT DETECTION (11 types) ===
+                        
+                        # 1. DIRECTING: Direct, sustained, forward movement
+                        if hands_forward and is_sustained and forward_movement:
+                            effort_counts["Directing"] += 1
+                            shape_counts["Directing"] += 1
+                        
+                        # 2. ENCLOSING: Arms coming together, wrapping motion
+                        if body_expansion < 0.8 and avg_velocity > 0.03:
+                            effort_counts["Enclosing"] += 1
+                            shape_counts["Enclosing"] += 1
+                        
+                        # 3. PUNCHING: Sudden, strong, direct forward thrust
+                        if is_sudden and is_strong and forward_movement:
+                            effort_counts["Punching"] += 1
+                        
+                        # 4. SPREADING: Arms spreading wide, opening gesture
+                        if body_expansion > 1.5 and avg_velocity > 0.03:
+                            effort_counts["Spreading"] += 1
+                            shape_counts["Spreading"] += 1
+                        
+                        # 5. PRESSING: Sustained, strong, downward force
+                        if is_sustained and is_strong and downward_movement:
+                            effort_counts["Pressing"] += 1
+                        
+                        # 6. DABBING: Sudden, light, direct touch
+                        if is_sudden and is_light and avg_velocity > 0.05:
+                            effort_counts["Dabbing"] += 1
+                        
+                        # 7. INDIRECTING: Indirect, curved, wandering movements
+                        if not hands_forward and avg_velocity > 0.04 and body_expansion > 1.0:
+                            effort_counts["Indirecting"] += 1
+                            shape_counts["Indirecting"] += 1
+                        
+                        # 8. GLIDING: Sustained, light, indirect floating
+                        if is_sustained and is_light and upward_movement:
+                            effort_counts["Gliding"] += 1
+                        
+                        # 9. FLICKING: Sudden, light, indirect quick gesture
+                        if is_sudden and is_light and not forward_movement:
+                            effort_counts["Flicking"] += 1
+                        
+                        # 10. ADVANCING: Moving body/hands forward in space
+                        if forward_movement and avg_velocity > 0.05:
+                            effort_counts["Advancing"] += 1
+                            shape_counts["Advancing"] += 1
+                        
+                        # 11. RETREATING: Pulling back, withdrawing
+                        if backward_movement and avg_velocity > 0.05:
+                            effort_counts["Retreating"] += 1
+                            shape_counts["Retreating"] += 1
                     
-                    # Detect "Enclosing" if arms come together
-                    wrist_dist = abs(lms[PoseLandmark.LEFT_WRIST].x - lms[PoseLandmark.RIGHT_WRIST].x)
-                    if wrist_dist < 0.3:
-                        effort_counts["Enclosing"] += 1
-                        shape_counts["Enclosing"] += 1
-                    
-                    # Detect "Spreading" if arms spread wide
-                    if wrist_dist > 0.6:
-                        effort_counts["Spreading"] += 1
-                        shape_counts["Spreading"] += 1
-                    
-                    # Add other detections with simple heuristics
-                    effort_counts["Punching"] += random.randint(0, 1)
-                    effort_counts["Pressing"] += random.randint(0, 1)
-                    
+                    # Store current landmarks for next iteration
+                    prev_landmarks = lms
                     analyzed += 1
             
             frame_idx += 1
@@ -139,15 +229,34 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     # Calculate percentages
     total_detections = max(1, sum(effort_counts.values()))
     effort_detection = {k: round(v / total_detections * 100, 1) for k, v in effort_counts.items()}
-    shape_detection = {k: round(v / max(1, sum(shape_counts.values())) * 100, 1) for k, v in shape_counts.items()}
+    
+    total_shape = max(1, sum(shape_counts.values()))
+    shape_detection = {k: round(v / total_shape * 100, 1) for k, v in shape_counts.items()}
     
     # Calculate category scores (based on dominant movements)
-    engaging_score = min(7, max(3, int(effort_detection["Spreading"] / 10) + 3))
-    convince_score = min(7, max(3, int(effort_detection["Directing"] / 10) + 3))
-    authority_score = min(7, max(3, int(effort_detection["Pressing"] / 10) + 3))
+    # Engaging & Connecting: Spreading, Enclosing, Gliding (openness, warmth)
+    engaging_score = min(7, max(1, int(
+        (effort_detection.get("Spreading", 0) * 0.4 +
+         effort_detection.get("Enclosing", 0) * 0.3 +
+         effort_detection.get("Gliding", 0) * 0.3) / 10 + 2
+    )))
+    
+    # Confidence: Directing, Punching, Advancing (assertiveness, clarity)
+    convince_score = min(7, max(1, int(
+        (effort_detection.get("Directing", 0) * 0.4 +
+         effort_detection.get("Punching", 0) * 0.3 +
+         effort_detection.get("Advancing", 0) * 0.3) / 10 + 2
+    )))
+    
+    # Authority: Pressing, Punching, Directing (power, command)
+    authority_score = min(7, max(1, int(
+        (effort_detection.get("Pressing", 0) * 0.4 +
+         effort_detection.get("Punching", 0) * 0.3 +
+         effort_detection.get("Directing", 0) * 0.3) / 10 + 2
+    )))
     
     return {
-        "analysis_engine": "mediapipe_real",
+        "analysis_engine": "mediapipe_real_enhanced",
         "duration_seconds": duration,
         "analyzed_frames": analyzed,
         "total_indicators": 900,
