@@ -374,6 +374,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         job["analysis_engine"] = str(result.get("analysis_engine") or "unknown")
         job["duration_seconds"] = float(result.get("duration_seconds") or 0.0)
         job["analyzed_frames"] = int(result.get("analyzed_frames") or 0)
+        
+        # Debug: Log the outputs structure
+        logger.info("[report] Saving outputs to job: %s", json.dumps(outputs, indent=2))
 
         return job
 
