@@ -389,7 +389,16 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 # Job processor
 # -----------------------------------------
 def process_job(job_json_key: str) -> None:
-    raw_job = s3_get_json(job_json_key)
+    try:
+        raw_job = s3_get_json(job_json_key)
+    except Exception as e:
+        # Job might have been taken by another worker (race condition)
+        if "NoSuchKey" in str(e) or "does not exist" in str(e):
+            logger.info("[process_job] Job %s already taken by another worker, skipping", job_json_key)
+            return
+        else:
+            raise  # Re-raise if it's a different error
+    
     job_id = raw_job.get("job_id")
     mode = str(raw_job.get("mode") or "").strip().lower()
 
