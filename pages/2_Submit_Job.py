@@ -168,6 +168,39 @@ def build_output_keys(group_id: str) -> Dict[str, str]:
     }
 
 
+def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
+    """Find the finished report job and extract actual output paths"""
+    try:
+        # List all finished jobs
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_FINISHED_PREFIX):
+            for item in page.get("Contents", []):
+                key = item["Key"]
+                if not key.endswith(".json"):
+                    continue
+                
+                # Read job JSON
+                obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
+                job_data = json.loads(obj["Body"].read().decode("utf-8"))
+                
+                # Check if this job belongs to our group and is a report job
+                if (job_data.get("group_id") == group_id and 
+                    job_data.get("mode") in ("report", "report_th_en", "report_generator")):
+                    
+                    # Extract output paths from job
+                    outputs = job_data.get("outputs", {})
+                    reports = outputs.get("reports", {})
+                    
+                    return {
+                        "report_en_docx": reports.get("EN", {}).get("docx_key", ""),
+                        "report_th_docx": reports.get("TH", {}).get("docx_key", ""),
+                    }
+    except Exception as e:
+        st.error(f"Error reading report job: {e}")
+    
+    return {"report_en_docx": "", "report_th_docx": ""}
+
+
 def ensure_session_defaults() -> None:
     if "last_group_id" not in st.session_state:
         st.session_state["last_group_id"] = ""
@@ -334,6 +367,9 @@ st.subheader("Downloads (ผลลัพธ์สำหรับดาวน์�
 group_id = (manual_group or "").strip()
 if group_id:
     outputs = build_output_keys(group_id)
+    # Get actual report paths from finished job JSON
+    report_outputs = get_report_outputs_from_job(group_id)
+    outputs.update(report_outputs)  # Override with actual paths
 else:
     st.caption("No group_id yet. Upload a video and click **Run Analysis**.")
     st.stop()
