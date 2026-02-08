@@ -24,8 +24,12 @@ except ImportError:
         mp_pose_module = mp.solutions.pose
         Pose = mp_pose_module.Pose
         PoseLandmark = mp_pose_module.PoseLandmark
-except Exception:
-    mp = None
+        mp = True
+    except Exception:
+        mp = None
+        mp_pose_module = None
+        Pose = None
+        PoseLandmark = None
 
 # Dataclasses
 @dataclass
