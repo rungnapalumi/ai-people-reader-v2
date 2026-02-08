@@ -198,7 +198,7 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
                     if lm.visibility < 0.5:
                         continue
                     x, y = _lm_to_px(lm, w, h)
-                    cv2.circle(frame, (x, y), 6, (0, 255, 255), -1)
+                    cv2.circle(frame, (x, y), 5, (255, 255, 255), -1)  # White, 5px
 
             vw.write(frame)
 

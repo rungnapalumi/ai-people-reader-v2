@@ -303,12 +303,14 @@ def generate_effort_graph(effort_data: Dict[str, float], shape_data: Dict[str, f
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     fig.suptitle('Effort Motion Detection Results', fontsize=14, fontweight='bold')
     
+    # Light blue color
+    light_blue = '#87CEEB'
+    
     # Left: Effort Summary
     efforts = list(effort_data.keys())
     values = [effort_data[k] for k in efforts]
-    colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(efforts)))
     
-    ax1.barh(efforts, values, color=colors)
+    ax1.barh(efforts, values, color=light_blue)
     ax1.set_xlabel('Percentage (%)')
     ax1.set_title('Effort Summary')
     ax1.set_xlim(0, 100)
@@ -320,7 +322,7 @@ def generate_effort_graph(effort_data: Dict[str, float], shape_data: Dict[str, f
     top_names = [f"{k} - Rank #{i+1}" for i, (k, v) in enumerate(top_3)]
     top_vals = [v for k, v in top_3]
     
-    ax2.barh(top_names, top_vals, color=['#d62728', '#2ca02c', '#ff7f0e'])
+    ax2.barh(top_names, top_vals, color=light_blue)
     ax2.set_xlabel('Percentage (%)')
     ax2.set_title('Top Movement Efforts')
     ax2.set_xlim(0, 100)
@@ -335,15 +337,17 @@ def generate_shape_graph(shape_data: Dict[str, float], output_path: str):
     """Generate Shape Motion Detection graph (Page 5 style)"""
     fig, ax = plt.subplots(figsize=(10, 6))
     
+    # Light blue color
+    light_blue = '#87CEEB'
+    
     shapes = list(shape_data.keys())
     values = [shape_data[k] for k in shapes]
-    colors = ['#d62728', '#2ca02c', '#ff7f0e', '#7f7f7f', '#9467bd', '#17becf']
     
-    bars = ax.bar(shapes, values, color=colors[:len(shapes)])
+    bars = ax.bar(shapes, values, color=light_blue)
     ax.set_ylabel('Percentage (%)')
     ax.set_xlabel('Shape Motion Type')
     ax.set_title('Shape Motion Detection Results', fontsize=14, fontweight='bold')
-    ax.set_ylim(0, max(values) * 1.2)
+    ax.set_ylim(0, max(values) * 1.2 if values else 10)
     
     for bar, val in zip(bars, values):
         height = bar.get_height()
@@ -386,9 +390,16 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     doc.add_paragraph("Detailed Analysis").runs[0].bold = True
     doc.add_paragraph()
     
-    # First Impression section
-    doc.add_paragraph("1.  First impression")
-    doc.add_paragraph("Eye Contact").runs[0].bold = True
+    # === SECTION 1: FIRST IMPRESSION ===
+    section1 = doc.add_paragraph("1. First Impression")
+    section1.runs[0].bold = True
+    section1.runs[0].font.size = Pt(16)
+    doc.add_paragraph()
+    
+    # 1.1 Eye Contact
+    subsection = doc.add_paragraph("1.1 Eye Contact")
+    subsection.runs[0].bold = True
+    subsection.runs[0].font.size = Pt(14)
     doc.add_paragraph("• Your eye contact is steady, warm, and audience-focused.")
     doc.add_paragraph("• You maintain direct gaze during key message points, which increases trust and clarity.")
     doc.add_paragraph("• When you shift your gaze, it is done purposefully (e.g., thinking, emphasizing).")
@@ -399,13 +410,17 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     doc.add_paragraph("Strong eye contact signals presence, sincerity, and leadership confidence, making your message feel more reliable.")
     
     doc.add_paragraph()
-    doc.add_paragraph("Uprightness (Posture & Upper-Body Alignment").runs[0].bold = True
+    
+    # 1.2 Uprightness
+    subsection2 = doc.add_paragraph("1.2 Uprightness (Posture & Upper-Body Alignment)")
+    subsection2.runs[0].bold = True
+    subsection2.runs[0].font.size = Pt(14)
     doc.add_paragraph("• You maintain a naturally upright posture throughout the clip.")
     
     # Add page break
     doc.add_page_break()
     
-    # Page 2: Continue Stance + Engaging & Connecting
+    # Page 2: Continue Uprightness
     doc.add_paragraph("• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.")
     doc.add_paragraph("• Even when you gesture, your vertical alignment remains stable, showing good core control.")
     doc.add_paragraph("• There is no visible slouching or collapsing, which supports a professional appearance.")
@@ -415,7 +430,11 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators.")
     
     doc.add_paragraph()
-    doc.add_paragraph("Stance (Lower-Body Stability & Grounding)").runs[0].bold = True
+    
+    # 1.3 Stance
+    subsection3 = doc.add_paragraph("1.3 Stance (Lower-Body Stability & Grounding)")
+    subsection3.runs[0].bold = True
+    subsection3.runs[0].font.size = Pt(14)
     doc.add_paragraph("• Your stance is symmetrical and grounded, with feet placed about shoulder-width apart.")
     doc.add_paragraph("• Weight shifts are controlled and minimal, preventing distraction and showing confidence.")
     doc.add_paragraph("• You maintain good forward orientation toward the audience, reinforcing clarity and engagement.")
@@ -426,33 +445,51 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible.")
     
     doc.add_paragraph()
-    doc.add_paragraph("2.  Engaging & Connecting:")
-    doc.add_paragraph("•    Approachability")
-    doc.add_paragraph("•    Relatability")
-    doc.add_paragraph("•    Engagement, connect and build instant rapport with team")
+    doc.add_paragraph()
+    
+    # === SECTION 2: ENGAGING & CONNECTING ===
+    section2 = doc.add_paragraph("2. Engaging & Connecting")
+    section2.runs[0].bold = True
+    section2.runs[0].font.size = Pt(16)
+    doc.add_paragraph("• Approachability")
+    doc.add_paragraph("• Relatability")
+    doc.add_paragraph("• Engagement, connect and build instant rapport with team")
     
     # Add page break
     doc.add_page_break()
     
-    # Page 3: Categories with scores
-    for cat in report.categories:
+    # === PAGE 3: CATEGORY SCORES ===
+    section3 = doc.add_paragraph("3. Category Analysis")
+    section3.runs[0].bold = True
+    section3.runs[0].font.size = Pt(16)
+    doc.add_paragraph()
+    
+    for idx, cat in enumerate(report.categories, start=1):
         name = cat.name_en if lang == "en" else cat.name_th
-        doc.add_paragraph(f"{cat.score}.  {name}:")
         
+        # Category header with score
+        cat_header = doc.add_paragraph(f"3.{idx} {name} (Score: {cat.score}/7)")
+        cat_header.runs[0].bold = True
+        cat_header.runs[0].font.size = Pt(14)
+        
+        # Key indicators
         if "Engaging" in cat.name_en:
-            doc.add_paragraph("•    Optimistic Presence")
-            doc.add_paragraph("•    Focus")
-            doc.add_paragraph("•    Ability to persuade and stand one's ground, in order to convince others.")
+            doc.add_paragraph("• Optimistic Presence")
+            doc.add_paragraph("• Focus")
+            doc.add_paragraph("• Ability to persuade and stand one's ground, in order to convince others.")
         elif "Confidence" in cat.name_en:
-            doc.add_paragraph("•    Optimistic Presence")
-            doc.add_paragraph("•    Focus")
-            doc.add_paragraph("•    Ability to persuade and stand one's ground, in order to convince others.")
+            doc.add_paragraph("• Optimistic Presence")
+            doc.add_paragraph("• Focus")
+            doc.add_paragraph("• Ability to persuade and stand one's ground, in order to convince others.")
         elif "Authority" in cat.name_en:
-            doc.add_paragraph("•    Showing sense of importance and urgency in subject matter")
-            doc.add_paragraph("•    Pressing for action")
+            doc.add_paragraph("• Showing sense of importance and urgency in subject matter")
+            doc.add_paragraph("• Pressing for action")
         
-        scale_text = f"Scale: {cat.scale.capitalize()}"
-        doc.add_paragraph(scale_text).runs[0].bold = True
+        doc.add_paragraph()
+        
+        # Scale and description
+        scale_para = doc.add_paragraph(f"Scale: {cat.scale.capitalize()}")
+        scale_para.runs[0].bold = True
         desc_text = f"Description: Detected {cat.positives} positive indicators out of {cat.total} total indicators"
         doc.add_paragraph(desc_text)
         doc.add_paragraph()
@@ -460,24 +497,24 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # Add page break
     doc.add_page_break()
     
-    # Page 4: Effort graph
-    title4 = doc.add_paragraph("Effort Motion Detection Results")
+    # === PAGE 4: EFFORT MOTION DETECTION ===
+    title4 = doc.add_paragraph("4. Effort Motion Detection Results")
     title4.runs[0].font.size = Pt(16)
     title4.runs[0].bold = True
     doc.add_paragraph()  # spacing
     if os.path.exists(graph1_path):
-        doc.add_picture(graph1_path, width=Inches(6))
+        doc.add_picture(graph1_path, width=Inches(6.5))
     
     # Add page break
     doc.add_page_break()
     
-    # Page 5: Shape graph
-    title5 = doc.add_paragraph("Shape Motion Detection Results")
+    # === PAGE 5: SHAPE MOTION DETECTION ===
+    title5 = doc.add_paragraph("5. Shape Motion Detection Results")
     title5.runs[0].font.size = Pt(16)
     title5.runs[0].bold = True
     doc.add_paragraph()  # spacing
     if os.path.exists(graph2_path):
-        doc.add_picture(graph2_path, width=Inches(6))
+        doc.add_picture(graph2_path, width=Inches(6.5))
     
     # Footer
     doc.add_paragraph()
