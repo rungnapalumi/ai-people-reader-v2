@@ -25,8 +25,8 @@ except ImportError:
         Pose = mp_pose_module.Pose
         PoseLandmark = mp_pose_module.PoseLandmark
         mp = True
-    except Exception:
-        mp = None
+except Exception:
+    mp = None
         mp_pose_module = None
         Pose = None
         PoseLandmark = None
@@ -306,9 +306,10 @@ def generate_effort_graph(effort_data: Dict[str, float], shape_data: Dict[str, f
     # Light blue color
     light_blue = '#87CEEB'
     
-    # Left: Effort Summary
-    efforts = list(effort_data.keys())
-    values = [effort_data[k] for k in efforts]
+    # Left: Effort Summary (sorted by value, highest at top)
+    sorted_efforts = sorted(effort_data.items(), key=lambda x: x[1], reverse=False)  # reverse=False for bottom-to-top
+    efforts = [k for k, v in sorted_efforts]
+    values = [v for k, v in sorted_efforts]
     
     ax1.barh(efforts, values, color=light_blue)
     ax1.set_xlabel('Percentage (%)')
@@ -340,8 +341,10 @@ def generate_shape_graph(shape_data: Dict[str, float], output_path: str):
     # Light blue color
     light_blue = '#87CEEB'
     
-    shapes = list(shape_data.keys())
-    values = [shape_data[k] for k in shapes]
+    # Sort by value, highest (left) to lowest (right)
+    sorted_shapes = sorted(shape_data.items(), key=lambda x: x[1], reverse=True)
+    shapes = [k for k, v in sorted_shapes]
+    values = [v for k, v in sorted_shapes]
     
     bars = ax.bar(shapes, values, color=light_blue)
     ax.set_ylabel('Percentage (%)')
