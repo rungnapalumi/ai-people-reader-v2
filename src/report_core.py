@@ -710,7 +710,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # PAGE 1: Cover + First Impression (Eye Contact start)
     # ============================================================
     
-    # Title section - more compact
+    # Title section - compact
     doc.add_paragraph()
     
     # Title
@@ -719,11 +719,11 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     title.runs[0].font.bold = True
     doc.add_paragraph()
     
-    # Client info - more compact
+    # Client info
     doc.add_paragraph(f"Client Name:  {report.client_name}")
     doc.add_paragraph(f"Analysis Date:  {report.analysis_date}")
     
-    # Video info - compact
+    # Video info
     video_info = doc.add_paragraph("Video Information")
     video_info.runs[0].bold = True
     doc.add_paragraph(f"Duration: {report.video_length_str}")
@@ -737,7 +737,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     section1 = doc.add_paragraph("1.  First impression")
     section1.runs[0].bold = True
     
-    # Eye Contact (no subsection number)
+    # Eye Contact
     eye_header = doc.add_paragraph("Eye Contact")
     
     if report.first_impression:
@@ -761,33 +761,20 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     
     doc.add_paragraph()
     
-    # Uprightness section
+    # Uprightness section - show all bullets on page 1
     upright_header = doc.add_paragraph("Uprightness (Posture & Upper-Body Alignment")
     
     if report.first_impression:
         fi = report.first_impression
         upright_texts = generate_uprightness_text(fi.upright_pct)
-        for text in upright_texts[:2]:  # Show first 2 bullets on page 1
-            doc.add_paragraph(text)
-    else:
-        doc.add_paragraph("• You maintain a naturally upright posture throughout the clip.")
-    
-    # PAGE BREAK TO PAGE 2
-    doc.add_page_break()
-    
-    # ============================================================
-    # PAGE 2: Continue Uprightness + Stance + Engaging & Connecting + Confidence
-    # ============================================================
-    
-    # Continue Uprightness (remaining bullets)
-    if report.first_impression:
-        for text in upright_texts[2:]:  # Continue from bullet 3
+        for text in upright_texts:  # Show all bullets
             doc.add_paragraph(text)
         
         impact2 = doc.add_paragraph("Impact for clients:")
         impact2.runs[0].italic = True
         doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators.")
     else:
+        doc.add_paragraph("• You maintain a naturally upright posture throughout the clip.")
         doc.add_paragraph("• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.")
         doc.add_paragraph("• Even when you gesture, your vertical alignment remains stable, showing good core control.")
         
@@ -797,7 +784,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     
     doc.add_paragraph()
     
-    # Stance section - more compact
+    # Stance section
     stance_header = doc.add_paragraph("Stance (Lower-Body Stability & Grounding)")
     
     if report.first_impression:
@@ -805,7 +792,16 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         stance_texts = generate_stance_text(fi.stance_stability)
         for text in stance_texts[:2]:  # Show only first 2 bullets
             doc.add_paragraph(text)
-        
+    
+    # PAGE BREAK TO PAGE 2
+    doc.add_page_break()
+    
+    # ============================================================
+    # PAGE 2: Stance (continued) + Engaging & Connecting + Confidence + Authority
+    # ============================================================
+    
+    # Continue Stance (impact only)
+    if report.first_impression:
         impact3 = doc.add_paragraph("Impact for clients:")
         impact3.runs[0].italic = True
         doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible.")
@@ -847,10 +843,10 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     doc.add_page_break()
     
     # ============================================================
-    # PAGE 3: Authority
+    # PAGE 3: Authority only
     # ============================================================
     
-    # Section 4: Authority (renumbered to 3)
+    # Section 4: Authority
     authority_cat = report.categories[2]
     section4 = doc.add_paragraph("3.  Authority:")
     section4.runs[0].bold = True
@@ -866,8 +862,6 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # ============================================================
     # PAGE 4: Effort Motion Detection Results
     # ============================================================
-    
-    doc.add_paragraph()
     
     # Title
     title4 = doc.add_paragraph("Effort Motion Detection Results")
@@ -885,8 +879,6 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # ============================================================
     # PAGE 5: Shape Motion Detection Results
     # ============================================================
-    
-    doc.add_paragraph()
     
     # Title
     title5 = doc.add_paragraph("Shape Motion Detection Results")
