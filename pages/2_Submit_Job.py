@@ -313,12 +313,12 @@ if run:
     st.session_state["last_jobs"] = {
         "dots": job_dots["job_id"],
         "skeleton": job_skel["job_id"],
-        "report_bundle": job_report_bundle["job_id"],
+        "report": job_report["job_id"],
     }
     st.session_state["last_job_json_keys"] = {
         "dots": k1,
         "skeleton": k2,
-        "report_bundle": k3,
+        "report": k3,
     }
 
     note.success(f"Submitted! group_id = {group_id}")
