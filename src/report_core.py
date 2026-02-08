@@ -682,10 +682,14 @@ def generate_shape_graph(shape_data: Dict[str, float], output_path: str):
 
 # DOCX Report building
 def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: str, graph2_path: str, lang: str = "en"):
-    """Build complete DOCX report matching the template"""
+    """Build 5-page DOCX report matching the exact template format"""
     doc = Document()
     
-    # Page 1: Header
+    # ============================================================
+    # PAGE 1: Cover + First Impression (Eye Contact start)
+    # ============================================================
+    
+    # Header with logo
     header = doc.add_paragraph()
     run = header.add_run("iPEOPLE READER")
     run.font.size = Pt(36)
@@ -693,117 +697,128 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     run.font.name = 'Arial'
     header.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
+    superscript_tm = header.add_run("™")
+    superscript_tm.font.superscript = True
+    superscript_tm.font.size = Pt(14)
+    superscript_tm.font.color.rgb = RGBColor(192, 0, 0)
+    
+    doc.add_paragraph()
     doc.add_paragraph()
     
+    # Title
     title = doc.add_paragraph("Character Analysis Report")
     title.runs[0].font.size = Pt(20)
-    title.runs[0].bold = True
-    title.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    title.runs[0].font.bold = True
     
     doc.add_paragraph()
-    doc.add_paragraph(f"Client Name: {report.client_name}")
-    doc.add_paragraph(f"Analysis Date: {report.analysis_date}")
+    
+    # Client info
+    doc.add_paragraph(f"Client Name:  {report.client_name}")
+    doc.add_paragraph(f"Analysis Date:  {report.analysis_date}")
     doc.add_paragraph()
     
-    doc.add_paragraph("Video Information").runs[0].bold = True
+    # Video info
+    video_info = doc.add_paragraph("Video Information")
+    video_info.runs[0].bold = True
     doc.add_paragraph(f"Duration: {report.video_length_str}")
     doc.add_paragraph()
-    
-    doc.add_paragraph("Detailed Analysis").runs[0].bold = True
     doc.add_paragraph()
     
-    # === SECTION 1: FIRST IMPRESSION ===
-    section1 = doc.add_paragraph("1. First Impression")
+    # Detailed Analysis header
+    detailed = doc.add_paragraph("Detailed Analysis")
+    detailed.runs[0].bold = True
+    doc.add_paragraph()
+    
+    # Section 1: First impression
+    section1 = doc.add_paragraph("1.  First impression")
     section1.runs[0].bold = True
-    section1.runs[0].font.size = Pt(16)
     doc.add_paragraph()
     
-    # Use real First Impression data if available
+    # Eye Contact (no subsection number)
+    eye_header = doc.add_paragraph("Eye Contact")
+    doc.add_paragraph()
+    
     if report.first_impression:
         fi = report.first_impression
-        
-        # 1.1 Eye Contact
-        subsection = doc.add_paragraph("1.1 Eye Contact")
-        subsection.runs[0].bold = True
-        subsection.runs[0].font.size = Pt(14)
-        
         eye_texts = generate_eye_contact_text(fi.eye_contact_pct)
         for text in eye_texts:
             doc.add_paragraph(text)
         
+        doc.add_paragraph()
         impact = doc.add_paragraph("Impact for clients:")
         impact.runs[0].italic = True
-        if fi.eye_contact_pct >= 80:
-            doc.add_paragraph("Exceptional eye contact signals supreme presence, sincerity, and leadership confidence, making your message profoundly impactful and trustworthy.")
-        elif fi.eye_contact_pct >= 60:
-            doc.add_paragraph("Strong eye contact builds solid trust and engagement, making your communication clear, credible, and professionally effective.")
-        elif fi.eye_contact_pct >= 40:
-            doc.add_paragraph("Improving eye contact consistency will enhance audience trust, engagement, and strengthen your overall professional credibility.")
-        else:
-            doc.add_paragraph("Building stronger eye contact is essential and will dramatically increase audience trust, connection, and your perceived authority as a communicator.")
+        doc.add_paragraph("Strong eye contact signals presence, sincerity, and leadership confidence,\nmaking your message feel more reliable.")
     else:
-        # Fallback to generic text
-        subsection = doc.add_paragraph("1.1 Eye Contact")
-        subsection.runs[0].bold = True
-        subsection.runs[0].font.size = Pt(14)
         doc.add_paragraph("• Your eye contact is steady, warm, and audience-focused.")
         doc.add_paragraph("• You maintain direct gaze during key message points, which increases trust and clarity.")
         doc.add_paragraph("• When you shift your gaze, it is done purposefully (e.g., thinking, emphasizing).")
         doc.add_paragraph("• There is no sign of avoidance — overall, the eye contact supports confidence and credibility.")
         
+        doc.add_paragraph()
         impact = doc.add_paragraph("Impact for clients:")
         impact.runs[0].italic = True
-        doc.add_paragraph("Strong eye contact signals presence, sincerity, and leadership confidence, making your message feel more reliable.")
+        doc.add_paragraph("Strong eye contact signals presence, sincerity, and leadership confidence,\nmaking your message feel more reliable.")
     
     doc.add_paragraph()
+    doc.add_paragraph()
     
-    # 1.2 Uprightness
-    subsection2 = doc.add_paragraph("1.2 Uprightness (Posture & Upper-Body Alignment)")
-    subsection2.runs[0].bold = True
-    subsection2.runs[0].font.size = Pt(14)
+    # Uprightness section (show only first bullet on page 1)
+    upright_header = doc.add_paragraph("Uprightness (Posture & Upper-Body Alignment")
+    doc.add_paragraph()
     
     if report.first_impression:
         fi = report.first_impression
         upright_texts = generate_uprightness_text(fi.upright_pct)
-        # First bullet on page 1
-        doc.add_paragraph(upright_texts[0])
+        doc.add_paragraph(upright_texts[0])  # Only first bullet on page 1
     else:
         doc.add_paragraph("• You maintain a naturally upright posture throughout the clip.")
     
-    # Add page break
+    # PAGE BREAK TO PAGE 2
     doc.add_page_break()
     
-    # Page 2: Continue Uprightness
+    # ============================================================
+    # PAGE 2: Continue Uprightness + Stance + Engaging & Connecting
+    # ============================================================
+    
+    # Header
+    header_p2 = doc.add_paragraph()
+    run_p2 = header_p2.add_run("iPEOPLE READER")
+    run_p2.font.size = Pt(24)
+    run_p2.font.color.rgb = RGBColor(192, 0, 0)
+    run_p2.font.name = 'Arial'
+    header_p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    tm_p2 = header_p2.add_run("™")
+    tm_p2.font.superscript = True
+    tm_p2.font.size = Pt(12)
+    tm_p2.font.color.rgb = RGBColor(192, 0, 0)
+    doc.add_paragraph()
+    
+    # Continue Uprightness (remaining bullets)
     if report.first_impression:
-        # Remaining bullets on page 2
         for text in upright_texts[1:]:
             doc.add_paragraph(text)
         
+        doc.add_paragraph()
         impact2 = doc.add_paragraph("Impact for clients:")
         impact2.runs[0].italic = True
-        if fi.upright_pct >= 80:
-            doc.add_paragraph("Outstanding uprightness communicates supreme self-assurance, mental clarity, and emotional stability — all hallmarks of exceptional high-trust leaders.")
-        elif fi.upright_pct >= 60:
-            doc.add_paragraph("Strong uprightness effectively communicates confidence, clarity of thought, and professional credibility in all communication settings.")
-        elif fi.upright_pct >= 40:
-            doc.add_paragraph("Improving posture consistency will meaningfully enhance your professional presence, perceived authority, and audience confidence in your message.")
-        else:
-            doc.add_paragraph("Developing better posture is crucial and will dramatically improve your professional appearance, perceived competence, and leadership credibility.")
+        doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional\nstability all traits of high-trust communicators.")
     else:
         doc.add_paragraph("• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.")
         doc.add_paragraph("• Even when you gesture, your vertical alignment remains stable, showing good core control.")
         doc.add_paragraph("• There is no visible slouching or collapsing, which supports a professional appearance.")
         
+        doc.add_paragraph()
         impact2 = doc.add_paragraph("Impact for clients:")
         impact2.runs[0].italic = True
-        doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators.")
+        doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional\nstability all traits of high-trust communicators.")
     
     doc.add_paragraph()
+    doc.add_paragraph()
     
-    # 1.3 Stance
-    subsection3 = doc.add_paragraph("1.3 Stance (Lower-Body Stability & Grounding)")
-    subsection3.runs[0].bold = True
-    subsection3.runs[0].font.size = Pt(14)
+    # Stance section
+    stance_header = doc.add_paragraph("Stance (Lower-Body Stability & Grounding)")
+    doc.add_paragraph()
     
     if report.first_impression:
         fi = report.first_impression
@@ -811,104 +826,158 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         for text in stance_texts:
             doc.add_paragraph(text)
         
+        doc.add_paragraph()
         impact3 = doc.add_paragraph("Impact for clients:")
         impact3.runs[0].italic = True
-        if fi.stance_stability >= 80:
-            doc.add_paragraph("Exceptional stance stability projects supreme authority, control, and confidence, making you appear highly prepared, credible, and commanding.")
-        elif fi.stance_stability >= 60:
-            doc.add_paragraph("Strong stance stability enhances authority, message control, and professional presence, making you appear well-prepared and credible to audiences.")
-        elif fi.stance_stability >= 40:
-            doc.add_paragraph("Improving stance stability will meaningfully enhance your grounded presence, reduce distractions, and strengthen your perceived authority and confidence.")
-        else:
-            doc.add_paragraph("Developing stance stability is essential and will dramatically improve your grounded presence, audience focus, and overall professional authority.")
+        doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery,\n\nmaking the speaker appear more prepared and credible.")
     else:
         doc.add_paragraph("• Your stance is symmetrical and grounded, with feet placed about shoulder-width apart.")
         doc.add_paragraph("• Weight shifts are controlled and minimal, preventing distraction and showing confidence.")
         doc.add_paragraph("• You maintain good forward orientation toward the audience, reinforcing clarity and engagement.")
         doc.add_paragraph("• The stance conveys both stability and a welcoming presence, suitable for instructional or coaching communication.")
         
+        doc.add_paragraph()
         impact3 = doc.add_paragraph("Impact for clients:")
         impact3.runs[0].italic = True
-        doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible.")
+        doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery,\n\nmaking the speaker appear more prepared and credible.")
     
     doc.add_paragraph()
     doc.add_paragraph()
     
-    # === SECTION 2: ENGAGING & CONNECTING ===
-    section2 = doc.add_paragraph("2. Engaging & Connecting")
+    # Section 2: Engaging & Connecting (just bullets, no scale on page 2)
+    section2 = doc.add_paragraph("2.  Engaging & Connecting:")
     section2.runs[0].bold = True
-    section2.runs[0].font.size = Pt(16)
-    doc.add_paragraph("• Approachability")
-    doc.add_paragraph("• Relatability")
-    doc.add_paragraph("• Engagement, connect and build instant rapport with team")
+    doc.add_paragraph()
+    doc.add_paragraph("•    Approachability")
+    doc.add_paragraph("•    Relatability")
+    doc.add_paragraph("•    Engagement, connect and build instant rapport with team")
     
-    # Add page break
+    # PAGE BREAK TO PAGE 3
     doc.add_page_break()
     
-    # === PAGE 3: CATEGORY SCORES ===
-    section3 = doc.add_paragraph("3. Category Analysis")
-    section3.runs[0].bold = True
-    section3.runs[0].font.size = Pt(16)
+    # ============================================================
+    # PAGE 3: Scale for Engaging & Connecting + Confidence + Authority
+    # ============================================================
+    
+    # Header
+    header_p3 = doc.add_paragraph()
+    run_p3 = header_p3.add_run("iPEOPLE READER")
+    run_p3.font.size = Pt(24)
+    run_p3.font.color.rgb = RGBColor(192, 0, 0)
+    run_p3.font.name = 'Arial'
+    header_p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    tm_p3 = header_p3.add_run("™")
+    tm_p3.font.superscript = True
+    tm_p3.font.size = Pt(12)
+    tm_p3.font.color.rgb = RGBColor(192, 0, 0)
     doc.add_paragraph()
     
-    for idx, cat in enumerate(report.categories, start=1):
-        name = cat.name_en if lang == "en" else cat.name_th
-        
-        # Category header with score
-        cat_header = doc.add_paragraph(f"3.{idx} {name} (Score: {cat.score}/7)")
-        cat_header.runs[0].bold = True
-        cat_header.runs[0].font.size = Pt(14)
-        
-        # Key indicators
-        if "Engaging" in cat.name_en:
-            doc.add_paragraph("• Optimistic Presence")
-            doc.add_paragraph("• Focus")
-            doc.add_paragraph("• Ability to persuade and stand one's ground, in order to convince others.")
-        elif "Confidence" in cat.name_en:
-            doc.add_paragraph("• Optimistic Presence")
-            doc.add_paragraph("• Focus")
-            doc.add_paragraph("• Ability to persuade and stand one's ground, in order to convince others.")
-        elif "Authority" in cat.name_en:
-            doc.add_paragraph("• Showing sense of importance and urgency in subject matter")
-            doc.add_paragraph("• Pressing for action")
-        
-        doc.add_paragraph()
-        
-        # Scale and description
-        scale_para = doc.add_paragraph(f"Scale: {cat.scale.capitalize()}")
-        scale_para.runs[0].bold = True
-        desc_text = f"Description: Detected {cat.positives} positive indicators out of {cat.total} total indicators"
-        doc.add_paragraph(desc_text)
-        doc.add_paragraph()
+    # Continue Section 2 scale/description
+    engaging_cat = report.categories[0]
+    scale_para1 = doc.add_paragraph(f"Scale: {engaging_cat.scale.capitalize()}")
+    scale_para1.runs[0].bold = True
+    doc.add_paragraph()
+    desc_para1 = doc.add_paragraph(f"Description: Detected {engaging_cat.positives} positive indicators out of {engaging_cat.total} total indicators")
+    doc.add_paragraph()
+    doc.add_paragraph()
     
-    # Add page break
+    # Section 3: Confidence (renumbered to 2)
+    confidence_cat = report.categories[1]
+    section3 = doc.add_paragraph("2.  Confidence:")
+    section3.runs[0].bold = True
+    doc.add_paragraph()
+    doc.add_paragraph("•    Optimistic Presence")
+    doc.add_paragraph("•    Focus")
+    doc.add_paragraph("•    Ability to persuade and stand one's ground, in order to convince others.")
+    doc.add_paragraph()
+    scale_para2 = doc.add_paragraph(f"Scale: {confidence_cat.scale.capitalize()}")
+    scale_para2.runs[0].bold = True
+    doc.add_paragraph()
+    desc_para2 = doc.add_paragraph(f"Description: Detected {confidence_cat.positives} positive indicators out of {confidence_cat.total} total indicators")
+    doc.add_paragraph()
+    
+    # Section 4: Authority (renumbered to 3)
+    authority_cat = report.categories[2]
+    section4 = doc.add_paragraph("3.  Authority:")
+    section4.runs[0].bold = True
+    doc.add_paragraph()
+    doc.add_paragraph("•    Showing sense of importance and urgency in subject matter")
+    doc.add_paragraph("•    Pressing for action")
+    doc.add_paragraph()
+    scale_para3 = doc.add_paragraph(f"Scale: {authority_cat.scale.capitalize()}")
+    scale_para3.runs[0].bold = True
+    doc.add_paragraph()
+    desc_para3 = doc.add_paragraph(f"Description: Detected {authority_cat.positives} positive indicators out of {authority_cat.total} total indicators")
+    
+    # PAGE BREAK TO PAGE 4
     doc.add_page_break()
     
-    # === PAGE 4: EFFORT MOTION DETECTION ===
-    title4 = doc.add_paragraph("4. Effort Motion Detection Results")
-    title4.runs[0].font.size = Pt(16)
+    # ============================================================
+    # PAGE 4: Effort Motion Detection Results
+    # ============================================================
+    
+    # Header
+    header_p4 = doc.add_paragraph()
+    run_p4 = header_p4.add_run("iPEOPLE READER")
+    run_p4.font.size = Pt(24)
+    run_p4.font.color.rgb = RGBColor(192, 0, 0)
+    run_p4.font.name = 'Arial'
+    header_p4.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    tm_p4 = header_p4.add_run("™")
+    tm_p4.font.superscript = True
+    tm_p4.font.size = Pt(12)
+    tm_p4.font.color.rgb = RGBColor(192, 0, 0)
+    doc.add_paragraph()
+    doc.add_paragraph()
+    
+    # Title
+    title4 = doc.add_paragraph("Effort Motion Detection Results")
+    title4.runs[0].font.size = Pt(18)
     title4.runs[0].bold = True
-    doc.add_paragraph()  # spacing
+    doc.add_paragraph()
+    doc.add_paragraph()
+    
+    # Graph
     if os.path.exists(graph1_path):
         doc.add_picture(graph1_path, width=Inches(6.5))
     
-    # Add page break
+    # PAGE BREAK TO PAGE 5
     doc.add_page_break()
     
-    # === PAGE 5: SHAPE MOTION DETECTION ===
-    title5 = doc.add_paragraph("5. Shape Motion Detection Results")
-    title5.runs[0].font.size = Pt(16)
+    # ============================================================
+    # PAGE 5: Shape Motion Detection Results
+    # ============================================================
+    
+    # Header
+    header_p5 = doc.add_paragraph()
+    run_p5 = header_p5.add_run("iPEOPLE READER")
+    run_p5.font.size = Pt(24)
+    run_p5.font.color.rgb = RGBColor(192, 0, 0)
+    run_p5.font.name = 'Arial'
+    header_p5.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    tm_p5 = header_p5.add_run("™")
+    tm_p5.font.superscript = True
+    tm_p5.font.size = Pt(12)
+    tm_p5.font.color.rgb = RGBColor(192, 0, 0)
+    doc.add_paragraph()
+    doc.add_paragraph()
+    doc.add_paragraph()
+    
+    # Title
+    title5 = doc.add_paragraph("Shape Motion Detection Results")
+    title5.runs[0].font.size = Pt(18)
     title5.runs[0].bold = True
-    doc.add_paragraph()  # spacing
+    doc.add_paragraph()
+    doc.add_paragraph()
+    
+    # Graph
     if os.path.exists(graph2_path):
         doc.add_picture(graph2_path, width=Inches(6.5))
     
-    # Footer
-    doc.add_paragraph()
-    footer = doc.add_paragraph(report.generated_by)
-    footer.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    footer.runs[0].italic = True
-    
+    # Save
     doc.save(output_bio)
 
 def build_pdf_report(report: ReportData, output_path: str, graph1_path: str, graph2_path: str, lang: str = "en"):
