@@ -724,12 +724,14 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         
         impact = doc.add_paragraph("Impact for clients:")
         impact.runs[0].italic = True
-        if fi.eye_contact_pct >= 75:
-            doc.add_paragraph("Strong eye contact signals presence, sincerity, and leadership confidence, making your message feel more reliable.")
-        elif fi.eye_contact_pct >= 50:
-            doc.add_paragraph("Good eye contact builds trust and engagement. Maintaining more consistency will further enhance your credibility.")
+        if fi.eye_contact_pct >= 80:
+            doc.add_paragraph("Exceptional eye contact signals supreme presence, sincerity, and leadership confidence, making your message profoundly impactful and trustworthy.")
+        elif fi.eye_contact_pct >= 60:
+            doc.add_paragraph("Strong eye contact builds solid trust and engagement, making your communication clear, credible, and professionally effective.")
+        elif fi.eye_contact_pct >= 40:
+            doc.add_paragraph("Improving eye contact consistency will enhance audience trust, engagement, and strengthen your overall professional credibility.")
         else:
-            doc.add_paragraph("Improving eye contact will significantly increase audience trust, engagement, and your overall credibility as a speaker.")
+            doc.add_paragraph("Building stronger eye contact is essential and will dramatically increase audience trust, connection, and your perceived authority as a communicator.")
     else:
         # Fallback to generic text
         subsection = doc.add_paragraph("1.1 Eye Contact")
@@ -770,12 +772,14 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         
         impact2 = doc.add_paragraph("Impact for clients:")
         impact2.runs[0].italic = True
-        if fi.upright_pct >= 75:
-            doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators.")
-        elif fi.upright_pct >= 50:
-            doc.add_paragraph("Good posture supports professional presence. Maintaining more consistent uprightness will enhance your authority and confidence.")
+        if fi.upright_pct >= 80:
+            doc.add_paragraph("Outstanding uprightness communicates supreme self-assurance, mental clarity, and emotional stability — all hallmarks of exceptional high-trust leaders.")
+        elif fi.upright_pct >= 60:
+            doc.add_paragraph("Strong uprightness effectively communicates confidence, clarity of thought, and professional credibility in all communication settings.")
+        elif fi.upright_pct >= 40:
+            doc.add_paragraph("Improving posture consistency will meaningfully enhance your professional presence, perceived authority, and audience confidence in your message.")
         else:
-            doc.add_paragraph("Improving posture will significantly enhance your professional appearance, perceived confidence, and leadership presence.")
+            doc.add_paragraph("Developing better posture is crucial and will dramatically improve your professional appearance, perceived competence, and leadership credibility.")
     else:
         doc.add_paragraph("• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.")
         doc.add_paragraph("• Even when you gesture, your vertical alignment remains stable, showing good core control.")
@@ -800,12 +804,14 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         
         impact3 = doc.add_paragraph("Impact for clients:")
         impact3.runs[0].italic = True
-        if fi.stance_stability >= 75:
-            doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible.")
-        elif fi.stance_stability >= 50:
-            doc.add_paragraph("Stable stance supports confident delivery. Reducing weight shifts will further enhance your grounded presence and authority.")
+        if fi.stance_stability >= 80:
+            doc.add_paragraph("Exceptional stance stability projects supreme authority, control, and confidence, making you appear highly prepared, credible, and commanding.")
+        elif fi.stance_stability >= 60:
+            doc.add_paragraph("Strong stance stability enhances authority, message control, and professional presence, making you appear well-prepared and credible to audiences.")
+        elif fi.stance_stability >= 40:
+            doc.add_paragraph("Improving stance stability will meaningfully enhance your grounded presence, reduce distractions, and strengthen your perceived authority and confidence.")
         else:
-            doc.add_paragraph("Improving stance stability will significantly enhance your grounded presence, reduce audience distraction, and increase perceived authority.")
+            doc.add_paragraph("Developing stance stability is essential and will dramatically improve your grounded presence, audience focus, and overall professional authority.")
     else:
         doc.add_paragraph("• Your stance is symmetrical and grounded, with feet placed about shoulder-width apart.")
         doc.add_paragraph("• Weight shifts are controlled and minimal, preventing distraction and showing confidence.")
