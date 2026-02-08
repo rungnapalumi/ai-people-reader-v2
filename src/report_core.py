@@ -25,8 +25,8 @@ except ImportError:
         Pose = mp_pose_module.Pose
         PoseLandmark = mp_pose_module.PoseLandmark
         mp = True
-except Exception:
-    mp = None
+    except Exception:
+        mp = None
         mp_pose_module = None
         Pose = None
         PoseLandmark = None
