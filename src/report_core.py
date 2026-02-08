@@ -685,22 +685,34 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     """Build 5-page DOCX report matching the exact template format"""
     doc = Document()
     
+    # Add header and footer images to all pages
+    section = doc.sections[0]
+    
+    # Add header image
+    header_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png")
+    if os.path.exists(header_path):
+        header = section.header
+        header_para = header.paragraphs[0]
+        header_run = header_para.add_run()
+        header_run.add_picture(header_path, width=Inches(6.5))
+        header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Add footer image
+    footer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Footer.png")
+    if os.path.exists(footer_path):
+        footer = section.footer
+        footer_para = footer.paragraphs[0]
+        footer_run = footer_para.add_run()
+        footer_run.add_picture(footer_path, width=Inches(6.5))
+        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
     # ============================================================
     # PAGE 1: Cover + First Impression (Eye Contact start)
     # ============================================================
     
-    # Header with logo
-    header = doc.add_paragraph()
-    run = header.add_run("iPEOPLE READER")
-    run.font.size = Pt(36)
-    run.font.color.rgb = RGBColor(192, 0, 0)
-    run.font.name = 'Arial'
-    header.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    superscript_tm = header.add_run("™")
-    superscript_tm.font.superscript = True
-    superscript_tm.font.size = Pt(14)
-    superscript_tm.font.color.rgb = RGBColor(192, 0, 0)
+    # Title section (removed redundant header text since it's now in the header image)
+    doc.add_paragraph()
+    doc.add_paragraph()
     
     doc.add_paragraph()
     doc.add_paragraph()
@@ -780,18 +792,6 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # PAGE 2: Continue Uprightness + Stance + Engaging & Connecting
     # ============================================================
     
-    # Header
-    header_p2 = doc.add_paragraph()
-    run_p2 = header_p2.add_run("iPEOPLE READER")
-    run_p2.font.size = Pt(24)
-    run_p2.font.color.rgb = RGBColor(192, 0, 0)
-    run_p2.font.name = 'Arial'
-    header_p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    tm_p2 = header_p2.add_run("™")
-    tm_p2.font.superscript = True
-    tm_p2.font.size = Pt(12)
-    tm_p2.font.color.rgb = RGBColor(192, 0, 0)
     doc.add_paragraph()
     
     # Continue Uprightness (remaining bullets)
@@ -859,18 +859,6 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # PAGE 3: Scale for Engaging & Connecting + Confidence + Authority
     # ============================================================
     
-    # Header
-    header_p3 = doc.add_paragraph()
-    run_p3 = header_p3.add_run("iPEOPLE READER")
-    run_p3.font.size = Pt(24)
-    run_p3.font.color.rgb = RGBColor(192, 0, 0)
-    run_p3.font.name = 'Arial'
-    header_p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    tm_p3 = header_p3.add_run("™")
-    tm_p3.font.superscript = True
-    tm_p3.font.size = Pt(12)
-    tm_p3.font.color.rgb = RGBColor(192, 0, 0)
     doc.add_paragraph()
     
     # Continue Section 2 scale/description
@@ -917,18 +905,6 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # PAGE 4: Effort Motion Detection Results
     # ============================================================
     
-    # Header
-    header_p4 = doc.add_paragraph()
-    run_p4 = header_p4.add_run("iPEOPLE READER")
-    run_p4.font.size = Pt(24)
-    run_p4.font.color.rgb = RGBColor(192, 0, 0)
-    run_p4.font.name = 'Arial'
-    header_p4.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    tm_p4 = header_p4.add_run("™")
-    tm_p4.font.superscript = True
-    tm_p4.font.size = Pt(12)
-    tm_p4.font.color.rgb = RGBColor(192, 0, 0)
     doc.add_paragraph()
     doc.add_paragraph()
     
@@ -950,18 +926,6 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # PAGE 5: Shape Motion Detection Results
     # ============================================================
     
-    # Header
-    header_p5 = doc.add_paragraph()
-    run_p5 = header_p5.add_run("iPEOPLE READER")
-    run_p5.font.size = Pt(24)
-    run_p5.font.color.rgb = RGBColor(192, 0, 0)
-    run_p5.font.name = 'Arial'
-    header_p5.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    tm_p5 = header_p5.add_run("™")
-    tm_p5.font.superscript = True
-    tm_p5.font.size = Pt(12)
-    tm_p5.font.color.rgb = RGBColor(192, 0, 0)
     doc.add_paragraph()
     doc.add_paragraph()
     doc.add_paragraph()
