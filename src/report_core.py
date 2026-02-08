@@ -464,9 +464,16 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                         avg_shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
                         hands_forward = avg_hand_z < avg_shoulder_z
                         
-                        # Movement direction
-                        forward_movement = (left_wrist.z - prev_left_wrist.z) < -0.01 or (right_wrist.z - prev_right_wrist.z) < -0.01
-                        backward_movement = (left_wrist.z - prev_left_wrist.z) > 0.01 or (right_wrist.z - prev_right_wrist.z) > 0.01
+                        # Movement direction (hands)
+                        left_z_delta = left_wrist.z - prev_left_wrist.z
+                        right_z_delta = right_wrist.z - prev_right_wrist.z
+                        avg_z_delta = (left_z_delta + right_z_delta) / 2
+                        
+                        # Forward/backward: Use average of both hands with higher threshold
+                        forward_movement = avg_z_delta < -0.03  # Both hands moving toward camera
+                        backward_movement = avg_z_delta > 0.03  # Both hands moving away from camera
+                        
+                        # Vertical movement
                         upward_movement = (left_wrist.y - prev_left_wrist.y) < -0.01 or (right_wrist.y - prev_right_wrist.y) < -0.01
                         downward_movement = (left_wrist.y - prev_left_wrist.y) > 0.01 or (right_wrist.y - prev_right_wrist.y) > 0.01
                         
@@ -518,13 +525,15 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                         if is_sudden and is_light and not forward_movement:
                             effort_counts["Flicking"] += 1
                         
-                        # 10. ADVANCING: Moving body/hands forward in space
-                        if forward_movement and avg_velocity > 0.05:
+                        # 10. ADVANCING: Significant forward movement (toward audience)
+                        # Requires sustained forward motion with reasonable speed
+                        if forward_movement and avg_velocity > 0.06 and is_sustained:
                             effort_counts["Advancing"] += 1
                             shape_counts["Advancing"] += 1
                         
-                        # 11. RETREATING: Pulling back, withdrawing
-                        if backward_movement and avg_velocity > 0.05:
+                        # 11. RETREATING: Significant backward movement (pulling back defensively)
+                        # Requires sustained backward motion - not just gesture return
+                        if backward_movement and avg_velocity > 0.06 and is_sustained:
                             effort_counts["Retreating"] += 1
                             shape_counts["Retreating"] += 1
                     
