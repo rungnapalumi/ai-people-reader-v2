@@ -1,5 +1,5 @@
 services:
-  # Worker service
+  # Original Worker service (dots/skeleton videos)
   - type: worker
     name: ai-people-reader-v2-worker
     runtime: python
@@ -7,6 +7,18 @@ services:
     plan: starter
     buildCommand: pip install --upgrade pip && pip install setuptools>=65.0.0 wheel>=0.38.0 && pip cache purge && pip install --no-cache-dir -r worker_requirements.txt
     startCommand: python src/worker.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+  # Report Worker service (full report generation)
+  - type: worker
+    name: ai-people-reader-v2-report-worker
+    runtime: python
+    region: singapore
+    plan: starter
+    buildCommand: pip install --upgrade pip && pip install setuptools>=65.0.0 wheel>=0.38.0 && pip cache purge && pip install --no-cache-dir -r worker_report_requirements.txt
+    startCommand: python src/report_worker.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9

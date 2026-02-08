@@ -283,23 +283,27 @@ if run:
         "user_name": user_name or "",
     }
 
-    job_report_bundle = {
+    # Report job - handled by report_worker.py
+    job_report = {
         "job_id": new_job_id(),
         "group_id": group_id,
         "created_at": created_at,
         "status": "pending",
-        "mode": "report_bundle",
+        "mode": "report",  # report_worker.py handles this
         "input_key": input_key,
-        "output_en_key": outputs["report_en_docx"],
-        "output_th_key": outputs["report_th_docx"],
-        "output_debug_key": outputs["debug_en"],
-        "user_name": user_name or "",
+        "client_name": user_name or "Anonymous",
+        "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+        "languages": ["th", "en"],
+        "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
+        "analysis_mode": "real",  # Use real MediaPipe analysis
+        "sample_fps": 5,
+        "max_frames": 300,
     }
 
     try:
         k1 = enqueue_legacy_job(job_dots)
         k2 = enqueue_legacy_job(job_skel)
-        k3 = enqueue_legacy_job(job_report_bundle)
+        k3 = enqueue_legacy_job(job_report)
     except Exception as e:
         note.error(f"Enqueue job failed: {e}")
         st.stop()
