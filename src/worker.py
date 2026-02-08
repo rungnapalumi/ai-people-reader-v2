@@ -543,10 +543,18 @@ def main_loop(poll_seconds: int = 3) -> None:
 
             try:
                 job = s3_read_json(processing_key)
+                mode = (job.get("mode") or "").strip()
+                
+                # Skip "report" mode jobs - they should be handled by report_worker
+                if mode == "report":
+                    logging.info("Skipping report mode job %s (handled by report_worker), moving back to pending", job.get("job_id"))
+                    move_job(processing_key, PENDING)
+                    continue
+                
                 job["status"] = "processing"
                 s3_write_json(processing_key, job)
 
-                logging.info("Processing job %s mode=%s", job.get("job_id"), job.get("mode"))
+                logging.info("Processing job %s mode=%s", job.get("job_id"), mode)
                 result = process_job(job)
 
                 job["status"] = "finished"
