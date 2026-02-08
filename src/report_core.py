@@ -33,6 +33,12 @@ except Exception:
 
 # Dataclasses
 @dataclass
+class FirstImpressionData:
+    eye_contact_pct: float
+    upright_pct: float
+    stance_stability: float
+
+@dataclass
 class CategoryResult:
     name_en: str
     name_th: str
@@ -51,6 +57,7 @@ class ReportData:
     categories: list
     summary_comment: str
     generated_by: str
+    first_impression: Optional[FirstImpressionData] = None
 
 # Helpers
 def format_seconds_to_mmss(total_seconds: float) -> str:
@@ -72,6 +79,162 @@ def get_video_duration_seconds(video_path: str) -> float:
     if fps <= 0:
         return 0.0
     return float(frames / fps)
+
+def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5, max_frames: int = 200) -> FirstImpressionData:
+    """Real First Impression analysis with MediaPipe"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
+
+    total = 0
+    eye_ok = 0
+    upright_ok = 0
+    ankle_dist = []
+
+    with Pose(static_image_mode=False, model_complexity=1) as pose:
+        i = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            i += 1
+            if i % sample_every_n != 0:
+                continue
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = pose.process(rgb)
+            if not res.pose_landmarks:
+                continue
+
+            lms = res.pose_landmarks.landmark
+            nose = lms[PoseLandmark.NOSE]
+            leye = lms[PoseLandmark.LEFT_EYE]
+            reye = lms[PoseLandmark.RIGHT_EYE]
+            lsh = lms[PoseLandmark.LEFT_SHOULDER]
+            rsh = lms[PoseLandmark.RIGHT_SHOULDER]
+            lhip = lms[PoseLandmark.LEFT_HIP]
+            rhip = lms[PoseLandmark.RIGHT_HIP]
+            lank = lms[PoseLandmark.LEFT_ANKLE]
+            rank = lms[PoseLandmark.RIGHT_ANKLE]
+
+            if min(nose.visibility, leye.visibility, reye.visibility, lsh.visibility, rsh.visibility, lhip.visibility, rhip.visibility) < 0.5:
+                continue
+
+            total += 1
+
+            # Eye contact
+            minx = min(leye.x, reye.x)
+            maxx = max(leye.x, reye.x)
+            if minx <= nose.x <= maxx:
+                eye_ok += 1
+
+            # Uprightness
+            mid_sh = np.array([(lsh.x + rsh.x) / 2.0, (lsh.y + rsh.y) / 2.0])
+            mid_hip = np.array([(lhip.x + rhip.x) / 2.0, (lhip.y + rhip.y) / 2.0])
+            v = mid_sh - mid_hip
+            vert = np.array([0.0, -1.0])
+            v_norm = np.linalg.norm(v) + 1e-9
+            cosang = float(np.dot(v / v_norm, vert))
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+            if ang <= 15.0:
+                upright_ok += 1
+
+            # Stance
+            if min(lank.visibility, rank.visibility) >= 0.5:
+                dx = (lank.x - rank.x)
+                dy = (lank.y - rank.y)
+                ankle_dist.append(math.sqrt(dx*dx + dy*dy))
+
+            if total >= max_frames:
+                break
+
+    cap.release()
+
+    if total == 0:
+        return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
+
+    eye_pct = 100.0 * (eye_ok / total)
+    upright_pct = 100.0 * (upright_ok / total)
+
+    if len(ankle_dist) >= 10:
+        std = float(np.std(np.array(ankle_dist)))
+        stability = max(0.0, min(100.0, 100.0 * (1.0 - (std / 0.20))))
+    else:
+        stability = 0.0
+
+    return FirstImpressionData(eye_contact_pct=eye_pct, upright_pct=upright_pct, stance_stability=stability)
+
+def generate_eye_contact_text(pct: float) -> list:
+    """Generate descriptive text based on eye contact percentage"""
+    if pct >= 75:  # Strong
+        return [
+            "• Your eye contact is steady, warm, and audience-focused.",
+            "• You maintain direct gaze during key message points, which increases trust and clarity.",
+            "• When you shift your gaze, it is done purposefully (e.g., thinking, emphasizing).",
+            "• There is no sign of avoidance — overall, the eye contact supports confidence and credibility."
+        ]
+    elif pct >= 50:  # Moderate
+        return [
+            "• Your eye contact is generally good but occasionally shifts away.",
+            "• You maintain direct gaze during most message points, which builds trust.",
+            "• Some gaze shifts may be distracting, but overall eye contact is acceptable.",
+            "• There is minimal avoidance — overall, the eye contact supports adequate engagement."
+        ]
+    else:  # Needs improvement
+        return [
+            "• Your eye contact tends to wander or avoid direct gaze.",
+            "• Limited direct eye contact may reduce audience trust and connection.",
+            "• Consider maintaining more steady eye contact during key message points.",
+            "• Improving eye contact will significantly enhance your credibility and presence."
+        ]
+
+def generate_uprightness_text(pct: float) -> list:
+    """Generate descriptive text based on uprightness percentage"""
+    if pct >= 75:  # Strong
+        return [
+            "• You maintain a naturally upright posture throughout the clip.",
+            "• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.",
+            "• Even when you gesture, your vertical alignment remains stable, showing good core control.",
+            "• There is no visible slouching or collapsing, which supports a professional appearance."
+        ]
+    elif pct >= 50:  # Moderate
+        return [
+            "• You maintain upright posture most of the time.",
+            "• There are occasional moments of slouching, but overall alignment is acceptable.",
+            "• Your vertical alignment is generally good, with room for improvement in consistency.",
+            "• Maintaining more consistent uprightness will enhance your professional presence."
+        ]
+    else:  # Needs improvement
+        return [
+            "• Your posture tends to slouch or collapse during the presentation.",
+            "• Shoulders may be hunched and head alignment is inconsistent.",
+            "• This affects your perceived confidence and professional appearance.",
+            "• Working on core strength and posture awareness will significantly improve your presence."
+        ]
+
+def generate_stance_text(stability: float) -> list:
+    """Generate descriptive text based on stance stability"""
+    if stability >= 75:  # Strong
+        return [
+            "• Your stance is symmetrical and grounded, with feet placed about shoulder-width apart.",
+            "• Weight shifts are controlled and minimal, preventing distraction and showing confidence.",
+            "• You maintain good forward orientation toward the audience, reinforcing clarity and engagement.",
+            "• The stance conveys both stability and a welcoming presence, suitable for instructional or coaching communication."
+        ]
+    elif stability >= 50:  # Moderate
+        return [
+            "• Your stance is generally stable with occasional weight shifts.",
+            "• Feet placement is acceptable, though sometimes inconsistent.",
+            "• Weight distribution is mostly balanced, with some minor adjustments visible.",
+            "• Overall stance supports adequate stability and presence."
+        ]
+    else:  # Needs improvement
+        return [
+            "• Your stance shows frequent weight shifts or instability.",
+            "• Feet placement may be too narrow or too wide, affecting balance.",
+            "• Visible swaying or shifting can be distracting to the audience.",
+            "• Improving stance stability will enhance your grounded presence and authority."
+        ]
 
 # Analysis functions
 def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: int = 300, **kwargs) -> Dict[str, Any]:
@@ -399,18 +562,40 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     section1.runs[0].font.size = Pt(16)
     doc.add_paragraph()
     
-    # 1.1 Eye Contact
-    subsection = doc.add_paragraph("1.1 Eye Contact")
-    subsection.runs[0].bold = True
-    subsection.runs[0].font.size = Pt(14)
-    doc.add_paragraph("• Your eye contact is steady, warm, and audience-focused.")
-    doc.add_paragraph("• You maintain direct gaze during key message points, which increases trust and clarity.")
-    doc.add_paragraph("• When you shift your gaze, it is done purposefully (e.g., thinking, emphasizing).")
-    doc.add_paragraph("• There is no sign of avoidance — overall, the eye contact supports confidence and credibility.")
-    
-    impact = doc.add_paragraph("Impact for clients:")
-    impact.runs[0].italic = True
-    doc.add_paragraph("Strong eye contact signals presence, sincerity, and leadership confidence, making your message feel more reliable.")
+    # Use real First Impression data if available
+    if report.first_impression:
+        fi = report.first_impression
+        
+        # 1.1 Eye Contact
+        subsection = doc.add_paragraph("1.1 Eye Contact")
+        subsection.runs[0].bold = True
+        subsection.runs[0].font.size = Pt(14)
+        
+        eye_texts = generate_eye_contact_text(fi.eye_contact_pct)
+        for text in eye_texts:
+            doc.add_paragraph(text)
+        
+        impact = doc.add_paragraph("Impact for clients:")
+        impact.runs[0].italic = True
+        if fi.eye_contact_pct >= 75:
+            doc.add_paragraph("Strong eye contact signals presence, sincerity, and leadership confidence, making your message feel more reliable.")
+        elif fi.eye_contact_pct >= 50:
+            doc.add_paragraph("Good eye contact builds trust and engagement. Maintaining more consistency will further enhance your credibility.")
+        else:
+            doc.add_paragraph("Improving eye contact will significantly increase audience trust, engagement, and your overall credibility as a speaker.")
+    else:
+        # Fallback to generic text
+        subsection = doc.add_paragraph("1.1 Eye Contact")
+        subsection.runs[0].bold = True
+        subsection.runs[0].font.size = Pt(14)
+        doc.add_paragraph("• Your eye contact is steady, warm, and audience-focused.")
+        doc.add_paragraph("• You maintain direct gaze during key message points, which increases trust and clarity.")
+        doc.add_paragraph("• When you shift your gaze, it is done purposefully (e.g., thinking, emphasizing).")
+        doc.add_paragraph("• There is no sign of avoidance — overall, the eye contact supports confidence and credibility.")
+        
+        impact = doc.add_paragraph("Impact for clients:")
+        impact.runs[0].italic = True
+        doc.add_paragraph("Strong eye contact signals presence, sincerity, and leadership confidence, making your message feel more reliable.")
     
     doc.add_paragraph()
     
@@ -418,19 +603,39 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     subsection2 = doc.add_paragraph("1.2 Uprightness (Posture & Upper-Body Alignment)")
     subsection2.runs[0].bold = True
     subsection2.runs[0].font.size = Pt(14)
-    doc.add_paragraph("• You maintain a naturally upright posture throughout the clip.")
+    
+    if report.first_impression:
+        upright_texts = generate_uprightness_text(fi.upright_pct)
+        # First bullet on page 1
+        doc.add_paragraph(upright_texts[0])
+    else:
+        doc.add_paragraph("• You maintain a naturally upright posture throughout the clip.")
     
     # Add page break
     doc.add_page_break()
     
     # Page 2: Continue Uprightness
-    doc.add_paragraph("• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.")
-    doc.add_paragraph("• Even when you gesture, your vertical alignment remains stable, showing good core control.")
-    doc.add_paragraph("• There is no visible slouching or collapsing, which supports a professional appearance.")
-    
-    impact2 = doc.add_paragraph("Impact for clients:")
-    impact2.runs[0].italic = True
-    doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators.")
+    if report.first_impression:
+        # Remaining bullets on page 2
+        for text in upright_texts[1:]:
+            doc.add_paragraph(text)
+        
+        impact2 = doc.add_paragraph("Impact for clients:")
+        impact2.runs[0].italic = True
+        if fi.upright_pct >= 75:
+            doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators.")
+        elif fi.upright_pct >= 50:
+            doc.add_paragraph("Good posture supports professional presence. Maintaining more consistent uprightness will enhance your authority and confidence.")
+        else:
+            doc.add_paragraph("Improving posture will significantly enhance your professional appearance, perceived confidence, and leadership presence.")
+    else:
+        doc.add_paragraph("• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.")
+        doc.add_paragraph("• Even when you gesture, your vertical alignment remains stable, showing good core control.")
+        doc.add_paragraph("• There is no visible slouching or collapsing, which supports a professional appearance.")
+        
+        impact2 = doc.add_paragraph("Impact for clients:")
+        impact2.runs[0].italic = True
+        doc.add_paragraph("Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators.")
     
     doc.add_paragraph()
     
@@ -438,14 +643,29 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     subsection3 = doc.add_paragraph("1.3 Stance (Lower-Body Stability & Grounding)")
     subsection3.runs[0].bold = True
     subsection3.runs[0].font.size = Pt(14)
-    doc.add_paragraph("• Your stance is symmetrical and grounded, with feet placed about shoulder-width apart.")
-    doc.add_paragraph("• Weight shifts are controlled and minimal, preventing distraction and showing confidence.")
-    doc.add_paragraph("• You maintain good forward orientation toward the audience, reinforcing clarity and engagement.")
-    doc.add_paragraph("• The stance conveys both stability and a welcoming presence, suitable for instructional or coaching communication.")
     
-    impact3 = doc.add_paragraph("Impact for clients:")
-    impact3.runs[0].italic = True
-    doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible.")
+    if report.first_impression:
+        stance_texts = generate_stance_text(fi.stance_stability)
+        for text in stance_texts:
+            doc.add_paragraph(text)
+        
+        impact3 = doc.add_paragraph("Impact for clients:")
+        impact3.runs[0].italic = True
+        if fi.stance_stability >= 75:
+            doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible.")
+        elif fi.stance_stability >= 50:
+            doc.add_paragraph("Stable stance supports confident delivery. Reducing weight shifts will further enhance your grounded presence and authority.")
+        else:
+            doc.add_paragraph("Improving stance stability will significantly enhance your grounded presence, reduce audience distraction, and increase perceived authority.")
+    else:
+        doc.add_paragraph("• Your stance is symmetrical and grounded, with feet placed about shoulder-width apart.")
+        doc.add_paragraph("• Weight shifts are controlled and minimal, preventing distraction and showing confidence.")
+        doc.add_paragraph("• You maintain good forward orientation toward the audience, reinforcing clarity and engagement.")
+        doc.add_paragraph("• The stance conveys both stability and a welcoming presence, suitable for instructional or coaching communication.")
+        
+        impact3 = doc.add_paragraph("Impact for clients:")
+        impact3.runs[0].italic = True
+        doc.add_paragraph("A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible.")
     
     doc.add_paragraph()
     doc.add_paragraph()
