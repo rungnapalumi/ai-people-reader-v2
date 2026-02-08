@@ -165,117 +165,222 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
     return FirstImpressionData(eye_contact_pct=eye_pct, upright_pct=upright_pct, stance_stability=stability)
 
 def generate_eye_contact_text(pct: float) -> list:
-    """Generate descriptive text based on eye contact percentage"""
-    if pct >= 85:  # Excellent
+    """Generate descriptive text based on eye contact percentage - 10 levels"""
+    if pct >= 90:  # Outstanding
         return [
-            "• Your eye contact is exceptionally steady, warm, and audience-focused throughout the presentation.",
-            "• You consistently maintain direct gaze during key message points, which maximizes trust and clarity.",
-            "• When you shift your gaze, it is done purposefully and naturally (e.g., thinking, emphasizing).",
-            "• There is no sign of avoidance — your eye contact demonstrates strong confidence and credibility."
+            "• Your eye contact is outstanding — consistently steady, warm, and completely audience-focused throughout the entire presentation.",
+            "• You maintain unwavering direct gaze during all key message points, which maximizes trust, clarity, and audience engagement.",
+            "• Every gaze shift is purposeful, natural, and enhances your communication (e.g., thinking pauses, emphasis).",
+            "• Your eye contact is a masterclass in confidence and credibility, with zero signs of avoidance or nervousness."
         ]
-    elif pct >= 70:  # Strong
+    elif pct >= 80:  # Excellent
         return [
-            "• Your eye contact is steady and audience-focused most of the time.",
-            "• You maintain direct gaze during key message points, which increases trust and clarity.",
-            "• Occasional gaze shifts are natural and don't detract from your overall presence.",
-            "• Overall, your eye contact supports confidence and credibility well."
+            "• Your eye contact is excellent — steady, engaging, and audience-focused almost throughout the presentation.",
+            "• You consistently maintain direct gaze during key message points, which strongly increases trust and clarity.",
+            "• Gaze shifts are purposeful and natural, never detracting from your professional presence.",
+            "• Your eye contact demonstrates strong confidence and builds exceptional credibility with the audience."
         ]
-    elif pct >= 55:  # Good
+    elif pct >= 70:  # Very Strong
         return [
-            "• Your eye contact is generally good, though you occasionally look away more than needed.",
-            "• You maintain direct gaze during most important points, which helps build trust.",
-            "• Some gaze shifts could be reduced to maintain stronger audience connection.",
-            "• Your eye contact is acceptable and supports adequate engagement with the audience."
+            "• Your eye contact is very strong — steady and audience-focused for most of the time.",
+            "• You maintain direct gaze during key message points effectively, which clearly builds trust and clarity.",
+            "• Occasional gaze shifts are natural and appropriate, showing thoughtfulness without reducing engagement.",
+            "• Overall, your eye contact strongly supports confidence and credibility with the audience."
         ]
-    elif pct >= 40:  # Moderate
+    elif pct >= 60:  # Strong
         return [
-            "• Your eye contact is inconsistent, with frequent shifts away from the audience.",
-            "• You make some direct eye contact, but it could be more sustained during key points.",
-            "• Increasing the frequency and duration of direct gaze will improve audience connection.",
-            "• Your eye contact needs strengthening to build stronger trust and credibility."
+            "• Your eye contact is strong — generally steady and audience-focused during important moments.",
+            "• You maintain direct gaze during most key message points, which helps establish trust.",
+            "• Some gaze shifts occur but they're mostly natural and don't significantly impact your presence.",
+            "• Your eye contact effectively supports good confidence and reasonable credibility."
         ]
-    else:  # Needs significant improvement
+    elif pct >= 50:  # Good
         return [
-            "• Your eye contact tends to avoid the audience or wander significantly.",
-            "• Limited direct eye contact reduces audience trust and connection noticeably.",
-            "• Focus on maintaining steady eye contact during key message points to enhance presence.",
-            "• Improving eye contact should be a priority, as it will significantly enhance your credibility."
+            "• Your eye contact is good, though you occasionally look away more frequently than ideal.",
+            "• You maintain direct gaze during many important points, which helps build adequate trust.",
+            "• Some gaze shifts could be reduced to maintain stronger and more consistent audience connection.",
+            "• Your eye contact is acceptable overall and supports reasonable engagement with the audience."
+        ]
+    elif pct >= 40:  # Above Average
+        return [
+            "• Your eye contact is above average but shows room for improvement in consistency.",
+            "• You make direct eye contact regularly, but it could be more sustained during crucial points.",
+            "• Gaze shifts happen somewhat frequently, which can slightly reduce audience connection.",
+            "• Increasing eye contact duration will noticeably improve your trust-building and credibility."
+        ]
+    elif pct >= 30:  # Average
+        return [
+            "• Your eye contact is average, with noticeable inconsistency throughout the presentation.",
+            "• You make some direct eye contact, but it lacks the duration needed during key message points.",
+            "• Frequent gaze shifts away from the audience reduce connection and engagement.",
+            "• Your eye contact needs strengthening to build more effective trust and credibility."
+        ]
+    elif pct >= 20:  # Below Average
+        return [
+            "• Your eye contact is below average, with significant inconsistency and frequent avoidance.",
+            "• Limited direct eye contact reduces audience trust and makes it harder to connect with listeners.",
+            "• You look away quite often, which can signal discomfort or lack of confidence.",
+            "• Improving eye contact should be a priority to enhance your presence and credibility."
+        ]
+    elif pct >= 10:  # Weak
+        return [
+            "• Your eye contact is weak, with very limited direct audience engagement throughout.",
+            "• Minimal direct eye contact significantly reduces trust and connection with the audience.",
+            "• You frequently avoid or wander away from audience gaze, which impacts perceived confidence.",
+            "• Developing stronger eye contact is critical and will dramatically improve your communication effectiveness."
+        ]
+    else:  # Critical - Needs Major Work
+        return [
+            "• Your eye contact needs major improvement — there is very little direct audience engagement.",
+            "• Lack of eye contact severely reduces audience trust, connection, and overall message impact.",
+            "• You avoid direct gaze almost entirely, which significantly undermines your credibility and presence.",
+            "• Building eye contact skills is essential and should be your top priority for presentation improvement."
         ]
 
 def generate_uprightness_text(pct: float) -> list:
-    """Generate descriptive text based on uprightness percentage"""
-    if pct >= 85:  # Excellent
+    """Generate descriptive text based on uprightness percentage - 10 levels"""
+    if pct >= 90:  # Outstanding
         return [
-            "• You maintain an exemplary upright posture consistently throughout the presentation.",
-            "• Your chest stays open, shoulders are naturally relaxed, and head alignment is perfect — signaling strong balance, readiness, and authority.",
-            "• Even when you gesture actively, your vertical alignment remains remarkably stable, demonstrating excellent core control.",
-            "• There is no visible slouching or collapsing at any point, which projects a highly professional appearance."
+            "• You maintain outstanding upright posture with perfect vertical alignment throughout the entire presentation.",
+            "• Your chest remains fully open, shoulders are optimally relaxed, and head alignment is impeccable — signaling exceptional balance, readiness, and commanding authority.",
+            "• Even during active gesturing, your vertical alignment stays completely stable, demonstrating masterful core control.",
+            "• There is absolutely no visible slouching or collapsing at any point, projecting supreme professional presence."
         ]
-    elif pct >= 70:  # Strong
+    elif pct >= 80:  # Excellent
         return [
-            "• You maintain a naturally upright posture throughout most of the clip.",
-            "• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.",
-            "• Your vertical alignment remains stable during gestures, showing good core control.",
-            "• There is minimal slouching, which supports a strong professional appearance."
+            "• You maintain excellent upright posture consistently throughout the presentation.",
+            "• Your chest stays open, shoulders are naturally relaxed, and head alignment is near-perfect — signaling strong balance, readiness, and authority.",
+            "• Your vertical alignment remains remarkably stable even when gesturing, demonstrating superior core control.",
+            "• There is virtually no slouching or collapsing, which projects a highly professional and confident appearance."
         ]
-    elif pct >= 55:  # Good
+    elif pct >= 70:  # Very Strong
         return [
-            "• You maintain upright posture most of the time with occasional lapses.",
-            "• Your chest and shoulder alignment is generally good, though sometimes less consistent.",
-            "• When you gesture, your vertical alignment usually remains stable.",
-            "• Overall posture is acceptable with room for improvement in maintaining consistency."
+            "• You maintain very strong upright posture throughout most of the presentation.",
+            "• The chest stays open, shoulders remain relaxed, and head is well-aligned — clearly signaling balance, readiness, and authority.",
+            "• Your vertical alignment stays stable during most gestures, showing very good core control.",
+            "• Minimal slouching occurs, which strongly supports a professional and composed appearance."
         ]
-    elif pct >= 40:  # Moderate
+    elif pct >= 60:  # Strong
         return [
-            "• Your posture fluctuates between upright and slightly slouched positions.",
-            "• There are noticeable moments where shoulders round forward or head tilts down.",
-            "• Your vertical alignment could be more consistent to project stronger confidence.",
-            "• Improving posture consistency will enhance your professional presence significantly."
+            "• You maintain strong upright posture for the majority of the clip.",
+            "• Your chest generally stays open, shoulders relaxed, and head aligned — signaling good balance and authority.",
+            "• Vertical alignment remains fairly stable during gestures, showing solid core control.",
+            "• Occasional minor slouching appears but doesn't detract significantly from your professional presence."
         ]
-    else:  # Needs significant improvement
+    elif pct >= 50:  # Good
         return [
-            "• Your posture tends to slouch or collapse frequently during the presentation.",
-            "• Shoulders are often hunched and head alignment is inconsistent throughout.",
-            "• This significantly affects your perceived confidence and professional appearance.",
-            "• Focusing on core strength and posture awareness should be a priority for improvement."
+            "• You maintain good upright posture most of the time with some occasional lapses.",
+            "• Your chest and shoulder alignment is generally acceptable, though sometimes less consistent than ideal.",
+            "• When you gesture, your vertical alignment usually remains reasonably stable.",
+            "• Overall posture is good with room for improvement in maintaining greater consistency."
+        ]
+    elif pct >= 40:  # Above Average
+        return [
+            "• You maintain above-average posture, though there are noticeable periods of less-than-optimal alignment.",
+            "• Your chest and shoulders show acceptable positioning most of the time, with occasional forward rounding.",
+            "• Vertical alignment fluctuates somewhat during gestures, suggesting moderate core control.",
+            "• Some slouching is visible, indicating that improved consistency would enhance your professional image."
+        ]
+    elif pct >= 30:  # Average
+        return [
+            "• Your posture is average, fluctuating between upright and noticeably slouched positions.",
+            "• There are regular moments where shoulders round forward or head tilts down from ideal alignment.",
+            "• Your vertical alignment could be considerably more consistent to project stronger confidence.",
+            "• Improving posture consistency will meaningfully enhance your professional presence and perceived authority."
+        ]
+    elif pct >= 20:  # Below Average
+        return [
+            "• Your posture is below average, with frequent slouching or compromised alignment throughout.",
+            "• Shoulders are often rounded forward and head alignment is inconsistent, reducing your presence.",
+            "• Vertical alignment breaks down regularly, suggesting limited core engagement.",
+            "• This notably affects your perceived confidence and professional appearance — improvement is needed."
+        ]
+    elif pct >= 10:  # Weak
+        return [
+            "• Your posture is weak, tending to slouch or collapse frequently during the presentation.",
+            "• Shoulders are regularly hunched and head alignment is poor throughout much of the presentation.",
+            "• This significantly undermines your perceived confidence, authority, and professional appearance.",
+            "• Focusing on core strength and postural awareness should be a high priority for improvement."
+        ]
+    else:  # Critical - Needs Major Work
+        return [
+            "• Your posture needs major improvement, with consistent slouching or collapsing throughout.",
+            "• Shoulders are chronically hunched and head alignment is severely compromised, greatly reducing presence.",
+            "• This critically impacts your perceived confidence, authority, and overall professional credibility.",
+            "• Developing better posture through core strengthening and awareness training is essential and should be your top priority."
         ]
 
 def generate_stance_text(stability: float) -> list:
-    """Generate descriptive text based on stance stability"""
-    if stability >= 85:  # Excellent
+    """Generate descriptive text based on stance stability - 10 levels"""
+    if stability >= 90:  # Outstanding
         return [
-            "• Your stance is exceptionally symmetrical and grounded, with feet placed perfectly about shoulder-width apart.",
+            "• Your stance is outstanding — perfectly symmetrical and solidly grounded, with feet placed optimally at shoulder-width apart.",
+            "• Weight shifts are virtually non-existent, creating an exceptionally stable platform that demonstrates supreme confidence.",
+            "• You maintain flawless forward orientation toward the audience throughout, maximally reinforcing clarity and engagement.",
+            "• Your stance conveys rock-solid stability and commanding, welcoming authority ideal for executive leadership communication."
+        ]
+    elif stability >= 80:  # Excellent
+        return [
+            "• Your stance is excellent — exceptionally symmetrical and grounded, with feet placed perfectly about shoulder-width apart.",
             "• Weight shifts are extremely controlled and minimal, preventing any distraction and demonstrating strong confidence.",
-            "• You maintain excellent forward orientation toward the audience throughout, reinforcing clarity and engagement.",
-            "• Your stance conveys remarkable stability and a welcoming, authoritative presence ideal for leadership communication."
+            "• You maintain superior forward orientation toward the audience throughout, reinforcing excellent clarity and engagement.",
+            "• Your stance conveys remarkable stability and a welcoming, authoritative presence ideal for professional leadership."
         ]
-    elif stability >= 70:  # Strong
+    elif stability >= 70:  # Very Strong
         return [
-            "• Your stance is symmetrical and grounded, with feet well-placed about shoulder-width apart.",
-            "• Weight shifts are controlled and minimal, preventing distraction and showing confidence.",
-            "• You maintain good forward orientation toward the audience, reinforcing clarity and engagement.",
-            "• The stance conveys both stability and a welcoming presence, suitable for professional communication."
+            "• Your stance is very strong — highly symmetrical and well-grounded, with feet well-positioned shoulder-width apart.",
+            "• Weight shifts are well-controlled and quite minimal, showing strong confidence and solid balance.",
+            "• You maintain very good forward orientation toward the audience, clearly reinforcing engagement and clarity.",
+            "• The stance conveys strong stability and a professional, welcoming presence suitable for senior communication roles."
         ]
-    elif stability >= 55:  # Good
+    elif stability >= 60:  # Strong
         return [
-            "• Your stance is generally stable with occasional minor weight shifts.",
-            "• Feet placement is good, maintaining reasonable balance throughout most of the presentation.",
-            "• Weight distribution is mostly balanced, with some small adjustments visible but not distracting.",
-            "• Overall stance supports good stability and adequate presence."
+            "• Your stance is strong — symmetrical and grounded, with feet appropriately placed about shoulder-width apart.",
+            "• Weight shifts are controlled and minimal, preventing distraction and demonstrating good confidence.",
+            "• You maintain solid forward orientation toward the audience, reinforcing clarity and reasonable engagement.",
+            "• The stance effectively conveys stability and a professional presence suitable for most business communication."
         ]
-    elif stability >= 40:  # Moderate
+    elif stability >= 50:  # Good
         return [
-            "• Your stance shows noticeable weight shifts that could be reduced.",
-            "• Feet placement is acceptable but could be more consistent for better balance.",
-            "• Some visible swaying or shifting may slightly distract the audience.",
-            "• Improving stance stability will noticeably enhance your grounded presence and authority."
+            "• Your stance is good overall, with generally stable positioning and occasional minor weight shifts.",
+            "• Feet placement is appropriate, maintaining reasonable balance throughout most of the presentation.",
+            "• Weight distribution is mostly balanced, with some small adjustments visible but not particularly distracting.",
+            "• Overall stance supports good stability and adequate professional presence with room for refinement."
         ]
-    else:  # Needs significant improvement
+    elif stability >= 40:  # Above Average
         return [
-            "• Your stance shows frequent weight shifts or significant instability throughout.",
-            "• Feet placement varies considerably, affecting your balance and grounded appearance.",
-            "• Visible swaying or shifting is quite distracting and reduces perceived confidence.",
+            "• Your stance is above average but shows some noticeable weight shifts that could be reduced.",
+            "• Feet placement is acceptable though it could be more consistent for better balance and grounding.",
+            "• Some visible swaying or shifting occurs, which may occasionally draw minor audience attention.",
+            "• Improving stance stability will noticeably enhance your grounded presence and perceived authority."
+        ]
+    elif stability >= 30:  # Average
+        return [
+            "• Your stance is average, with regular weight shifts that reduce your grounded appearance.",
+            "• Feet placement varies somewhat, affecting balance and overall stability during the presentation.",
+            "• Visible swaying or shifting happens frequently enough to be somewhat distracting to attentive observers.",
+            "• Enhancing stance stability will meaningfully improve your authority and professional presence."
+        ]
+    elif stability >= 20:  # Below Average
+        return [
+            "• Your stance is below average, showing frequent weight shifts or noticeable instability throughout.",
+            "• Feet placement varies considerably and inconsistently, negatively affecting your balance and grounded appearance.",
+            "• Visible swaying or shifting is quite apparent and can distract the audience from your message.",
             "• Improving stance stability should be a priority, as it will significantly enhance your authority and presence."
+        ]
+    elif stability >= 10:  # Weak
+        return [
+            "• Your stance is weak, with very frequent weight shifts or substantial instability throughout the presentation.",
+            "• Feet placement is inconsistent and often suboptimal, severely affecting your balance and grounded appearance.",
+            "• Visible swaying, shifting, or fidgeting is quite distracting and notably reduces perceived confidence.",
+            "• Developing stance stability is critical and will dramatically improve your grounded authority and professional image."
+        ]
+    else:  # Critical - Needs Major Work
+        return [
+            "• Your stance needs major improvement, with constant instability or severe balance issues throughout.",
+            "• Feet placement is highly inconsistent or problematic, critically compromising your grounded appearance and balance.",
+            "• Continuous swaying, shifting, or movement is very distracting and significantly undermines audience confidence.",
+            "• Building fundamental stance stability is essential and should be your absolute top priority for presentation improvement."
         ]
 
 # Analysis functions
