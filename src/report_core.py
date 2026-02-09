@@ -754,7 +754,9 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # PAGE 1: Cover + First Impression (Eye Contact start)
     # ============================================================
     
-    # Title section - 2 line spacing after header
+    # Title section - increased spacing after header
+    doc.add_paragraph()
+    doc.add_paragraph()
     doc.add_paragraph()
     doc.add_paragraph()
     
@@ -801,6 +803,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         
         impact = doc.add_paragraph(texts["impact_clients"])
         impact.runs[0].italic = True
+        impact.paragraph_format.space_before = Pt(0)  # Reduce space before impact
         doc.add_paragraph(impact_eye_thai if is_thai else impact_eye_en)
     else:
         doc.add_paragraph("• Your eye contact is steady, warm, and audience-focused.")
@@ -810,6 +813,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         
         impact = doc.add_paragraph(texts["impact_clients"])
         impact.runs[0].italic = True
+        impact.paragraph_format.space_before = Pt(0)  # Reduce space before impact
         doc.add_paragraph(impact_eye_thai if is_thai else impact_eye_en)
     
     # Uprightness section - show all bullets on page 1
@@ -831,6 +835,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         
         impact2 = doc.add_paragraph(texts["impact_clients"])
         impact2.runs[0].italic = True
+        impact2.paragraph_format.space_before = Pt(0)  # Reduce space before impact
         doc.add_paragraph(impact_upright_thai if is_thai else impact_upright_en)
     else:
         doc.add_paragraph("• You maintain a naturally upright posture throughout the clip.")
@@ -839,6 +844,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         
         impact2 = doc.add_paragraph(texts["impact_clients"])
         impact2.runs[0].italic = True
+        impact2.paragraph_format.space_before = Pt(0)  # Reduce space before impact
         doc.add_paragraph(impact_upright_thai if is_thai else impact_upright_en)
     
     # Stance section
@@ -867,6 +873,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     if report.first_impression:
         impact3 = doc.add_paragraph(texts["impact_clients"])
         impact3.runs[0].italic = True
+        impact3.paragraph_format.space_before = Pt(0)  # Reduce space before impact
         doc.add_paragraph(impact_stance_thai if is_thai else impact_stance_en)
     else:
         doc.add_paragraph("• Your stance is symmetrical and grounded, with feet placed about shoulder-width apart.")
@@ -874,6 +881,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         
         impact3 = doc.add_paragraph(texts["impact_clients"])
         impact3.runs[0].italic = True
+        impact3.paragraph_format.space_before = Pt(0)  # Reduce space before impact
         doc.add_paragraph(impact_stance_thai if is_thai else impact_stance_en)
     
     doc.add_paragraph()
