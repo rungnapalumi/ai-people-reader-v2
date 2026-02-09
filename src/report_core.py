@@ -704,11 +704,11 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         "approachability": "•    ความเป็นมิตร" if is_thai else "•    Approachability",
         "relatability": "•    ความเข้าถึงได้" if is_thai else "•    Relatability",
         "engagement": "•    การมีส่วนร่วม เชื่อมต่อและสร้างความสัมพันธ์ทันทีกับทีม" if is_thai else "•    Engagement, connect and build instant rapport with team",
-        "confidence": "2.  ความมั่นใจ:" if is_thai else "2.  Confidence:",
+        "confidence": "3.  ความมั่นใจ:" if is_thai else "3.  Confidence:",
         "optimistic": "•    การแสดงออกเชิงบวก" if is_thai else "•    Optimistic Presence",
         "focus": "•    การมุ่งเน้น" if is_thai else "•    Focus",
         "persuade": "•    ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนของตน เพื่อโน้มน้าวผู้อื่น" if is_thai else "•    Ability to persuade and stand one's ground, in order to convince others.",
-        "authority": "3.  อำนาจ:" if is_thai else "3.  Authority:",
+        "authority": "4.  ความเป็นผู้นำ:" if is_thai else "4.  Authority:",
         "importance": "•    การแสดงความสำคัญและความเร่งด่วนในหัวข้อ" if is_thai else "•    Showing sense of importance and urgency in subject matter",
         "pressing": "•    การกดดันให้เกิดการกระทำ" if is_thai else "•    Pressing for action",
         "scale": "ระดับ:" if is_thai else "Scale:",
@@ -811,8 +811,6 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         impact.runs[0].italic = True
         doc.add_paragraph(impact_eye_thai if is_thai else impact_eye_en)
     
-    doc.add_paragraph()
-    
     # Uprightness section - show all bullets on page 1
     upright_header = doc.add_paragraph(texts["uprightness"])
     
@@ -841,8 +839,6 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         impact2 = doc.add_paragraph(texts["impact_clients"])
         impact2.runs[0].italic = True
         doc.add_paragraph(impact_upright_thai if is_thai else impact_upright_en)
-    
-    doc.add_paragraph()
     
     # Stance section
     stance_header = doc.add_paragraph(texts["stance"])
@@ -880,6 +876,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         doc.add_paragraph(impact_stance_thai if is_thai else impact_stance_en)
     
     doc.add_paragraph()
+    doc.add_paragraph()
     
     # Section 2: Engaging & Connecting
     engaging_cat = report.categories[0]
@@ -892,6 +889,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     scale_para1.runs[0].bold = True
     doc.add_paragraph(f"{texts['description']} {engaging_cat.positives} {texts['indicators']} {engaging_cat.total} {texts['total_indicators']}")
     
+    doc.add_paragraph()
     doc.add_paragraph()
     
     # Section 3: Confidence
