@@ -936,6 +936,12 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # PAGE 4: Effort Motion Detection Results
     # ============================================================
     
+    # Spacing after header (same as page 1)
+    doc.add_paragraph()
+    doc.add_paragraph()
+    doc.add_paragraph()
+    doc.add_paragraph()
+    
     # Title
     title4 = doc.add_paragraph(texts["effort_title"])
     title4.runs[0].font.size = Pt(18)
@@ -952,6 +958,12 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # ============================================================
     # PAGE 5: Shape Motion Detection Results
     # ============================================================
+    
+    # Spacing after header (same as page 1)
+    doc.add_paragraph()
+    doc.add_paragraph()
+    doc.add_paragraph()
+    doc.add_paragraph()
     
     # Title
     title5 = doc.add_paragraph(texts["shape_title"])

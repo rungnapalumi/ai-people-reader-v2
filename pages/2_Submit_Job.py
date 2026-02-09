@@ -174,7 +174,6 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
         # Search in both finished and failed jobs
         prefixes = [JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
         
-        jobs_found = 0
         for prefix in prefixes:
             paginator = s3.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
@@ -187,46 +186,30 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
                     job_data = json.loads(obj["Body"].read().decode("utf-8"))
                     
-                    # Check if this job belongs to our group
-                    if job_data.get("group_id") == group_id:
-                        jobs_found += 1
-                        job_mode = job_data.get("mode", "")
+                    # Check if this job belongs to our group and is a report job
+                    if (job_data.get("group_id") == group_id and 
+                        job_data.get("mode") in ("report", "report_th_en", "report_generator")):
                         
-                        # Debug: Show what we found
-                        st.info(f"🔍 Found job: mode='{job_mode}', key={key}")
+                        # Extract output paths from job
+                        outputs = job_data.get("outputs", {})
+                        reports = outputs.get("reports", {})
                         
-                        # Check if it's a report job
-                        if job_mode in ("report", "report_th_en", "report_generator"):
-                            # Extract output paths from job
-                            outputs = job_data.get("outputs", {})
-                            reports = outputs.get("reports", {})
-                            
-                            # Debug: Show outputs structure
-                            st.info(f"📦 Outputs structure: {json.dumps(outputs, indent=2)}")
-                            
-                            # If outputs exist, return them
-                            if reports:
-                                result = {
-                                    "report_en_docx": reports.get("EN", {}).get("docx_key", ""),
-                                    "report_th_docx": reports.get("TH", {}).get("docx_key", ""),
-                                }
-                                st.success(f"✅ Found report outputs: {result}")
-                                return result
-                            
-                            # If no outputs structure, try to construct paths from output_prefix
-                            output_prefix = job_data.get("output_prefix", "")
-                            if output_prefix:
-                                st.warning(f"⚠️ No outputs.reports, trying S3 scan with prefix: {output_prefix}")
-                                # Try to find the actual files by listing S3
-                                return find_report_files_in_s3(output_prefix)
-        
-        if jobs_found == 0:
-            st.warning(f"⚠️ No finished/failed jobs found for group_id: {group_id}")
-        else:
-            st.warning(f"⚠️ Found {jobs_found} job(s) but none with mode 'report'")
+                        # If outputs exist, return them
+                        if reports:
+                            return {
+                                "report_en_docx": reports.get("EN", {}).get("docx_key", ""),
+                                "report_th_docx": reports.get("TH", {}).get("docx_key", ""),
+                            }
+                        
+                        # If no outputs structure, try to construct paths from output_prefix
+                        output_prefix = job_data.get("output_prefix", "")
+                        if output_prefix:
+                            # Try to find the actual files by listing S3
+                            return find_report_files_in_s3(output_prefix)
             
     except Exception as e:
-        st.error(f"Error reading report job: {e}")
+        # Silent fail - don't show error to customers
+        pass
     
     return {"report_en_docx": "", "report_th_docx": ""}
 
@@ -451,7 +434,7 @@ with c1:
     download_block("Skeleton video", outputs.get("skeleton_video", ""), "skeleton.mp4")
 
 with c2:
-    st.markdown("### Reports (DOCX only)")
+    st.markdown("### Reports")
     st.markdown("**English**")
     download_block("Report EN (DOCX)", outputs.get("report_en_docx", ""), "report_en.docx")
 
