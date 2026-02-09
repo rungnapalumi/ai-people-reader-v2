@@ -176,12 +176,15 @@ def _lm_to_px(lm, w: int, h: int) -> Tuple[int, int]:
 
 
 def generate_dots_video(input_path: str, out_path: str) -> None:
+    """Generate dot motion video with white dots on black background - matches original implementation"""
     cap = open_video(input_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     vw = write_mp4(out_path, fps, w, h)
+    
+    dot_size = 5  # 5 pixels as per user requirement
 
     with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
         while True:
@@ -189,18 +192,29 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
             if not ok:
                 break
 
+            # Create black background (key difference from old code)
+            output = np.zeros((h, w, 3), dtype=np.uint8)
+
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             res = pose.process(rgb)
 
             if res.pose_landmarks:
-                for pid in POSE_LANDMARK_IDS:
-                    lm = res.pose_landmarks.landmark[pid]
-                    if lm.visibility < 0.5:
-                        continue
-                    x, y = _lm_to_px(lm, w, h)
-                    cv2.circle(frame, (x, y), 5, (255, 255, 255), -1)  # White, 5px
+                # Draw ALL landmarks (not just subset) - matching original code
+                for lm in res.pose_landmarks.landmark:
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    
+                    # Ensure coordinates are within bounds
+                    if 0 <= cx < w and 0 <= cy < h:
+                        # Draw white dot on black background
+                        cv2.circle(
+                            output,
+                            (cx, cy),
+                            radius=dot_size,
+                            color=(255, 255, 255),  # white in BGR format
+                            thickness=-1
+                        )
 
-            vw.write(frame)
+            vw.write(output)  # Write black background with white dots
 
     vw.release()
     cap.release()
