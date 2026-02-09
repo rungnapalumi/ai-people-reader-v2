@@ -578,7 +578,7 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         "analysis_engine": "mediapipe_real_enhanced",
         "duration_seconds": duration,
         "analyzed_frames": analyzed,
-        "total_indicators": 900,
+        "total_indicators": 450 + 475 + 445,  # = 1370 (real total)
         "engaging_score": engaging_score,
         "engaging_pos": int(engaging_score / 7 * 450),
         "convince_score": convince_score,
@@ -605,7 +605,7 @@ def analyze_video_placeholder(video_path: str, seed: int = 42) -> Dict[str, Any]
         "analysis_engine": "placeholder",
         "duration_seconds": duration,
         "analyzed_frames": 100,
-        "total_indicators": 900,
+        "total_indicators": 450 + 475 + 445,  # = 1370 (real total)
         "engaging_score": 5,
         "engaging_pos": 431,
         "convince_score": 5,
