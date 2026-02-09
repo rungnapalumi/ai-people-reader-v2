@@ -699,7 +699,7 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
         "eye_contact": "การสบตา" if is_thai else "Eye Contact",
         "uprightness": "ท่าทางตั้งตรง (การยืดตัวและการจัดแนวส่วนบนของร่างกาย)" if is_thai else "Uprightness (Posture & Upper-Body Alignment",
         "stance": "การยืน (ความมั่นคงของส่วนล่างของร่างกายและการหยั่งราก)" if is_thai else "Stance (Lower-Body Stability & Grounding)",
-        "impact_clients": "ผลกระทบต่อลูกค้า:" if is_thai else "Impact for clients:",
+        "impact_clients": "ผลกระทบ:" if is_thai else "Impact:",
         "engaging": "2.  การมีส่วนร่วมและการเชื่อมต่อ:" if is_thai else "2.  Engaging & Connecting:",
         "approachability": "•    ความเป็นมิตร" if is_thai else "•    Approachability",
         "relatability": "•    ความเข้าถึงได้" if is_thai else "•    Relatability",
@@ -754,7 +754,8 @@ def build_docx_report(report: ReportData, output_bio: io.BytesIO, graph1_path: s
     # PAGE 1: Cover + First Impression (Eye Contact start)
     # ============================================================
     
-    # Title section - compact
+    # Title section - 2 line spacing after header
+    doc.add_paragraph()
     doc.add_paragraph()
     
     # Title
