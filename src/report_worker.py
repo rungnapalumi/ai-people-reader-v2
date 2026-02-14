@@ -152,8 +152,19 @@ def list_pending_json_keys() -> Iterable[str]:
 
 def find_one_pending_job_key() -> Optional[str]:
     for k in list_pending_json_keys():
-        logger.info("[find_one_pending_job_key] found %s", k)
-        return k
+        try:
+            job = s3_get_json(k)
+        except Exception as e:
+            # Key may be consumed by another worker between list/get.
+            logger.info("[find_one_pending_job_key] skip key=%s reason=%s", k, e)
+            continue
+
+        mode = str(job.get("mode") or "").strip().lower()
+        if mode in ("report", "report_th_en", "report_generator"):
+            logger.info("[find_one_pending_job_key] picked report key=%s mode=%s", k, mode)
+            return k
+
+        logger.info("[find_one_pending_job_key] ignore non-report key=%s mode=%s", k, mode)
     return None
 
 

@@ -551,6 +551,17 @@ def main_loop(poll_seconds: int = 3) -> None:
             continue
 
         for pending_key in keys:
+            # Peek pending job mode first, so this worker does not steal report jobs.
+            try:
+                pending_job = s3_read_json(pending_key)
+                pending_mode = (pending_job.get("mode") or "").strip().lower()
+                if pending_mode in ("report", "report_th_en", "report_generator"):
+                    logging.info("Skipping pending report job %s mode=%s (reserved for report_worker)", pending_job.get("job_id"), pending_mode)
+                    continue
+            except Exception as e:
+                logging.info("Skip pending key %s while peeking mode: %s", pending_key, e)
+                continue
+
             processing_key = claim_job(pending_key)
             if not processing_key:
                 continue
@@ -559,8 +570,8 @@ def main_loop(poll_seconds: int = 3) -> None:
                 job = s3_read_json(processing_key)
                 mode = (job.get("mode") or "").strip()
                 
-                # Skip "report" mode jobs - they should be handled by report_worker
-                if mode == "report":
+                # Extra safety: keep report jobs for report_worker if one slips through.
+                if mode in ("report", "report_th_en", "report_generator"):
                     logging.info("Skipping report mode job %s (handled by report_worker), moving back to pending", job.get("job_id"))
                     move_job(processing_key, PENDING)
                     continue
