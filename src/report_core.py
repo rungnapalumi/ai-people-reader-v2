@@ -1123,11 +1123,12 @@ def build_docx_report(
     if not is_simple:
         doc.add_paragraph(f"{texts['description']} {confidence_cat.positives} {texts['indicators']} {confidence_cat.total} {texts['total_indicators']}")
     
-    # PAGE BREAK TO PAGE 3
-    doc.add_page_break()
+    # Keep spacing between Section 3 and Section 4 similar to Section 2 and 3
+    doc.add_paragraph()
+    doc.add_paragraph()
     
     # ============================================================
-    # PAGE 3: Authority only
+    # Section 4: Authority (same page as Section 3)
     # ============================================================
     
     # Section 4: Authority
