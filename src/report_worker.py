@@ -27,8 +27,12 @@ import json
 import time
 import logging
 import tempfile
+import re
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Iterable, List, Tuple
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 
 import boto3
 
@@ -64,6 +68,10 @@ except Exception as e:
 # -----------------------------------------
 AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
+SES_REGION = os.getenv("SES_REGION", AWS_REGION)
+SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
+EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800"))  # up to 7 days
+MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 
 # Defaults (can be overridden per-job)
@@ -94,6 +102,7 @@ logging.basicConfig(
 logger = logging.getLogger("report_worker")
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
+ses = boto3.client("ses", region_name=SES_REGION)
 
 
 # -----------------------------------------
@@ -139,6 +148,111 @@ def upload_file(path: str, key: str, content_type: str) -> None:
     logger.info("[s3_upload_file] %s -> %s", path, key)
     with open(path, "rb") as f:
         s3.upload_fileobj(f, AWS_BUCKET, key, ExtraArgs={"ContentType": content_type})
+
+def s3_key_exists(key: str) -> bool:
+    try:
+        s3.head_object(Bucket=AWS_BUCKET, Key=key)
+        return True
+    except Exception:
+        return False
+
+def presigned_get_url(key: str, expires: int = EMAIL_LINK_EXPIRES_SECONDS) -> str:
+    return s3.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": AWS_BUCKET, "Key": key},
+        ExpiresIn=expires,
+    )
+
+def is_valid_email(value: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (value or "").strip()))
+
+def s3_read_bytes(key: str) -> bytes:
+    obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
+    return obj["Body"].read()
+
+def _docx_filename_from_key(key: str, fallback: str) -> str:
+    base = os.path.basename(str(key or "").strip())
+    return base if base.lower().endswith(".docx") else fallback
+
+def send_result_email(
+    job: Dict[str, Any],
+    video_keys: Dict[str, str],
+    report_docx_keys: Dict[str, str],
+) -> bool:
+    to_email = str(job.get("notify_email") or "").strip()
+    if not is_valid_email(to_email):
+        logger.info("[email] skip: invalid or missing notify_email=%s", to_email)
+        return False
+    if not SES_FROM_EMAIL:
+        logger.warning("[email] skip: SES_FROM_EMAIL is not configured")
+        return False
+
+    group_id = str(job.get("group_id") or "").strip()
+    subject = f"AI People Reader - Results Ready ({group_id})"
+    lines = [
+        f"Your analysis results are ready for group: {group_id}",
+        "",
+        "Attached files:",
+        "- Report EN (DOCX)",
+        "- Report TH (DOCX)",
+        "",
+        "Video links:",
+    ]
+    for label, key in video_keys.items():
+        if key:
+            lines.append(f"- {label}: {presigned_get_url(key)}")
+
+    # Fallback links for report DOCX in case attachment cannot be included.
+    report_link_lines: List[str] = []
+    for label, key in report_docx_keys.items():
+        if key:
+            report_link_lines.append(f"- {label}: {presigned_get_url(key)}")
+
+    lines.extend([
+        "",
+        "Backup report links (if your email client blocks attachments):",
+    ])
+    lines.extend(report_link_lines if report_link_lines else ["- Not available"])
+    lines.extend([
+        "",
+        "Links expire in 7 days.",
+        "If a link expires, open Submit Job page and refresh by group_id.",
+    ])
+    body_text = "\n".join(lines)
+
+    msg = MIMEMultipart()
+    msg["Subject"] = subject
+    msg["From"] = SES_FROM_EMAIL
+    msg["To"] = to_email
+    msg.attach(MIMEText(body_text, "plain", "utf-8"))
+
+    # Attach DOCX reports if available and not too large.
+    for label, key in report_docx_keys.items():
+        if not key:
+            continue
+        try:
+            docx_bytes = s3_read_bytes(key)
+            if len(docx_bytes) > MAX_DOCX_ATTACHMENT_BYTES:
+                logger.warning("[email] skip attachment too large label=%s key=%s size=%d", label, key, len(docx_bytes))
+                continue
+            fallback_name = "report_en.docx" if "EN" in label else "report_th.docx"
+            filename = _docx_filename_from_key(key, fallback=fallback_name)
+            part = MIMEApplication(
+                docx_bytes,
+                _subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+        except Exception as e:
+            logger.warning("[email] cannot attach DOCX label=%s key=%s err=%s", label, key, e)
+
+    ses.send_raw_email(
+        Source=SES_FROM_EMAIL,
+        Destinations=[to_email],
+        RawMessage={"Data": msg.as_bytes()},
+    )
+    logger.info("[email] sent to=%s group_id=%s", to_email, group_id)
+    return True
 
 
 def list_pending_json_keys() -> Iterable[str]:
@@ -400,6 +514,39 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         job["analysis_engine"] = str(result.get("analysis_engine") or "unknown")
         job["duration_seconds"] = float(result.get("duration_seconds") or 0.0)
         job["analyzed_frames"] = int(result.get("analyzed_frames") or 0)
+
+        # Optionally notify user by email when all outputs are available.
+        group_id = str(job.get("group_id") or "").strip()
+        dots_key = f"jobs/output/groups/{group_id}/dots.mp4" if group_id else ""
+        skeleton_key = f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else ""
+        report_en_key = outputs.get("reports", {}).get("EN", {}).get("docx_key", "")
+        report_th_key = outputs.get("reports", {}).get("TH", {}).get("docx_key", "")
+        required_keys = [k for k in [dots_key, skeleton_key, report_en_key, report_th_key] if k]
+
+        timeout_sec = 900
+        start = time.time()
+        while required_keys and (time.time() - start) < timeout_sec:
+            missing = [k for k in required_keys if not s3_key_exists(k)]
+            if not missing:
+                break
+            logger.info("[email] waiting for files to be ready: %s", missing)
+            time.sleep(10)
+
+        job["notification"] = {
+            "notify_email": str(job.get("notify_email") or "").strip(),
+            "sent": send_result_email(
+                job,
+                {
+                    "Dots video (MP4)": dots_key,
+                    "Skeleton video (MP4)": skeleton_key,
+                },
+                {
+                    "Report EN (DOCX)": report_en_key,
+                    "Report TH (DOCX)": report_th_key,
+                },
+            ),
+            "sent_at": utc_now_iso(),
+        }
         
         # Debug: Log the outputs structure
         logger.info("[report] Saving outputs to job: %s", json.dumps(outputs, indent=2))

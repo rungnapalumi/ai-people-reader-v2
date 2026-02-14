@@ -305,6 +305,11 @@ st.caption("Upload your video once, then click **Run Analysis** to generate dots
 
 with st.expander("Optional: User Name (ชื่อผู้ใช้) — ใช้สำหรับติดตามงาน", expanded=False):
     user_name = st.text_input("Enter User Name", value="", placeholder="e.g., Rung / Founder / Co-Founder")
+    notify_email = st.text_input(
+        "Notification Email (สำหรับส่งผลลัพธ์อัตโนมัติ)",
+        value="",
+        placeholder="name@example.com",
+    )
 
 report_type_ui = st.selectbox(
     "Report Type",
@@ -397,6 +402,7 @@ if run:
         "sample_fps": 5,
         "max_frames": 300,
         "report_style": "simple" if report_type_ui == "Simple" else "full",
+        "notify_email": (notify_email or "").strip(),
     }
 
     try:
