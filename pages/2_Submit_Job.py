@@ -170,6 +170,7 @@ def build_output_keys(group_id: str) -> Dict[str, str]:
 
 def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
     """Find the finished report job and extract actual output paths"""
+    found: Dict[str, str] = {}
     try:
         # Search in both finished and failed jobs
         prefixes = [JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
@@ -196,22 +197,46 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                         
                         # If outputs exist, return them
                         if reports:
-                            return {
-                                "report_en_docx": reports.get("EN", {}).get("docx_key", ""),
-                                "report_th_docx": reports.get("TH", {}).get("docx_key", ""),
-                            }
+                            en_key = reports.get("EN", {}).get("docx_key", "")
+                            th_key = reports.get("TH", {}).get("docx_key", "")
+                            if en_key:
+                                found["report_en_docx"] = en_key
+                            if th_key:
+                                found["report_th_docx"] = th_key
+                            if found.get("report_en_docx") and found.get("report_th_docx"):
+                                return found
                         
                         # If no outputs structure, try to construct paths from output_prefix
                         output_prefix = job_data.get("output_prefix", "")
                         if output_prefix:
                             # Try to find the actual files by listing S3
-                            return find_report_files_in_s3(output_prefix)
+                            scanned = find_report_files_in_s3(output_prefix)
+                            if scanned.get("report_en_docx"):
+                                found["report_en_docx"] = scanned["report_en_docx"]
+                            if scanned.get("report_th_docx"):
+                                found["report_th_docx"] = scanned["report_th_docx"]
+                            if found.get("report_en_docx") and found.get("report_th_docx"):
+                                return found
             
     except Exception as e:
         # Silent fail - don't show error to customers
         pass
-    
-    return {"report_en_docx": "", "report_th_docx": ""}
+
+    # Fallback: scan common prefixes directly, even when job JSON is not found yet.
+    fallback_prefixes = [
+        f"{JOBS_GROUP_PREFIX}{group_id}",
+        f"{JOBS_OUTPUT_PREFIX}groups/{group_id}",
+    ]
+    for pfx in fallback_prefixes:
+        scanned = find_report_files_in_s3(pfx)
+        if scanned.get("report_en_docx") and not found.get("report_en_docx"):
+            found["report_en_docx"] = scanned["report_en_docx"]
+        if scanned.get("report_th_docx") and not found.get("report_th_docx"):
+            found["report_th_docx"] = scanned["report_th_docx"]
+        if found.get("report_en_docx") and found.get("report_th_docx"):
+            break
+
+    return found
 
 
 def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
@@ -402,7 +427,11 @@ if group_id:
     outputs = build_output_keys(group_id)
     # Get actual report paths from finished job JSON
     report_outputs = get_report_outputs_from_job(group_id)
-    outputs.update(report_outputs)  # Override with actual paths
+    # Only override when a real key is discovered; never blank out defaults.
+    if report_outputs.get("report_en_docx"):
+        outputs["report_en_docx"] = report_outputs["report_en_docx"]
+    if report_outputs.get("report_th_docx"):
+        outputs["report_th_docx"] = report_outputs["report_th_docx"]
 else:
     st.caption("No group_id yet. Upload a video and click **Run Analysis**.")
     st.stop()
