@@ -306,6 +306,13 @@ st.caption("Upload your video once, then click **Run Analysis** to generate dots
 with st.expander("Optional: User Name (ชื่อผู้ใช้) — ใช้สำหรับติดตามงาน", expanded=False):
     user_name = st.text_input("Enter User Name", value="", placeholder="e.g., Rung / Founder / Co-Founder")
 
+report_type_ui = st.selectbox(
+    "Report Type",
+    options=["Full", "Simple"],
+    index=0,
+    help="Full = include graphs + detailed numbers, Simple = no graphs and no detection totals.",
+)
+
 uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
     type=["mp4", "mov", "m4v", "webm"],
@@ -389,6 +396,7 @@ if run:
         "analysis_mode": "real",  # Use real MediaPipe analysis
         "sample_fps": 5,
         "max_frames": 300,
+        "report_style": "simple" if report_type_ui == "Simple" else "full",
     }
 
     try:

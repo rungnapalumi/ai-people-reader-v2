@@ -281,16 +281,28 @@ def generate_reports_for_lang(
         first_impression=first_impression,
     )
 
-    # Graphs
-    graph1_path = os.path.join(out_dir, f"Graph_1_{lang_code}.png")
-    graph2_path = os.path.join(out_dir, f"Graph_2_{lang_code}.png")
+    report_style = str(job.get("report_style") or "full").strip().lower()
+    is_simple = report_style.startswith("simple")
 
-    generate_effort_graph(result.get("effort_detection", {}), result.get("shape_detection", {}), graph1_path)
-    generate_shape_graph(result.get("shape_detection", {}), graph2_path)
+    # Graphs are only required for full report style.
+    graph1_path = ""
+    graph2_path = ""
+    if not is_simple:
+        graph1_path = os.path.join(out_dir, f"Graph_1_{lang_code}.png")
+        graph2_path = os.path.join(out_dir, f"Graph_2_{lang_code}.png")
+        generate_effort_graph(result.get("effort_detection", {}), result.get("shape_detection", {}), graph1_path)
+        generate_shape_graph(result.get("shape_detection", {}), graph2_path)
 
     # DOCX (in-memory)
     docx_bio = io.BytesIO()
-    build_docx_report(report, docx_bio, graph1_path=graph1_path, graph2_path=graph2_path, lang=lang_code)
+    build_docx_report(
+        report,
+        docx_bio,
+        graph1_path=graph1_path,
+        graph2_path=graph2_path,
+        lang=lang_code,
+        report_style=report_style,
+    )
     docx_bytes = docx_bio.getvalue()
     if not docx_bytes:
         raise RuntimeError("DOCX generation produced empty output")
@@ -353,11 +365,14 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             lang_code = "th" if lang_code.startswith("th") else "en"
             docx_bytes, pdf_bytes, local_paths = generate_reports_for_lang(job, result, video_path, lang_code, out_dir)
 
-            # Upload graphs (lang-specific copies are okay; keys stable)
-            g1_key = f"{output_prefix}/Graph_1_{lang_code.upper()}.png"
-            g2_key = f"{output_prefix}/Graph_2_{lang_code.upper()}.png"
-            upload_file(local_paths["graph1_path"], g1_key, "image/png")
-            upload_file(local_paths["graph2_path"], g2_key, "image/png")
+            # Upload graphs only for full style.
+            g1_key = None
+            g2_key = None
+            if local_paths.get("graph1_path") and local_paths.get("graph2_path"):
+                g1_key = f"{output_prefix}/Graph_1_{lang_code.upper()}.png"
+                g2_key = f"{output_prefix}/Graph_2_{lang_code.upper()}.png"
+                upload_file(local_paths["graph1_path"], g1_key, "image/png")
+                upload_file(local_paths["graph2_path"], g2_key, "image/png")
 
             # Upload DOCX
             analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
