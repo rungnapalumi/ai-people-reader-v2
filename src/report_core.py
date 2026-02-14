@@ -981,9 +981,7 @@ def build_docx_report(
     # PAGE 1: Cover + First Impression (Eye Contact start)
     # ============================================================
     
-    # Title section - increased spacing after header
-    doc.add_paragraph()
-    doc.add_paragraph()
+    # Title section - reduced spacing after header
     doc.add_paragraph()
     doc.add_paragraph()
     
@@ -1076,13 +1074,6 @@ def build_docx_report(
         for text in stance_texts[:2]:
             doc.add_paragraph(text)
     
-    # PAGE BREAK TO PAGE 2
-    doc.add_page_break()
-    
-    # ============================================================
-    # PAGE 2: Stance (continued) + Engaging & Connecting + Confidence + Authority
-    # ============================================================
-    
     # Continue Stance (impact only)
     if report.first_impression:
         impact3 = doc.add_paragraph(texts["impact_clients"])
@@ -1097,9 +1088,13 @@ def build_docx_report(
         impact3.runs[0].italic = True
         impact3.paragraph_format.space_before = Pt(0)  # Reduce space before impact
         doc.add_paragraph(impact_stance_thai if is_thai else impact_stance_en)
+
+    # PAGE BREAK TO PAGE 2
+    doc.add_page_break()
     
-    doc.add_paragraph()
-    doc.add_paragraph()
+    # ============================================================
+    # PAGE 2: Engaging & Connecting + Confidence
+    # ============================================================
     
     # Section 2: Engaging & Connecting
     engaging_cat = report.categories[0]
