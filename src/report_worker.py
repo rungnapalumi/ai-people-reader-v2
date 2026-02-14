@@ -178,14 +178,14 @@ def send_result_email(
     job: Dict[str, Any],
     video_keys: Dict[str, str],
     report_docx_keys: Dict[str, str],
-) -> bool:
+) -> Tuple[bool, str]:
     to_email = str(job.get("notify_email") or "").strip()
     if not is_valid_email(to_email):
         logger.info("[email] skip: invalid or missing notify_email=%s", to_email)
-        return False
+        return False, "invalid_or_missing_notify_email"
     if not SES_FROM_EMAIL:
         logger.warning("[email] skip: SES_FROM_EMAIL is not configured")
-        return False
+        return False, "missing_ses_from_email"
 
     group_id = str(job.get("group_id") or "").strip()
     subject = f"AI People Reader - Results Ready ({group_id})"
@@ -246,13 +246,17 @@ def send_result_email(
         except Exception as e:
             logger.warning("[email] cannot attach DOCX label=%s key=%s err=%s", label, key, e)
 
-    ses.send_raw_email(
-        Source=SES_FROM_EMAIL,
-        Destinations=[to_email],
-        RawMessage={"Data": msg.as_bytes()},
-    )
-    logger.info("[email] sent to=%s group_id=%s", to_email, group_id)
-    return True
+    try:
+        ses.send_raw_email(
+            Source=SES_FROM_EMAIL,
+            Destinations=[to_email],
+            RawMessage={"Data": msg.as_bytes()},
+        )
+        logger.info("[email] sent to=%s group_id=%s", to_email, group_id)
+        return True, "sent"
+    except Exception as e:
+        logger.exception("[email] send failed to=%s group_id=%s err=%s", to_email, group_id, e)
+        return False, f"send_failed: {e}"
 
 
 def list_pending_json_keys() -> Iterable[str]:
@@ -532,19 +536,21 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             logger.info("[email] waiting for files to be ready: %s", missing)
             time.sleep(10)
 
+        email_sent, email_status = send_result_email(
+            job,
+            {
+                "Dots video (MP4)": dots_key,
+                "Skeleton video (MP4)": skeleton_key,
+            },
+            {
+                "Report EN (DOCX)": report_en_key,
+                "Report TH (DOCX)": report_th_key,
+            },
+        )
         job["notification"] = {
             "notify_email": str(job.get("notify_email") or "").strip(),
-            "sent": send_result_email(
-                job,
-                {
-                    "Dots video (MP4)": dots_key,
-                    "Skeleton video (MP4)": skeleton_key,
-                },
-                {
-                    "Report EN (DOCX)": report_en_key,
-                    "Report TH (DOCX)": report_th_key,
-                },
-            ),
+            "sent": email_sent,
+            "status": email_status,
             "sent_at": utc_now_iso(),
         }
         
