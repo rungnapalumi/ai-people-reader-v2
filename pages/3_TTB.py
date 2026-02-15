@@ -233,6 +233,30 @@ def build_output_keys(group_id: str) -> Dict[str, str]:
         "debug_th": base + "debug_th.json",
     }
 
+def enqueue_report_only_job(group_id: str, client_name: str, report_style: str = "full") -> str:
+    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+    if not s3_key_exists(input_key):
+        raise RuntimeError(f"Input video not found for group_id={group_id}")
+
+    created_at = utc_now_iso()
+    job_report = {
+        "job_id": new_job_id(),
+        "group_id": group_id,
+        "created_at": created_at,
+        "status": "pending",
+        "mode": "report",
+        "input_key": input_key,
+        "client_name": client_name or "Anonymous",
+        "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+        "languages": ["th", "en"],
+        "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
+        "analysis_mode": "real",
+        "sample_fps": 5,
+        "max_frames": 300,
+        "report_style": report_style,
+    }
+    return enqueue_legacy_job(job_report)
+
 
 def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
     """Find the finished report job and extract actual output paths"""
@@ -549,6 +573,24 @@ with c2:
 
     st.markdown("**Thai**")
     download_block("Report TH (DOCX)", outputs.get("report_th_docx", ""), "report_th.docx")
+
+reports_ready = bool(outputs.get("report_en_docx")) and bool(outputs.get("report_th_docx")) and s3_key_exists(outputs.get("report_en_docx", "")) and s3_key_exists(outputs.get("report_th_docx", ""))
+videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("dots_video", "")) and s3_key_exists(outputs.get("skeleton_video", ""))
+
+if videos_ready and not reports_ready:
+    st.divider()
+    st.warning("Reports are still not ready. You can re-run report generation for this group.")
+    if st.button("Re-run report generation", use_container_width=False):
+        try:
+            guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
+            new_report_key = enqueue_report_only_job(
+                group_id=group_id,
+                client_name=guessed_name,
+                report_style="full",
+            )
+            st.success(f"Queued report job again: {new_report_key}")
+        except Exception as e:
+            st.error(f"Cannot re-queue report job: {e}")
 
 # --- Manual email test (only when all files are ready) ---
 all_ready = all(
