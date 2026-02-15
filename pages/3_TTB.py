@@ -163,11 +163,13 @@ def build_output_keys(group_id: str) -> Dict[str, str]:
         "skeleton_video": base + "skeleton.mp4",
         "report_en_docx": base + "report_en.docx",
         "report_th_docx": base + "report_th.docx",
+        "report_en_pdf": base + "report_en.pdf",
+        "report_th_pdf": base + "report_th.pdf",
         "debug_en": base + "debug_en.json",
         "debug_th": base + "debug_th.json",
     }
 
-def enqueue_report_only_job(group_id: str, client_name: str, report_style: str = "full") -> str:
+def enqueue_report_only_job(group_id: str, client_name: str, report_style: str = "full", report_format: str = "docx") -> str:
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
     if not s3_key_exists(input_key):
         raise RuntimeError(f"Input video not found for group_id={group_id}")
@@ -188,6 +190,7 @@ def enqueue_report_only_job(group_id: str, client_name: str, report_style: str =
         "sample_fps": 5,
         "max_frames": 300,
         "report_style": report_style,
+        "report_format": report_format,
     }
     return enqueue_legacy_job(job_report)
 
@@ -213,6 +216,29 @@ def get_report_style_for_group(group_id: str) -> str:
     except Exception:
         pass
     return "simple" if report_type_ui == "Simple" else "full"
+
+def get_report_format_for_group(group_id: str) -> str:
+    """Best-effort lookup of previously requested report_format for this group."""
+    try:
+        prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
+        for prefix in prefixes:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = item["Key"]
+                    if not key.endswith(".json"):
+                        continue
+                    job_data = s3_read_json(key) or {}
+                    if (
+                        job_data.get("group_id") == group_id
+                        and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
+                    ):
+                        fmt = str(job_data.get("report_format") or "").strip().lower()
+                        if fmt in ("docx", "pdf"):
+                            return fmt
+    except Exception:
+        pass
+    return "pdf" if report_file_ui == "PDF" else "docx"
 
 
 def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
@@ -246,11 +272,17 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                         if reports:
                             en_key = reports.get("EN", {}).get("docx_key", "")
                             th_key = reports.get("TH", {}).get("docx_key", "")
+                            en_pdf = reports.get("EN", {}).get("pdf_key", "")
+                            th_pdf = reports.get("TH", {}).get("pdf_key", "")
                             if en_key:
                                 found["report_en_docx"] = en_key
                             if th_key:
                                 found["report_th_docx"] = th_key
-                            if found.get("report_en_docx") and found.get("report_th_docx"):
+                            if en_pdf:
+                                found["report_en_pdf"] = en_pdf
+                            if th_pdf:
+                                found["report_th_pdf"] = th_pdf
+                            if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
                                 return found
                         
                         # If no outputs structure, try to construct paths from output_prefix
@@ -262,7 +294,11 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                                 found["report_en_docx"] = scanned["report_en_docx"]
                             if scanned.get("report_th_docx"):
                                 found["report_th_docx"] = scanned["report_th_docx"]
-                            if found.get("report_en_docx") and found.get("report_th_docx"):
+                            if scanned.get("report_en_pdf"):
+                                found["report_en_pdf"] = scanned["report_en_pdf"]
+                            if scanned.get("report_th_pdf"):
+                                found["report_th_pdf"] = scanned["report_th_pdf"]
+                            if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
                                 return found
             
     except Exception as e:
@@ -280,7 +316,11 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
             found["report_en_docx"] = scanned["report_en_docx"]
         if scanned.get("report_th_docx") and not found.get("report_th_docx"):
             found["report_th_docx"] = scanned["report_th_docx"]
-        if found.get("report_en_docx") and found.get("report_th_docx"):
+        if scanned.get("report_en_pdf") and not found.get("report_en_pdf"):
+            found["report_en_pdf"] = scanned["report_en_pdf"]
+        if scanned.get("report_th_pdf") and not found.get("report_th_pdf"):
+            found["report_th_pdf"] = scanned["report_th_pdf"]
+        if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
             break
 
     return found
@@ -326,7 +366,7 @@ def get_report_notification_status(group_id: str) -> Dict[str, Any]:
 def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
     """Find report files by scanning S3 with prefix"""
     try:
-        result = {"report_en_docx": "", "report_th_docx": ""}
+        result = {"report_en_docx": "", "report_th_docx": "", "report_en_pdf": "", "report_th_pdf": ""}
         paginator = s3.get_paginator("list_objects_v2")
         
         for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
@@ -337,10 +377,15 @@ def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
                         result["report_en_docx"] = key
                     elif "_TH.docx" in key:
                         result["report_th_docx"] = key
+                elif key.endswith(".pdf"):
+                    if "_EN.pdf" in key:
+                        result["report_en_pdf"] = key
+                    elif "_TH.pdf" in key:
+                        result["report_th_pdf"] = key
         
         return result
     except Exception:
-        return {"report_en_docx": "", "report_th_docx": ""}
+        return {"report_en_docx": "", "report_th_docx": "", "report_en_pdf": "", "report_th_pdf": ""}
 
 
 def ensure_session_defaults() -> None:
@@ -400,6 +445,12 @@ report_type_ui = st.selectbox(
     options=["Full", "Simple"],
     index=0,
     help="Full = include graphs + detailed numbers, Simple = no graphs and no detection totals.",
+)
+report_file_ui = st.selectbox(
+    "Report File",
+    options=["DOCX", "PDF"],
+    index=0,
+    help="Choose output report file format.",
 )
 
 uploaded = st.file_uploader(
@@ -486,6 +537,7 @@ if run:
         "sample_fps": 5,
         "max_frames": 300,
         "report_style": "simple" if report_type_ui == "Simple" else "full",
+        "report_format": "pdf" if report_file_ui == "PDF" else "docx",
         "notify_email": (notify_email or "").strip(),
     }
 
@@ -562,13 +614,19 @@ with c1:
 
 with c2:
     st.markdown("### Reports")
+    selected_pdf = (report_file_ui == "PDF")
+    en_key = outputs.get("report_en_pdf", "") if selected_pdf else outputs.get("report_en_docx", "")
+    th_key = outputs.get("report_th_pdf", "") if selected_pdf else outputs.get("report_th_docx", "")
+    en_name = "report_en.pdf" if selected_pdf else "report_en.docx"
+    th_name = "report_th.pdf" if selected_pdf else "report_th.docx"
+    report_label = "PDF" if selected_pdf else "DOCX"
     st.markdown("**English**")
-    download_block("Report EN (DOCX)", outputs.get("report_en_docx", ""), "report_en.docx")
+    download_block(f"Report EN ({report_label})", en_key, en_name)
 
     st.markdown("**Thai**")
-    download_block("Report TH (DOCX)", outputs.get("report_th_docx", ""), "report_th.docx")
+    download_block(f"Report TH ({report_label})", th_key, th_name)
 
-reports_ready = bool(outputs.get("report_en_docx")) and bool(outputs.get("report_th_docx")) and s3_key_exists(outputs.get("report_en_docx", "")) and s3_key_exists(outputs.get("report_th_docx", ""))
+reports_ready = bool(en_key) and bool(th_key) and s3_key_exists(en_key) and s3_key_exists(th_key)
 videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("dots_video", "")) and s3_key_exists(outputs.get("skeleton_video", ""))
 
 if videos_ready and not reports_ready:
@@ -578,12 +636,14 @@ if videos_ready and not reports_ready:
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
             rerun_style = get_report_style_for_group(group_id)
+            rerun_format = get_report_format_for_group(group_id)
             new_report_key = enqueue_report_only_job(
                 group_id=group_id,
                 client_name=guessed_name,
                 report_style=rerun_style,
+                report_format=rerun_format,
             )
-            st.success(f"Queued report job again ({rerun_style}): {new_report_key}")
+            st.success(f"Queued report job again ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:
             st.error(f"Cannot re-queue report job: {e}")
 

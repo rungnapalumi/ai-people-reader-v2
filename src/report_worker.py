@@ -70,6 +70,7 @@ AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 SES_REGION = os.getenv("SES_REGION", AWS_REGION)
 SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
+SES_CONFIGURATION_SET = os.getenv("SES_CONFIGURATION_SET", "").strip()
 EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800"))  # up to 7 days
 MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
 ENABLE_EMAIL_NOTIFICATIONS = str(os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "true")).strip().lower() in ("1", "true", "yes", "on")
@@ -198,8 +199,8 @@ def send_result_email(
         f"Your analysis results are ready for group: {group_id}",
         "",
         "Attached files:",
-        "- Report EN (DOCX)",
-        "- Report TH (DOCX)",
+        "- Report EN",
+        "- Report TH",
         "",
         "Video links:",
     ]
@@ -231,32 +232,34 @@ def send_result_email(
     msg["To"] = to_email
     msg.attach(MIMEText(body_text, "plain", "utf-8"))
 
-    # Attach DOCX reports if available and not too large.
+    # Attach report files (DOCX/PDF) if available and not too large.
     for label, key in report_docx_keys.items():
         if not key:
             continue
         try:
-            docx_bytes = s3_read_bytes(key)
-            if len(docx_bytes) > MAX_DOCX_ATTACHMENT_BYTES:
-                logger.warning("[email] skip attachment too large label=%s key=%s size=%d", label, key, len(docx_bytes))
+            file_bytes = s3_read_bytes(key)
+            if len(file_bytes) > MAX_DOCX_ATTACHMENT_BYTES:
+                logger.warning("[email] skip attachment too large label=%s key=%s size=%d", label, key, len(file_bytes))
                 continue
-            fallback_name = "report_en.docx" if "EN" in label else "report_th.docx"
-            filename = _docx_filename_from_key(key, fallback=fallback_name)
-            part = MIMEApplication(
-                docx_bytes,
-                _subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
+            is_pdf = str(key).lower().endswith(".pdf")
+            fallback_name = "report_en.pdf" if (is_pdf and "EN" in label) else "report_th.pdf" if is_pdf else "report_en.docx" if "EN" in label else "report_th.docx"
+            filename = os.path.basename(str(key or "").strip()) or fallback_name
+            subtype = "pdf" if is_pdf else "vnd.openxmlformats-officedocument.wordprocessingml.document"
+            part = MIMEApplication(file_bytes, _subtype=subtype)
             part.add_header("Content-Disposition", "attachment", filename=filename)
             msg.attach(part)
         except Exception as e:
-            logger.warning("[email] cannot attach DOCX label=%s key=%s err=%s", label, key, e)
+            logger.warning("[email] cannot attach report label=%s key=%s err=%s", label, key, e)
 
     try:
-        ses.send_raw_email(
-            Source=SES_FROM_EMAIL,
-            Destinations=[to_email],
-            RawMessage={"Data": msg.as_bytes()},
-        )
+        raw_params: Dict[str, Any] = {
+            "Source": SES_FROM_EMAIL,
+            "Destinations": [to_email],
+            "RawMessage": {"Data": msg.as_bytes()},
+        }
+        if SES_CONFIGURATION_SET:
+            raw_params["ConfigurationSetName"] = SES_CONFIGURATION_SET
+        ses.send_raw_email(**raw_params)
         logger.info("[email] sent to=%s group_id=%s", to_email, group_id)
         return True, "sent"
     except Exception as e:
@@ -264,10 +267,10 @@ def send_result_email(
         err_str = str(e)
         if "SendRawEmail" in err_str and "AccessDenied" in err_str:
             try:
-                ses.send_email(
-                    Source=SES_FROM_EMAIL,
-                    Destination={"ToAddresses": [to_email]},
-                    Message={
+                fallback_params: Dict[str, Any] = {
+                    "Source": SES_FROM_EMAIL,
+                    "Destination": {"ToAddresses": [to_email]},
+                    "Message": {
                         "Subject": {"Data": subject, "Charset": "UTF-8"},
                         "Body": {
                             "Text": {
@@ -280,7 +283,10 @@ def send_result_email(
                             }
                         },
                     },
-                )
+                }
+                if SES_CONFIGURATION_SET:
+                    fallback_params["ConfigurationSetName"] = SES_CONFIGURATION_SET
+                ses.send_email(**fallback_params)
                 logger.warning(
                     "[email] raw denied, sent fallback plain email to=%s group_id=%s",
                     to_email,
@@ -301,14 +307,18 @@ def send_result_email(
 
 def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[str, Any]:
     group_id = str(job.get("group_id") or "").strip()
+    en_report = outputs.get("reports", {}).get("EN", {}) or {}
+    th_report = outputs.get("reports", {}).get("TH", {}) or {}
+    en_key = en_report.get("docx_key") or en_report.get("pdf_key") or ""
+    th_key = th_report.get("docx_key") or th_report.get("pdf_key") or ""
     return {
         "job_id": str(job.get("job_id") or "").strip(),
         "group_id": group_id,
         "notify_email": str(job.get("notify_email") or "").strip(),
         "dots_key": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
         "skeleton_key": f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else "",
-        "report_en_key": outputs.get("reports", {}).get("EN", {}).get("docx_key", ""),
-        "report_th_key": outputs.get("reports", {}).get("TH", {}).get("docx_key", ""),
+        "report_en_key": en_key,
+        "report_th_key": th_key,
         "attempts": 0,
         "updated_at": utc_now_iso(),
     }
@@ -384,8 +394,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     "Skeleton video (MP4)": payload.get("skeleton_key", ""),
                 },
                 {
-                    "Report EN (DOCX)": payload.get("report_en_key", ""),
-                    "Report TH (DOCX)": payload.get("report_th_key", ""),
+                    "Report EN": payload.get("report_en_key", ""),
+                    "Report TH": payload.get("report_th_key", ""),
                 },
             )
             update_finished_job_notification(job_id, sent, status if sent else "send_failed")
@@ -599,6 +609,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     languages = [str(x).strip().lower() for x in languages if str(x).strip()]
     if not languages:
         languages = ["th", "en"]
+    report_format = str(job.get("report_format") or "docx").strip().lower()
+    if report_format not in ("docx", "pdf"):
+        report_format = "docx"
 
     # output prefix
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
@@ -631,19 +644,23 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 upload_file(local_paths["graph1_path"], g1_key, "image/png")
                 upload_file(local_paths["graph2_path"], g2_key, "image/png")
 
-            # Upload DOCX
+            # Upload DOCX when requested format is DOCX.
             analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
-            docx_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.docx"
-            docx_key = f"{output_prefix}/{docx_name}"
-            upload_bytes(
-                docx_key,
-                docx_bytes,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
+            docx_key = None
+            if report_format == "docx":
+                docx_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.docx"
+                docx_key = f"{output_prefix}/{docx_name}"
+                upload_bytes(
+                    docx_key,
+                    docx_bytes,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
 
-            # Upload PDF if built
+            # Upload PDF when requested format is PDF.
             pdf_key = None
-            if pdf_bytes:
+            if report_format == "pdf":
+                if not pdf_bytes:
+                    raise RuntimeError("PDF format requested but PDF generation failed")
                 pdf_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf"
                 pdf_key = f"{output_prefix}/{pdf_name}"
                 upload_bytes(pdf_key, pdf_bytes, "application/pdf")
@@ -672,8 +689,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                             "Skeleton video (MP4)": payload.get("skeleton_key", ""),
                         },
                         {
-                            "Report EN (DOCX)": payload.get("report_en_key", ""),
-                            "Report TH (DOCX)": payload.get("report_th_key", ""),
+                            "Report EN": payload.get("report_en_key", ""),
+                            "Report TH": payload.get("report_th_key", ""),
                         },
                     )
                 else:
