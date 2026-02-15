@@ -73,6 +73,7 @@ SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
 EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800"))  # up to 7 days
 MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
+EMAIL_RETRY_INTERVAL_SEC = int(os.getenv("EMAIL_RETRY_INTERVAL_SEC", "60"))
 
 # Defaults (can be overridden per-job)
 DEFAULT_ANALYSIS_MODE = os.getenv("ANALYSIS_MODE", "real").strip().lower()  # "real" or "fallback"
@@ -112,8 +113,9 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def s3_get_json(key: str) -> Dict[str, Any]:
-    logger.info("[s3_get_json] key=%s", key)
+def s3_get_json(key: str, log_key: bool = True) -> Dict[str, Any]:
+    if log_key:
+        logger.info("[s3_get_json] key=%s", key)
     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
     data = obj["Body"].read()
     return json.loads(data.decode("utf-8"))
@@ -340,7 +342,7 @@ def retry_pending_notifications(max_jobs: int = 30) -> None:
                 return
             scanned += 1
             try:
-                job = s3_get_json(key)
+                job = s3_get_json(key, log_key=False)
             except Exception:
                 continue
 
@@ -709,14 +711,18 @@ def main() -> None:
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)
 
+    last_email_retry_at = 0.0
     while True:
         try:
             job_key = find_one_pending_job_key()
             if job_key:
                 process_job(job_key)
             else:
-                # Retry unsent notifications from finished report jobs.
-                retry_pending_notifications(max_jobs=30)
+                # Retry unsent notifications from finished report jobs at a lower frequency.
+                now_ts = time.time()
+                if (now_ts - last_email_retry_at) >= EMAIL_RETRY_INTERVAL_SEC:
+                    retry_pending_notifications(max_jobs=30)
+                    last_email_retry_at = now_ts
                 time.sleep(POLL_INTERVAL)
         except Exception as exc:
             logger.exception("[main] Unexpected error: %s", exc)
