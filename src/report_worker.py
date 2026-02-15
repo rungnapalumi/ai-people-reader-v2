@@ -28,6 +28,8 @@ import time
 import logging
 import tempfile
 import re
+import smtplib
+import ssl
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Iterable, List, Tuple
 from email.mime.multipart import MIMEMultipart
@@ -72,6 +74,13 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 SES_REGION = os.getenv("SES_REGION", AWS_REGION)
 SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
 SES_CONFIGURATION_SET = os.getenv("SES_CONFIGURATION_SET", "").strip()
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
+SMTP_USE_TLS = str(os.getenv("SMTP_USE_TLS", "true")).strip().lower() in ("1", "true", "yes", "on")
+SMTP_USE_SSL = str(os.getenv("SMTP_USE_SSL", "false")).strip().lower() in ("1", "true", "yes", "on")
 EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800"))  # up to 7 days
 MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
 ENABLE_EMAIL_NOTIFICATIONS = str(os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "true")).strip().lower() in ("1", "true", "yes", "on")
@@ -107,6 +116,59 @@ logger = logging.getLogger("report_worker")
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 ses = boto3.client("ses", region_name=SES_REGION)
+
+def log_ses_runtime_context() -> None:
+    """Log actual runtime sender context to avoid env/account confusion."""
+    try:
+        sts = boto3.client("sts")
+        account_id = sts.get_caller_identity().get("Account", "unknown")
+    except Exception as e:
+        account_id = f"unknown ({e})"
+
+    prod_enabled = "unknown"
+    sending_enabled = "unknown"
+    try:
+        sesv2 = boto3.client("sesv2", region_name=SES_REGION)
+        acc = sesv2.get_account()
+        prod_enabled = str(acc.get("ProductionAccessEnabled"))
+        sending_enabled = str(acc.get("SendingEnabled"))
+    except Exception as e:
+        prod_enabled = f"unknown ({e})"
+
+    logger.info(
+        "[email_context] aws_account=%s ses_region=%s aws_region=%s ses_from=%s production=%s sending=%s",
+        account_id,
+        SES_REGION,
+        AWS_REGION,
+        SES_FROM_EMAIL or "(empty)",
+        prod_enabled,
+        sending_enabled,
+    )
+
+def smtp_config_status() -> Dict[str, Any]:
+    return {
+        "host": bool(SMTP_HOST),
+        "port": SMTP_PORT,
+        "username": bool(SMTP_USERNAME),
+        "password": bool(SMTP_PASSWORD),
+        "from_email": bool(SMTP_FROM_EMAIL or SES_FROM_EMAIL),
+        "use_tls": SMTP_USE_TLS,
+        "use_ssl": SMTP_USE_SSL,
+    }
+
+def log_smtp_runtime_context() -> None:
+    s = smtp_config_status()
+    logger.info(
+        "[smtp_context] host=%s port=%s username=%s password=%s from_email=%s tls=%s ssl=%s configured=%s",
+        s["host"],
+        s["port"],
+        s["username"],
+        s["password"],
+        s["from_email"],
+        s["use_tls"],
+        s["use_ssl"],
+        bool(s["host"] and s["username"] and s["password"] and s["from_email"]),
+    )
 
 
 # -----------------------------------------
@@ -290,6 +352,43 @@ def _docx_filename_from_key(key: str, fallback: str) -> str:
     base = os.path.basename(str(key or "").strip())
     return base if base.lower().endswith(".docx") else fallback
 
+def smtp_is_configured() -> bool:
+    s = smtp_config_status()
+    return bool(s["host"] and s["username"] and s["password"] and s["from_email"])
+
+def send_with_smtp_fallback(msg: MIMEMultipart, to_email: str, group_id: str) -> Tuple[bool, str]:
+    if not smtp_is_configured():
+        return False, "smtp_not_configured"
+
+    from_email = SMTP_FROM_EMAIL or SES_FROM_EMAIL
+    try:
+        if "From" in msg:
+            msg.replace_header("From", from_email)
+        else:
+            msg["From"] = from_email
+        if "To" in msg:
+            msg.replace_header("To", to_email)
+        else:
+            msg["To"] = to_email
+
+        if SMTP_USE_SSL:
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30)
+        else:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+            server.ehlo()
+            if SMTP_USE_TLS:
+                server.starttls(context=ssl.create_default_context())
+                server.ehlo()
+
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.sendmail(from_email, [to_email], msg.as_bytes())
+        server.quit()
+        logger.info("[email] sent via SMTP fallback to=%s group_id=%s", to_email, group_id)
+        return True, "sent_via_smtp_fallback"
+    except Exception as e:
+        logger.exception("[email] SMTP fallback failed to=%s group_id=%s err=%s", to_email, group_id, e)
+        return False, f"smtp_send_failed: {e}"
+
 def send_result_email(
     job: Dict[str, Any],
     video_keys: Dict[str, str],
@@ -299,9 +398,9 @@ def send_result_email(
     if not is_valid_email(to_email):
         logger.info("[email] skip: invalid or missing notify_email=%s", to_email)
         return False, "invalid_or_missing_notify_email"
-    if not SES_FROM_EMAIL:
-        logger.warning("[email] skip: SES_FROM_EMAIL is not configured")
-        return False, "missing_ses_from_email"
+    if not SES_FROM_EMAIL and not smtp_is_configured():
+        logger.warning("[email] skip: SES_FROM_EMAIL and SMTP fallback are not configured")
+        return False, "missing_ses_from_email_and_smtp"
 
     job_id = str(job.get("job_id") or "").strip()
     group_id = str(job.get("group_id") or "").strip()
@@ -345,7 +444,7 @@ def send_result_email(
 
     msg = MIMEMultipart()
     msg["Subject"] = subject
-    msg["From"] = SES_FROM_EMAIL
+    msg["From"] = SES_FROM_EMAIL or SMTP_FROM_EMAIL
     msg["To"] = to_email
     msg.attach(MIMEText(body_text, "plain", "utf-8"))
 
@@ -402,6 +501,9 @@ def send_result_email(
             logger.warning("[email] cannot attach report label=%s key=%s err=%s", label, key, e)
 
     try:
+        if not SES_FROM_EMAIL:
+            raise RuntimeError("SES_FROM_EMAIL is empty")
+
         raw_params: Dict[str, Any] = {
             "Source": SES_FROM_EMAIL,
             "Destinations": [to_email],
@@ -451,6 +553,10 @@ def send_result_email(
                     e2,
                 )
                 return False, f"send_failed_raw_and_fallback: {e2}"
+
+        smtp_sent, smtp_status = send_with_smtp_fallback(msg, to_email, group_id)
+        if smtp_sent:
+            return True, smtp_status
 
         logger.exception("[email] send failed to=%s group_id=%s err=%s", to_email, group_id, e)
         return False, f"send_failed: {e}"
@@ -565,7 +671,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     "Report TH": payload.get("report_th_key", ""),
                 },
             )
-            update_finished_job_notification(job_id, sent, status if sent else "send_failed")
+            # Keep the real SES status/error reason for debugging in UI.
+            update_finished_job_notification(job_id, sent, status)
 
             if sent or status in ("invalid_or_missing_notify_email", "missing_ses_from_email"):
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
@@ -988,6 +1095,8 @@ def main() -> None:
     logger.info("Using bucket: %s", AWS_BUCKET)
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)
+    log_ses_runtime_context()
+    log_smtp_runtime_context()
 
     while True:
         try:
