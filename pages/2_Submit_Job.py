@@ -191,6 +191,7 @@ def enqueue_report_only_job(group_id: str, client_name: str, report_style: str =
         "max_frames": 300,
         "report_style": report_style,
         "report_format": report_format,
+        "priority": 1,
     }
     return enqueue_legacy_job(job_report)
 

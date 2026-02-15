@@ -418,6 +418,10 @@ def list_pending_json_keys() -> Iterable[str]:
 
 
 def find_one_pending_job_key() -> Optional[str]:
+    picked_key: Optional[str] = None
+    picked_priority = -1
+    picked_created_at = ""
+
     for k in list_pending_json_keys():
         try:
             job = s3_get_json(k)
@@ -428,11 +432,25 @@ def find_one_pending_job_key() -> Optional[str]:
 
         mode = str(job.get("mode") or "").strip().lower()
         if mode in ("report", "report_th_en", "report_generator"):
-            logger.info("[find_one_pending_job_key] picked report key=%s mode=%s", k, mode)
-            return k
+            priority = int(job.get("priority") or 0)
+            created_at = str(job.get("created_at") or "")
+            if (
+                priority > picked_priority
+                or (priority == picked_priority and created_at > picked_created_at)
+            ):
+                picked_key = k
+                picked_priority = priority
+                picked_created_at = created_at
 
         logger.info("[find_one_pending_job_key] ignore non-report key=%s mode=%s", k, mode)
-    return None
+    if picked_key:
+        logger.info(
+            "[find_one_pending_job_key] picked report key=%s priority=%s created_at=%s",
+            picked_key,
+            picked_priority,
+            picked_created_at,
+        )
+    return picked_key
 
 
 def move_json(old_key: str, new_key: str, payload: Dict[str, Any]) -> None:
