@@ -161,10 +161,12 @@ def validate_video_file(path: str) -> None:
 
 def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
     """
-    Convert to browser-safe MP4 (H.264 + AAC + yuv420p + faststart).
+    Convert to universal-delivery MP4 (H.264 + AAC + yuv420p + faststart).
     This avoids codec compatibility issues from OpenCV mp4v output.
     A silent AAC track is added to maximize compatibility for link previews
     and strict players that struggle with video-only MP4 streams.
+    We also normalize to <=720p and 30fps CFR to reduce decoder stress on
+    in-app/mobile browsers while preserving reliable playback from links.
     """
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
@@ -179,27 +181,52 @@ def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
         "lavfi",
         "-i",
         "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        (
+            "scale='if(gt(iw,1280),1280,iw)':'if(gt(ih,720),720,ih)':"
+            "force_original_aspect_ratio=decrease,"
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
+            "fps=30,format=yuv420p"
+        ),
         "-c:v",
         "libx264",
         "-profile:v",
-        "baseline",
+        "main",
         "-level",
-        "3.1",
+        "4.0",
         "-preset",
         "veryfast",
         "-crf",
-        "23",
+        "24",
+        "-maxrate",
+        "2500k",
+        "-bufsize",
+        "5000k",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60",
+        "-sc_threshold",
+        "0",
         "-movflags",
         "+faststart",
-        "-vsync",
-        "cfr",
         "-c:a",
         "aac",
         "-b:a",
-        "128k",
+        "96k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
         "-shortest",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "30",
         output_path,
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
