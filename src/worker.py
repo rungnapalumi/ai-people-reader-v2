@@ -5,6 +5,8 @@ import time
 import math
 import tempfile
 import logging
+import shutil
+import subprocess
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -132,6 +134,56 @@ def write_mp4(out_path: str, fps: float, w: int, h: int) -> cv2.VideoWriter:
     if not vw.isOpened():
         raise RuntimeError("Cannot open VideoWriter (mp4v)")
     return vw
+
+
+def validate_video_file(path: str) -> None:
+    """Fail fast if output video is empty/corrupt before upload."""
+    if not os.path.exists(path):
+        raise RuntimeError(f"Output video file does not exist: {path}")
+    size = os.path.getsize(path)
+    if size <= 0:
+        raise RuntimeError(f"Output video file is empty: {path}")
+
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open output video: {path}")
+    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    cap.release()
+    if frames <= 0:
+        raise RuntimeError(f"Output video has no frames: {path}")
+    if fps <= 0:
+        raise RuntimeError(f"Output video has invalid fps: {path}")
+
+
+def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
+    """
+    Convert to browser-safe MP4 (H.264 + yuv420p + faststart).
+    This avoids codec compatibility issues from OpenCV mp4v output.
+    """
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i",
+        input_path,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-an",
+        output_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg transcode failed: {proc.stderr[-400:]}")
+
+    validate_video_file(output_path)
 
 
 # -----------------------------
@@ -476,15 +528,21 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
         if mode == "dots":
             out_key = job["output_key"]
+            raw_path = os.path.join(td, "dots_raw.mp4")
             out_path = os.path.join(td, "dots.mp4")
-            generate_dots_video(in_path, out_path)
+            generate_dots_video(in_path, raw_path)
+            validate_video_file(raw_path)
+            transcode_to_browser_mp4(raw_path, out_path)
             s3_upload_file(out_path, out_key, "video/mp4")
             return {"ok": True, "mode": "dots", "output_key": out_key}
 
         if mode == "skeleton":
             out_key = job["output_key"]
+            raw_path = os.path.join(td, "skeleton_raw.mp4")
             out_path = os.path.join(td, "skeleton.mp4")
-            generate_skeleton_video(in_path, out_path)
+            generate_skeleton_video(in_path, raw_path)
+            validate_video_file(raw_path)
+            transcode_to_browser_mp4(raw_path, out_path)
             s3_upload_file(out_path, out_key, "video/mp4")
             return {"ok": True, "mode": "skeleton", "output_key": out_key}
 
