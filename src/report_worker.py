@@ -211,10 +211,20 @@ def s3_copy_if_exists(src_key: str, dest_key: str) -> bool:
         return False
     if not s3_key_exists(src_key):
         return False
+    filename = os.path.basename(str(dest_key or "").strip())
+    content_type = guess_content_type(filename)
+    extra_args: Dict[str, Any] = {
+        "MetadataDirective": "REPLACE",
+        "ContentType": content_type,
+    }
+    # Force browser-friendly behavior when opening MP4 directly from S3 console.
+    if str(filename).lower().endswith(".mp4"):
+        extra_args["ContentDisposition"] = f'inline; filename="{filename}"'
     s3.copy_object(
         Bucket=AWS_BUCKET,
         CopySource={"Bucket": AWS_BUCKET, "Key": src_key},
         Key=dest_key,
+        **extra_args,
     )
     return True
 
