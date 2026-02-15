@@ -200,7 +200,7 @@ def transcode_dots_mp4(input_path: str, output_path: str) -> None:
 
 
 def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
-    """Strict skeleton profile for client link compatibility."""
+    """Ultra-compatible skeleton profile for client link playback."""
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
         raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
@@ -210,56 +210,40 @@ def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
         "-y",
         "-i",
         input_path,
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=channel_layout=stereo:sample_rate=48000",
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
         "-vf",
         (
-            "scale='if(gt(iw,1280),1280,iw)':'if(gt(ih,720),720,ih)':"
+            "scale='if(gt(iw,854),854,iw)':'if(gt(ih,480),480,ih)':"
             "force_original_aspect_ratio=decrease,"
             "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
-            "fps=30,format=yuv420p"
+            "fps=24,format=yuv420p"
         ),
         "-c:v",
         "libx264",
         "-profile:v",
-        "main",
+        "baseline",
         "-level",
-        "4.0",
+        "3.0",
         "-preset",
         "veryfast",
         "-crf",
-        "24",
+        "28",
         "-maxrate",
-        "2500k",
+        "1200k",
         "-bufsize",
-        "5000k",
+        "2400k",
         "-g",
-        "60",
+        "48",
         "-keyint_min",
-        "60",
+        "48",
         "-sc_threshold",
         "0",
         "-movflags",
         "+faststart",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "96k",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "-shortest",
-        "-pix_fmt",
-        "yuv420p",
+        "-vsync",
+        "cfr",
+        "-an",
         "-r",
-        "30",
+        "24",
         output_path,
     ]
     _run_ffmpeg_transcode(cmd)
