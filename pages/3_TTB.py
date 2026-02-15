@@ -45,6 +45,7 @@ AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 SES_REGION = os.getenv("SES_REGION", AWS_REGION)
 SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
+ENABLE_MANUAL_EMAIL_TEST = str(os.getenv("ENABLE_MANUAL_EMAIL_TEST", "false")).strip().lower() in ("1", "true", "yes", "on")
 
 if not AWS_BUCKET:
     st.error("Missing AWS_BUCKET (or S3_BUCKET) environment variable in Render.")
@@ -256,6 +257,29 @@ def enqueue_report_only_job(group_id: str, client_name: str, report_style: str =
         "report_style": report_style,
     }
     return enqueue_legacy_job(job_report)
+
+def get_report_style_for_group(group_id: str) -> str:
+    """Best-effort lookup of previously requested report_style for this group."""
+    try:
+        prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
+        for prefix in prefixes:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = item["Key"]
+                    if not key.endswith(".json"):
+                        continue
+                    job_data = s3_read_json(key) or {}
+                    if (
+                        job_data.get("group_id") == group_id
+                        and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
+                    ):
+                        style = str(job_data.get("report_style") or "").strip().lower()
+                        if style in ("simple", "full"):
+                            return style
+    except Exception:
+        pass
+    return "simple" if report_type_ui == "Simple" else "full"
 
 
 def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
@@ -579,16 +603,17 @@ videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_vi
 
 if videos_ready and not reports_ready:
     st.divider()
-    st.warning("Reports are still not ready. You can re-run report generation for this group.")
+    st.warning("Reports are still not ready. You can re-run report generation for this group. (รายงานยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
     if st.button("Re-run report generation", use_container_width=False):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
+            rerun_style = get_report_style_for_group(group_id)
             new_report_key = enqueue_report_only_job(
                 group_id=group_id,
                 client_name=guessed_name,
-                report_style="full",
+                report_style=rerun_style,
             )
-            st.success(f"Queued report job again: {new_report_key}")
+            st.success(f"Queued report job again ({rerun_style}): {new_report_key}")
         except Exception as e:
             st.error(f"Cannot re-queue report job: {e}")
 
@@ -607,18 +632,18 @@ all_ready = all(
     for k in ["dots_video", "skeleton_video", "report_en_docx", "report_th_docx"]
 )
 
-if all_ready:
+if ENABLE_MANUAL_EMAIL_TEST and all_ready:
     st.divider()
-    st.subheader("Email Test")
+    st.subheader("Email Test (ทดสอบส่งเมล)")
     test_email = st.text_input(
-        "Recipient email for test send",
+        "Recipient email for test send (อีเมลผู้รับสำหรับทดสอบ)",
         value=(notify_email or "").strip(),
         placeholder="name@example.com",
     )
     if st.button("Send test email now", use_container_width=False):
         try:
             send_test_email(group_id=group_id, to_email=test_email, outputs=outputs)
-            st.success("Test email sent.")
+            st.success("Test email sent successfully.")
         except Exception as e:
             st.error(f"Send email failed: {e}")
 
