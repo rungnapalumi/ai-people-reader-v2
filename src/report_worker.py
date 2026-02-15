@@ -72,7 +72,7 @@ SES_REGION = os.getenv("SES_REGION", AWS_REGION)
 SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
 EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800"))  # up to 7 days
 MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
-ENABLE_EMAIL_NOTIFICATIONS = str(os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "false")).strip().lower() in ("1", "true", "yes", "on")
+ENABLE_EMAIL_NOTIFICATIONS = str(os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "true")).strip().lower() in ("1", "true", "yes", "on")
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 
 # Defaults (can be overridden per-job)
@@ -92,6 +92,7 @@ PROCESSING_PREFIX = f"{JOBS_PREFIX}/processing"
 FINISHED_PREFIX = f"{JOBS_PREFIX}/finished"
 FAILED_PREFIX = f"{JOBS_PREFIX}/failed"
 OUTPUT_PREFIX = f"{JOBS_PREFIX}/output"
+EMAIL_PENDING_PREFIX = f"{JOBS_PREFIX}/email_pending"
 
 if not AWS_BUCKET:
     raise RuntimeError("Missing AWS_BUCKET (or S3_BUCKET) environment variable")
@@ -297,6 +298,104 @@ def send_result_email(
 
         logger.exception("[email] send failed to=%s group_id=%s err=%s", to_email, group_id, e)
         return False, f"send_failed: {e}"
+
+def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = str(job.get("group_id") or "").strip()
+    return {
+        "job_id": str(job.get("job_id") or "").strip(),
+        "group_id": group_id,
+        "notify_email": str(job.get("notify_email") or "").strip(),
+        "dots_key": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
+        "skeleton_key": f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else "",
+        "report_en_key": outputs.get("reports", {}).get("EN", {}).get("docx_key", ""),
+        "report_th_key": outputs.get("reports", {}).get("TH", {}).get("docx_key", ""),
+        "attempts": 0,
+        "updated_at": utc_now_iso(),
+    }
+
+def email_payload_all_ready(payload: Dict[str, Any]) -> bool:
+    required = [
+        payload.get("dots_key", ""),
+        payload.get("skeleton_key", ""),
+        payload.get("report_en_key", ""),
+        payload.get("report_th_key", ""),
+    ]
+    required = [k for k in required if k]
+    if not required:
+        return False
+    return all(s3_key_exists(k) for k in required)
+
+def queue_email_pending(payload: Dict[str, Any]) -> str:
+    job_id = str(payload.get("job_id") or "").strip()
+    if not job_id:
+        raise ValueError("Missing job_id for email pending queue")
+    key = f"{EMAIL_PENDING_PREFIX}/{job_id}.json"
+    s3_put_json(key, payload)
+    return key
+
+def update_finished_job_notification(job_id: str, sent: bool, status: str) -> None:
+    if not job_id:
+        return
+    key = f"{FINISHED_PREFIX}/{job_id}.json"
+    if not s3_key_exists(key):
+        return
+    job = s3_get_json(key, log_key=False)
+    job["notification"] = {
+        "notify_email": str(job.get("notify_email") or "").strip(),
+        "sent": bool(sent),
+        "status": status,
+        "updated_at": utc_now_iso(),
+    }
+    s3_put_json(key, job)
+
+def process_pending_email_queue(max_items: int = 10) -> None:
+    scanned = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=EMAIL_PENDING_PREFIX):
+        for item in page.get("Contents", []):
+            key = item.get("Key", "")
+            if not key.endswith(".json"):
+                continue
+            if scanned >= max_items:
+                return
+            scanned += 1
+
+            try:
+                payload = s3_get_json(key, log_key=False)
+            except Exception:
+                continue
+
+            job_id = str(payload.get("job_id") or "").strip()
+            notify_email = str(payload.get("notify_email") or "").strip()
+            if not notify_email:
+                update_finished_job_notification(job_id, False, "skipped_no_notify_email")
+                s3.delete_object(Bucket=AWS_BUCKET, Key=key)
+                continue
+
+            if not email_payload_all_ready(payload):
+                # Keep waiting until all outputs are ready.
+                update_finished_job_notification(job_id, False, "waiting_for_all_outputs")
+                continue
+
+            sent, status = send_result_email(
+                {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
+                {
+                    "Dots video (MP4)": payload.get("dots_key", ""),
+                    "Skeleton video (MP4)": payload.get("skeleton_key", ""),
+                },
+                {
+                    "Report EN (DOCX)": payload.get("report_en_key", ""),
+                    "Report TH (DOCX)": payload.get("report_th_key", ""),
+                },
+            )
+            update_finished_job_notification(job_id, sent, status if sent else "send_failed")
+
+            if sent or status in ("invalid_or_missing_notify_email", "missing_ses_from_email"):
+                s3.delete_object(Bucket=AWS_BUCKET, Key=key)
+            else:
+                payload["attempts"] = int(payload.get("attempts") or 0) + 1
+                payload["updated_at"] = utc_now_iso()
+                s3_put_json(key, payload)
 
 
 def list_pending_json_keys() -> Iterable[str]:
@@ -559,24 +658,29 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         job["duration_seconds"] = float(result.get("duration_seconds") or 0.0)
         job["analyzed_frames"] = int(result.get("analyzed_frames") or 0)
 
-        # Best-effort email: send once from this report job without queue scanning/retry.
-        group_id = str(job.get("group_id") or "").strip()
-        dots_key = f"jobs/output/groups/{group_id}/dots.mp4" if group_id else ""
-        skeleton_key = f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else ""
-        report_en_key = outputs.get("reports", {}).get("EN", {}).get("docx_key", "")
-        report_th_key = outputs.get("reports", {}).get("TH", {}).get("docx_key", "")
+        # Notification flow:
+        # - report job finishes normally
+        # - email is sent when all outputs (dots/skeleton/reports) are ready
         if ENABLE_EMAIL_NOTIFICATIONS:
-            email_sent, email_status = send_result_email(
-                job,
-                {
-                    "Dots video (MP4)": dots_key if dots_key and s3_key_exists(dots_key) else "",
-                    "Skeleton video (MP4)": skeleton_key if skeleton_key and s3_key_exists(skeleton_key) else "",
-                },
-                {
-                    "Report EN (DOCX)": report_en_key,
-                    "Report TH (DOCX)": report_th_key,
-                },
-            )
+            payload = build_email_payload(job, outputs)
+            if str(payload.get("notify_email") or "").strip():
+                if email_payload_all_ready(payload):
+                    email_sent, email_status = send_result_email(
+                        {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
+                        {
+                            "Dots video (MP4)": payload.get("dots_key", ""),
+                            "Skeleton video (MP4)": payload.get("skeleton_key", ""),
+                        },
+                        {
+                            "Report EN (DOCX)": payload.get("report_en_key", ""),
+                            "Report TH (DOCX)": payload.get("report_th_key", ""),
+                        },
+                    )
+                else:
+                    queue_email_pending(payload)
+                    email_sent, email_status = False, "waiting_for_all_outputs"
+            else:
+                email_sent, email_status = False, "skipped_no_notify_email"
         else:
             email_sent, email_status = False, "disabled_by_config"
         job["notification"] = {
@@ -663,6 +767,8 @@ def main() -> None:
             if job_key:
                 process_job(job_key)
             else:
+                if ENABLE_EMAIL_NOTIFICATIONS:
+                    process_pending_email_queue(max_items=10)
                 time.sleep(POLL_INTERVAL)
         except Exception as exc:
             logger.exception("[main] Unexpected error: %s", exc)
