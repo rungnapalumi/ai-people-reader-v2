@@ -21,6 +21,10 @@
 import os
 import json
 import uuid
+import re
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -39,12 +43,15 @@ st.set_page_config(page_title="Video Analysis (วิเคราะห์วิ
 # -------------------------
 AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
+SES_REGION = os.getenv("SES_REGION", AWS_REGION)
+SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
 
 if not AWS_BUCKET:
     st.error("Missing AWS_BUCKET (or S3_BUCKET) environment variable in Render.")
     st.stop()
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
+ses = boto3.client("ses", region_name=SES_REGION)
 
 JOBS_PENDING_PREFIX = "jobs/pending/"
 JOBS_PROCESSING_PREFIX = "jobs/processing/"
@@ -132,6 +139,65 @@ def presigned_get_url(key: str, expires: int = 3600, filename: Optional[str] = N
         ClientMethod="get_object",
         Params=params,
         ExpiresIn=expires,
+    )
+
+
+def s3_read_bytes(key: str) -> bytes:
+    obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
+    return obj["Body"].read()
+
+
+def is_valid_email(value: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (value or "").strip()))
+
+
+def send_test_email(group_id: str, to_email: str, outputs: Dict[str, str]) -> None:
+    if not SES_FROM_EMAIL:
+        raise RuntimeError("SES_FROM_EMAIL is not configured in environment.")
+    if not is_valid_email(to_email):
+        raise ValueError("Invalid recipient email.")
+
+    dots_key = outputs.get("dots_video", "")
+    skeleton_key = outputs.get("skeleton_video", "")
+    report_en_key = outputs.get("report_en_docx", "")
+    report_th_key = outputs.get("report_th_docx", "")
+
+    msg = MIMEMultipart()
+    msg["Subject"] = f"AI People Reader - Test Email ({group_id})"
+    msg["From"] = SES_FROM_EMAIL
+    msg["To"] = to_email
+
+    lines = [
+        f"Test email for group: {group_id}",
+        "",
+        "Video links:",
+        f"- Dots: {presigned_get_url(dots_key, expires=604800, filename='dots.mp4')}",
+        f"- Skeleton: {presigned_get_url(skeleton_key, expires=604800, filename='skeleton.mp4')}",
+        "",
+        "DOCX files are attached. Backup links:",
+        f"- Report EN: {presigned_get_url(report_en_key, expires=604800, filename='report_en.docx')}",
+        f"- Report TH: {presigned_get_url(report_th_key, expires=604800, filename='report_th.docx')}",
+    ]
+    msg.attach(MIMEText("\n".join(lines), "plain", "utf-8"))
+
+    en_part = MIMEApplication(
+        s3_read_bytes(report_en_key),
+        _subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    en_part.add_header("Content-Disposition", "attachment", filename="report_en.docx")
+    msg.attach(en_part)
+
+    th_part = MIMEApplication(
+        s3_read_bytes(report_th_key),
+        _subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    th_part.add_header("Content-Disposition", "attachment", filename="report_th.docx")
+    msg.attach(th_part)
+
+    ses.send_raw_email(
+        Source=SES_FROM_EMAIL,
+        Destinations=[to_email],
+        RawMessage={"Data": msg.as_bytes()},
     )
 
 
@@ -483,5 +549,35 @@ with c2:
 
     st.markdown("**Thai**")
     download_block("Report TH (DOCX)", outputs.get("report_th_docx", ""), "report_th.docx")
+
+# --- Manual email test (only when all files are ready) ---
+all_ready = all(
+    s3_key_exists(k)
+    for k in [
+        outputs.get("dots_video", ""),
+        outputs.get("skeleton_video", ""),
+        outputs.get("report_en_docx", ""),
+        outputs.get("report_th_docx", ""),
+    ]
+    if k
+) and all(
+    bool(outputs.get(k))
+    for k in ["dots_video", "skeleton_video", "report_en_docx", "report_th_docx"]
+)
+
+if all_ready:
+    st.divider()
+    st.subheader("Email Test")
+    test_email = st.text_input(
+        "Recipient email for test send",
+        value=(notify_email or "").strip(),
+        placeholder="name@example.com",
+    )
+    if st.button("Send test email now", use_container_width=False):
+        try:
+            send_test_email(group_id=group_id, to_email=test_email, outputs=outputs)
+            st.success("Test email sent.")
+        except Exception as e:
+            st.error(f"Send email failed: {e}")
 
 st.caption("Tip: ถ้า refresh แล้วไม่ขึ้น ให้ paste group_id ที่ใช้งานจริง แล้วกด Refresh ใหม่ได้ตลอด")

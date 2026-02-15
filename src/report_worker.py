@@ -72,6 +72,7 @@ SES_REGION = os.getenv("SES_REGION", AWS_REGION)
 SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
 EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800"))  # up to 7 days
 MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
+ENABLE_EMAIL_NOTIFICATIONS = str(os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "false")).strip().lower() in ("1", "true", "yes", "on")
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 
 # Defaults (can be overridden per-job)
@@ -258,6 +259,42 @@ def send_result_email(
         logger.info("[email] sent to=%s group_id=%s", to_email, group_id)
         return True, "sent"
     except Exception as e:
+        # Fallback: if Raw email is denied, send plain email without attachments.
+        err_str = str(e)
+        if "SendRawEmail" in err_str and "AccessDenied" in err_str:
+            try:
+                ses.send_email(
+                    Source=SES_FROM_EMAIL,
+                    Destination={"ToAddresses": [to_email]},
+                    Message={
+                        "Subject": {"Data": subject, "Charset": "UTF-8"},
+                        "Body": {
+                            "Text": {
+                                "Data": (
+                                    body_text
+                                    + "\n\nNote: Attachment could not be included due to SES permission. "
+                                      "Please use backup links above for report files."
+                                ),
+                                "Charset": "UTF-8",
+                            }
+                        },
+                    },
+                )
+                logger.warning(
+                    "[email] raw denied, sent fallback plain email to=%s group_id=%s",
+                    to_email,
+                    group_id,
+                )
+                return True, "sent_fallback_plain_email_no_attachment"
+            except Exception as e2:
+                logger.exception(
+                    "[email] fallback send_email failed to=%s group_id=%s err=%s",
+                    to_email,
+                    group_id,
+                    e2,
+                )
+                return False, f"send_failed_raw_and_fallback: {e2}"
+
         logger.exception("[email] send failed to=%s group_id=%s err=%s", to_email, group_id, e)
         return False, f"send_failed: {e}"
 
@@ -528,17 +565,20 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         skeleton_key = f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else ""
         report_en_key = outputs.get("reports", {}).get("EN", {}).get("docx_key", "")
         report_th_key = outputs.get("reports", {}).get("TH", {}).get("docx_key", "")
-        email_sent, email_status = send_result_email(
-            job,
-            {
-                "Dots video (MP4)": dots_key if dots_key and s3_key_exists(dots_key) else "",
-                "Skeleton video (MP4)": skeleton_key if skeleton_key and s3_key_exists(skeleton_key) else "",
-            },
-            {
-                "Report EN (DOCX)": report_en_key,
-                "Report TH (DOCX)": report_th_key,
-            },
-        )
+        if ENABLE_EMAIL_NOTIFICATIONS:
+            email_sent, email_status = send_result_email(
+                job,
+                {
+                    "Dots video (MP4)": dots_key if dots_key and s3_key_exists(dots_key) else "",
+                    "Skeleton video (MP4)": skeleton_key if skeleton_key and s3_key_exists(skeleton_key) else "",
+                },
+                {
+                    "Report EN (DOCX)": report_en_key,
+                    "Report TH (DOCX)": report_th_key,
+                },
+            )
+        else:
+            email_sent, email_status = False, "disabled_by_config"
         job["notification"] = {
             "notify_email": str(job.get("notify_email") or "").strip(),
             "sent": email_sent,
