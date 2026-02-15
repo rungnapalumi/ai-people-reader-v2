@@ -191,6 +191,93 @@ def s3_read_bytes(key: str) -> bytes:
     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
     return obj["Body"].read()
 
+def safe_s3_segment(value: str, fallback: str = "unknown") -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return fallback
+    out = []
+    for ch in raw:
+        if ch.isalnum() or ch in (".", "_", "-"):
+            out.append(ch)
+        elif ch in ("@",):
+            out.append("_at_")
+        elif ch in (" ", "/", "\\", ":"):
+            out.append("_")
+    normalized = "".join(out).strip("._-")
+    return normalized or fallback
+
+def s3_copy_if_exists(src_key: str, dest_key: str) -> bool:
+    if not src_key:
+        return False
+    if not s3_key_exists(src_key):
+        return False
+    s3.copy_object(
+        Bucket=AWS_BUCKET,
+        CopySource={"Bucket": AWS_BUCKET, "Key": src_key},
+        Key=dest_key,
+    )
+    return True
+
+def sync_enterprise_package(
+    *,
+    group_id: str,
+    enterprise_folder: str,
+    notify_email: str,
+    dots_key: str,
+    skeleton_key: str,
+    report_en_key: str,
+    report_th_key: str,
+) -> Dict[str, Any]:
+    """
+    Keep a single S3 folder for enterprise handoff:
+      jobs/customer_packages/<enterprise_or_email>/<group_id>/
+    It contains dots/skeleton/videos + EN/TH report + manifest.json
+    """
+    gid = str(group_id or "").strip()
+    enterprise = str(enterprise_folder or "").strip()
+    email = str(notify_email or "").strip()
+    if not gid:
+        return {}
+
+    customer_segment = (
+        safe_s3_segment(enterprise, fallback="")
+        or safe_s3_segment(email, fallback="")
+        or "unassigned_customer"
+    )
+    package_prefix = f"{JOBS_PREFIX}/customer_packages/{customer_segment}/{gid}"
+
+    report_en_ext = ".pdf" if str(report_en_key or "").lower().endswith(".pdf") else ".docx"
+    report_th_ext = ".pdf" if str(report_th_key or "").lower().endswith(".pdf") else ".docx"
+    targets = {
+        "dots_video": {"source": dots_key, "dest": f"{package_prefix}/dots.mp4"},
+        "skeleton_video": {"source": skeleton_key, "dest": f"{package_prefix}/skeleton.mp4"},
+        "report_en": {"source": report_en_key, "dest": f"{package_prefix}/report_en{report_en_ext}"},
+        "report_th": {"source": report_th_key, "dest": f"{package_prefix}/report_th{report_th_ext}"},
+    }
+
+    copied: Dict[str, Any] = {}
+    for label, item in targets.items():
+        ok = s3_copy_if_exists(item["source"], item["dest"])
+        copied[label] = {
+            "source": item["source"],
+            "dest": item["dest"],
+            "ready": bool(ok),
+        }
+
+    manifest = {
+        "group_id": gid,
+        "enterprise_folder": enterprise,
+        "notify_email": email,
+        "customer_segment": customer_segment,
+        "package_prefix": package_prefix,
+        "updated_at": utc_now_iso(),
+        "files": copied,
+    }
+    manifest_key = f"{package_prefix}/manifest.json"
+    s3_put_json(manifest_key, manifest)
+    manifest["manifest_key"] = manifest_key
+    return manifest
+
 def _docx_filename_from_key(key: str, fallback: str) -> str:
     base = os.path.basename(str(key or "").strip())
     return base if base.lower().endswith(".docx") else fallback
@@ -369,6 +456,7 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     return {
         "job_id": str(job.get("job_id") or "").strip(),
         "group_id": group_id,
+        "enterprise_folder": str(job.get("enterprise_folder") or "").strip(),
         "notify_email": str(job.get("notify_email") or "").strip(),
         "dots_key": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
         "skeleton_key": f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else "",
@@ -441,6 +529,22 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 # Keep waiting until all outputs are ready.
                 update_finished_job_notification(job_id, False, "waiting_for_all_outputs")
                 continue
+
+            # Keep the enterprise handoff folder in sync once all outputs are ready.
+            try:
+                package_info = sync_enterprise_package(
+                    group_id=str(payload.get("group_id") or "").strip(),
+                    enterprise_folder=str(payload.get("enterprise_folder") or "").strip(),
+                    notify_email=notify_email,
+                    dots_key=str(payload.get("dots_key") or "").strip(),
+                    skeleton_key=str(payload.get("skeleton_key") or "").strip(),
+                    report_en_key=str(payload.get("report_en_key") or "").strip(),
+                    report_th_key=str(payload.get("report_th_key") or "").strip(),
+                )
+                if package_info:
+                    logger.info("[enterprise_package] synced for job_id=%s prefix=%s", job_id, package_info.get("package_prefix", ""))
+            except Exception as e:
+                logger.warning("[enterprise_package] sync failed in email queue job_id=%s: %s", job_id, e)
 
             sent, status = send_result_email(
                 {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
@@ -747,6 +851,32 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         job["analysis_engine"] = str(result.get("analysis_engine") or "unknown")
         job["duration_seconds"] = float(result.get("duration_seconds") or 0.0)
         job["analyzed_frames"] = int(result.get("analyzed_frames") or 0)
+
+        # Enterprise package: one folder per (notify_email, group_id) for client handoff.
+        group_id = str(job.get("group_id") or "").strip()
+        enterprise_folder = str(job.get("enterprise_folder") or "").strip()
+        notify_email = str(job.get("notify_email") or "").strip()
+        if group_id:
+            en_report = outputs.get("reports", {}).get("EN", {}) or {}
+            th_report = outputs.get("reports", {}).get("TH", {}) or {}
+            dots_key = f"jobs/output/groups/{group_id}/dots.mp4"
+            skeleton_key = f"jobs/output/groups/{group_id}/skeleton.mp4"
+            report_en_key = str(en_report.get("docx_key") or en_report.get("pdf_key") or "").strip()
+            report_th_key = str(th_report.get("docx_key") or th_report.get("pdf_key") or "").strip()
+            try:
+                package_info = sync_enterprise_package(
+                    group_id=group_id,
+                    enterprise_folder=enterprise_folder,
+                    notify_email=notify_email,
+                    dots_key=dots_key,
+                    skeleton_key=skeleton_key,
+                    report_en_key=report_en_key,
+                    report_th_key=report_th_key,
+                )
+                if package_info:
+                    job["enterprise_package"] = package_info
+            except Exception as e:
+                logger.warning("[enterprise_package] initial sync failed for group_id=%s: %s", group_id, e)
 
         # Notification flow:
         # - report job finishes normally

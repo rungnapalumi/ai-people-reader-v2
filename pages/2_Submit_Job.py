@@ -169,7 +169,13 @@ def build_output_keys(group_id: str) -> Dict[str, str]:
         "debug_th": base + "debug_th.json",
     }
 
-def enqueue_report_only_job(group_id: str, client_name: str, report_style: str = "full", report_format: str = "docx") -> str:
+def enqueue_report_only_job(
+    group_id: str,
+    client_name: str,
+    report_style: str = "full",
+    report_format: str = "docx",
+    enterprise_folder: str = "",
+) -> str:
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
     if not s3_key_exists(input_key):
         raise RuntimeError(f"Input video not found for group_id={group_id}")
@@ -192,6 +198,7 @@ def enqueue_report_only_job(group_id: str, client_name: str, report_style: str =
         "report_style": report_style,
         "report_format": report_format,
         "priority": 1,
+        "enterprise_folder": (enterprise_folder or "").strip(),
     }
     return enqueue_legacy_job(job_report)
 
@@ -435,6 +442,12 @@ st.caption("Upload your video once, then click **Run Analysis** to generate dots
 
 with st.expander("Optional: User Name (ชื่อผู้ใช้) — ใช้สำหรับติดตามงาน", expanded=False):
     user_name = st.text_input("Enter User Name", value="", placeholder="e.g., Rung / Founder / Co-Founder")
+    enterprise_folder = st.text_input(
+        "Enterprise Folder (ชื่อโฟลเดอร์ลูกค้าองค์กร)",
+        value="",
+        placeholder="e.g., ttb / acme_group",
+        help="ถ้ากรอก ระบบจะรวมทุกงานของลูกค้าไว้ที่ jobs/customer_packages/<enterprise_folder>/<group_id>/",
+    )
     notify_email = st.text_input(
         "Notification Email (สำหรับส่งผลลัพธ์อัตโนมัติ)",
         value="",
@@ -540,6 +553,7 @@ if run:
         "report_style": "simple" if report_type_ui == "Simple" else "full",
         "report_format": "pdf" if report_file_ui == "PDF" else "docx",
         "notify_email": (notify_email or "").strip(),
+        "enterprise_folder": (enterprise_folder or "").strip(),
     }
 
     try:
@@ -643,6 +657,7 @@ if videos_ready and not reports_ready:
                 client_name=guessed_name,
                 report_style=rerun_style,
                 report_format=rerun_format,
+                enterprise_folder=(enterprise_folder or "").strip(),
             )
             st.success(f"Queued report job again ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:
