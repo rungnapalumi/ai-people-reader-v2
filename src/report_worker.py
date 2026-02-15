@@ -33,6 +33,7 @@ from typing import Optional, Dict, Any, Iterable, List, Tuple
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
+from html import escape
 
 import boto3
 
@@ -252,6 +253,39 @@ def send_result_email(
     msg["From"] = SES_FROM_EMAIL
     msg["To"] = to_email
     msg.attach(MIMEText(body_text, "plain", "utf-8"))
+
+    # Add HTML body to avoid URL wrapping issues in email clients.
+    html_video_rows = []
+    for label, key in video_keys.items():
+        if key:
+            vname = "dots.mp4" if "Dots" in label else "skeleton.mp4"
+            url = presigned_get_url(key, filename=vname)
+            html_video_rows.append(f"<li><a href=\"{escape(url)}\">{escape(label)}</a></li>")
+    html_report_rows = []
+    for label, key in report_docx_keys.items():
+        if key:
+            if str(key).lower().endswith(".pdf"):
+                rname = "report_en.pdf" if "EN" in label else "report_th.pdf"
+            else:
+                rname = "report_en.docx" if "EN" in label else "report_th.docx"
+            url = presigned_get_url(key, filename=rname)
+            html_report_rows.append(f"<li><a href=\"{escape(url)}\">{escape(label)}</a></li>")
+
+    body_html = f"""
+<html>
+  <body>
+    <p><b>Job ID:</b> {escape(job_id)}<br/>
+       <b>Group ID:</b> {escape(group_id)}</p>
+    <p>Attached files:<br/>- Report EN<br/>- Report TH</p>
+    <p><b>Video links</b></p>
+    <ul>{''.join(html_video_rows) if html_video_rows else '<li>Not available</li>'}</ul>
+    <p><b>Backup report links</b></p>
+    <ul>{''.join(html_report_rows) if html_report_rows else '<li>Not available</li>'}</ul>
+    <p>Links expire in 7 days.</p>
+  </body>
+</html>
+"""
+    msg.attach(MIMEText(body_html, "html", "utf-8"))
 
     # Attach report files (DOCX/PDF) if available and not too large.
     for label, key in report_docx_keys.items():
