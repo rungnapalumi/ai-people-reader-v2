@@ -159,108 +159,110 @@ def validate_video_file(path: str) -> None:
         raise RuntimeError(f"Output video duration too short ({duration:.3f}s): {path}")
 
 
-def transcode_to_browser_mp4(input_path: str, output_path: str, profile: str = "universal") -> None:
-    """
-    Convert to universal-delivery MP4 (H.264 + AAC + yuv420p + faststart).
-    This avoids codec compatibility issues from OpenCV mp4v output.
-    A silent AAC track is added to maximize compatibility for link previews
-    and strict players that struggle with video-only MP4 streams.
-    We also normalize to <=720p and 30fps CFR to reduce decoder stress on
-    in-app/mobile browsers while preserving reliable playback from links.
-    """
-    ffmpeg_bin = shutil.which("ffmpeg")
-    if not ffmpeg_bin:
-        raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
-
-    if str(profile).strip().lower() == "legacy_dots":
-        # Keep dots on previously stable settings that were known to playback.
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-i",
-            input_path,
-            "-vf",
-            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
-            "-c:v",
-            "libx264",
-            "-profile:v",
-            "baseline",
-            "-level",
-            "3.0",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-movflags",
-            "+faststart",
-            "-vsync",
-            "cfr",
-            "-an",
-            output_path,
-        ]
-    else:
-        # Use strict profile for skeleton/client links.
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-i",
-            input_path,
-            "-f",
-            "lavfi",
-            "-i",
-            "anullsrc=channel_layout=stereo:sample_rate=48000",
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-vf",
-            (
-                "scale='if(gt(iw,1280),1280,iw)':'if(gt(ih,720),720,ih)':"
-                "force_original_aspect_ratio=decrease,"
-                "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
-                "fps=30,format=yuv420p"
-            ),
-            "-c:v",
-            "libx264",
-            "-profile:v",
-            "main",
-            "-level",
-            "4.0",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "24",
-            "-maxrate",
-            "2500k",
-            "-bufsize",
-            "5000k",
-            "-g",
-            "60",
-            "-keyint_min",
-            "60",
-            "-sc_threshold",
-            "0",
-            "-movflags",
-            "+faststart",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-            "-shortest",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            "30",
-            output_path,
-        ]
+def _run_ffmpeg_transcode(cmd: List[str]) -> None:
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg transcode failed: {proc.stderr[-400:]}")
 
+
+def transcode_dots_mp4(input_path: str, output_path: str) -> None:
+    """Stable dots profile (kept isolated so skeleton changes never affect dots)."""
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i",
+        input_path,
+        "-vf",
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        "-c:v",
+        "libx264",
+        "-profile:v",
+        "baseline",
+        "-level",
+        "3.0",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-movflags",
+        "+faststart",
+        "-vsync",
+        "cfr",
+        "-an",
+        output_path,
+    ]
+    _run_ffmpeg_transcode(cmd)
+    validate_video_file(output_path)
+
+
+def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
+    """Strict skeleton profile for client link compatibility."""
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i",
+        input_path,
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-vf",
+        (
+            "scale='if(gt(iw,1280),1280,iw)':'if(gt(ih,720),720,ih)':"
+            "force_original_aspect_ratio=decrease,"
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
+            "fps=30,format=yuv420p"
+        ),
+        "-c:v",
+        "libx264",
+        "-profile:v",
+        "main",
+        "-level",
+        "4.0",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "24",
+        "-maxrate",
+        "2500k",
+        "-bufsize",
+        "5000k",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60",
+        "-sc_threshold",
+        "0",
+        "-movflags",
+        "+faststart",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "96k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-shortest",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "30",
+        output_path,
+    ]
+    _run_ffmpeg_transcode(cmd)
     validate_video_file(output_path)
 
 
@@ -610,7 +612,7 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
             out_path = os.path.join(td, "dots.mp4")
             generate_dots_video(in_path, raw_path)
             validate_video_file(raw_path)
-            transcode_to_browser_mp4(raw_path, out_path, profile="legacy_dots")
+            transcode_dots_mp4(raw_path, out_path)
             s3_upload_file(out_path, out_key, "video/mp4")
             return {"ok": True, "mode": "dots", "output_key": out_key}
 
@@ -620,7 +622,7 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
             out_path = os.path.join(td, "skeleton.mp4")
             generate_skeleton_video(in_path, raw_path)
             validate_video_file(raw_path)
-            transcode_to_browser_mp4(raw_path, out_path, profile="universal")
+            transcode_skeleton_mp4(raw_path, out_path)
             s3_upload_file(out_path, out_key, "video/mp4")
             return {"ok": True, "mode": "skeleton", "output_key": out_key}
 
