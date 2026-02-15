@@ -149,11 +149,14 @@ def validate_video_file(path: str) -> None:
         raise RuntimeError(f"Cannot open output video: {path}")
     frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    duration = (frames / fps) if fps > 0 else 0.0
     cap.release()
     if frames <= 0:
         raise RuntimeError(f"Output video has no frames: {path}")
     if fps <= 0:
         raise RuntimeError(f"Output video has invalid fps: {path}")
+    if duration <= 0.2:
+        raise RuntimeError(f"Output video duration too short ({duration:.3f}s): {path}")
 
 
 def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
@@ -172,10 +175,18 @@ def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
         input_path,
         "-c:v",
         "libx264",
+        "-profile:v",
+        "baseline",
+        "-level",
+        "3.0",
         "-pix_fmt",
         "yuv420p",
         "-movflags",
         "+faststart",
+        "-r",
+        "30",
+        "-g",
+        "60",
         "-an",
         output_path,
     ]
