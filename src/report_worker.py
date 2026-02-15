@@ -73,7 +73,6 @@ SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "").strip()
 EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800"))  # up to 7 days
 MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
-EMAIL_RETRY_INTERVAL_SEC = int(os.getenv("EMAIL_RETRY_INTERVAL_SEC", "60"))
 
 # Defaults (can be overridden per-job)
 DEFAULT_ANALYSIS_MODE = os.getenv("ANALYSIS_MODE", "real").strip().lower()  # "real" or "fallback"
@@ -189,9 +188,11 @@ def send_result_email(
         logger.warning("[email] skip: SES_FROM_EMAIL is not configured")
         return False, "missing_ses_from_email"
 
+    job_id = str(job.get("job_id") or "").strip()
     group_id = str(job.get("group_id") or "").strip()
-    subject = f"AI People Reader - Results Ready ({group_id})"
+    subject = f"AI People Reader - Results Ready ({group_id or job_id})"
     lines = [
+        f"Job ID: {job_id}",
         f"Your analysis results are ready for group: {group_id}",
         "",
         "Attached files:",
@@ -259,122 +260,6 @@ def send_result_email(
     except Exception as e:
         logger.exception("[email] send failed to=%s group_id=%s err=%s", to_email, group_id, e)
         return False, f"send_failed: {e}"
-
-def _extract_notification_keys(job: Dict[str, Any]) -> Dict[str, str]:
-    group_id = str(job.get("group_id") or "").strip()
-    outputs = job.get("outputs") or {}
-    report_en_key = outputs.get("reports", {}).get("EN", {}).get("docx_key", "")
-    report_th_key = outputs.get("reports", {}).get("TH", {}).get("docx_key", "")
-    return {
-        "dots": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
-        "skeleton": f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else "",
-        "report_en": report_en_key,
-        "report_th": report_th_key,
-    }
-
-def _all_outputs_ready_for_email(job: Dict[str, Any]) -> bool:
-    keys = _extract_notification_keys(job)
-    required = [keys["dots"], keys["skeleton"], keys["report_en"], keys["report_th"]]
-    required = [k for k in required if k]
-    if not required:
-        return False
-    return all(s3_key_exists(k) for k in required)
-
-def try_send_email_if_all_outputs_ready(job: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Best-effort email sender:
-    - Never blocks job completion.
-    - Sends only when all outputs are already available.
-    - Stores status in job["notification"] for later retries.
-    """
-    notify_email = str(job.get("notify_email") or "").strip()
-    if not notify_email:
-        job["notification"] = {
-            "notify_email": "",
-            "sent": False,
-            "status": "skipped_no_notify_email",
-            "updated_at": utc_now_iso(),
-        }
-        return job
-
-    if not _all_outputs_ready_for_email(job):
-        job["notification"] = {
-            "notify_email": notify_email,
-            "sent": False,
-            "status": "waiting_for_all_outputs",
-            "updated_at": utc_now_iso(),
-        }
-        return job
-
-    keys = _extract_notification_keys(job)
-    email_sent, email_status = send_result_email(
-        job,
-        {
-            "Dots video (MP4)": keys["dots"],
-            "Skeleton video (MP4)": keys["skeleton"],
-        },
-        {
-            "Report EN (DOCX)": keys["report_en"],
-            "Report TH (DOCX)": keys["report_th"],
-        },
-    )
-    job["notification"] = {
-        "notify_email": notify_email,
-        "sent": email_sent,
-        "status": email_status,
-        "updated_at": utc_now_iso(),
-    }
-    return job
-
-def retry_pending_notifications(max_jobs: int = 30) -> None:
-    """
-    Scan finished report jobs and retry email when status is unsent.
-    This guarantees eventual send once all outputs are complete, without blocking any job.
-    """
-    scanned = 0
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=FINISHED_PREFIX):
-        for item in page.get("Contents", []):
-            key = item.get("Key", "")
-            if not key.endswith(".json"):
-                continue
-            if scanned >= max_jobs:
-                return
-            scanned += 1
-            try:
-                job = s3_get_json(key, log_key=False)
-            except Exception:
-                continue
-
-            mode = str(job.get("mode") or "").strip().lower()
-            if mode not in ("report", "report_th_en", "report_generator"):
-                continue
-
-            notify_email = str(job.get("notify_email") or "").strip()
-            if not notify_email:
-                continue
-
-            notif = job.get("notification") or {}
-            if bool(notif.get("sent")):
-                continue
-
-            # Only retry when there is a chance to succeed.
-            status = str(notif.get("status") or "")
-            if status and not (
-                status.startswith("waiting_for_all_outputs")
-                or status.startswith("send_failed")
-                or status.startswith("missing_ses_from_email")
-            ):
-                continue
-
-            updated_job = try_send_email_if_all_outputs_ready(job)
-            if (updated_job.get("notification") or {}) != notif:
-                s3_put_json(key, updated_job)
-                logger.info(
-                    "[email-retry] key=%s status=%s",
-                    key,
-                    (updated_job.get("notification") or {}).get("status"),
-                )
 
 
 def list_pending_json_keys() -> Iterable[str]:
@@ -637,8 +522,29 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         job["duration_seconds"] = float(result.get("duration_seconds") or 0.0)
         job["analyzed_frames"] = int(result.get("analyzed_frames") or 0)
 
-        # Best-effort notification: never blocks finishing this report job.
-        job = try_send_email_if_all_outputs_ready(job)
+        # Best-effort email: send once from this report job without queue scanning/retry.
+        group_id = str(job.get("group_id") or "").strip()
+        dots_key = f"jobs/output/groups/{group_id}/dots.mp4" if group_id else ""
+        skeleton_key = f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else ""
+        report_en_key = outputs.get("reports", {}).get("EN", {}).get("docx_key", "")
+        report_th_key = outputs.get("reports", {}).get("TH", {}).get("docx_key", "")
+        email_sent, email_status = send_result_email(
+            job,
+            {
+                "Dots video (MP4)": dots_key if dots_key and s3_key_exists(dots_key) else "",
+                "Skeleton video (MP4)": skeleton_key if skeleton_key and s3_key_exists(skeleton_key) else "",
+            },
+            {
+                "Report EN (DOCX)": report_en_key,
+                "Report TH (DOCX)": report_th_key,
+            },
+        )
+        job["notification"] = {
+            "notify_email": str(job.get("notify_email") or "").strip(),
+            "sent": email_sent,
+            "status": email_status,
+            "updated_at": utc_now_iso(),
+        }
         
         # Debug: Log the outputs structure
         logger.info("[report] Saving outputs to job: %s", json.dumps(outputs, indent=2))
@@ -711,18 +617,12 @@ def main() -> None:
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)
 
-    last_email_retry_at = 0.0
     while True:
         try:
             job_key = find_one_pending_job_key()
             if job_key:
                 process_job(job_key)
             else:
-                # Retry unsent notifications from finished report jobs at a lower frequency.
-                now_ts = time.time()
-                if (now_ts - last_email_retry_at) >= EMAIL_RETRY_INTERVAL_SEC:
-                    retry_pending_notifications(max_jobs=30)
-                    last_email_retry_at = now_ts
                 time.sleep(POLL_INTERVAL)
         except Exception as exc:
             logger.exception("[main] Unexpected error: %s", exc)
