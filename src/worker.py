@@ -200,7 +200,7 @@ def transcode_dots_mp4(input_path: str, output_path: str) -> None:
 
 
 def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
-    """Ultra-compatible skeleton profile for client link playback."""
+    """Ultra-compatible skeleton profile for browser playback from links."""
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
         raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
@@ -210,6 +210,14 @@ def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
         "-y",
         "-i",
         input_path,
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
         "-vf",
         (
             "scale='if(gt(iw,854),854,iw)':'if(gt(ih,480),480,ih)':"
@@ -223,6 +231,8 @@ def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
         "baseline",
         "-level",
         "3.0",
+        "-x264-params",
+        "bframes=0:ref=1:cabac=0:keyint=48:min-keyint=48:scenecut=0",
         "-preset",
         "veryfast",
         "-crf",
@@ -241,7 +251,15 @@ def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
         "+faststart",
         "-vsync",
         "cfr",
-        "-an",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-shortest",
         "-r",
         "24",
         output_path,
