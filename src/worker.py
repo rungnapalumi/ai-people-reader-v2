@@ -161,8 +161,10 @@ def validate_video_file(path: str) -> None:
 
 def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
     """
-    Convert to browser-safe MP4 (H.264 + yuv420p + faststart).
+    Convert to browser-safe MP4 (H.264 + AAC + yuv420p + faststart).
     This avoids codec compatibility issues from OpenCV mp4v output.
+    A silent AAC track is added to maximize compatibility for link previews
+    and strict players that struggle with video-only MP4 streams.
     """
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
@@ -173,6 +175,10 @@ def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
         "-y",
         "-i",
         input_path,
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
         "-vf",
         "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
         "-c:v",
@@ -180,7 +186,7 @@ def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
         "-profile:v",
         "baseline",
         "-level",
-        "3.0",
+        "3.1",
         "-preset",
         "veryfast",
         "-crf",
@@ -189,7 +195,11 @@ def transcode_to_browser_mp4(input_path: str, output_path: str) -> None:
         "+faststart",
         "-vsync",
         "cfr",
-        "-an",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-shortest",
         output_path,
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
