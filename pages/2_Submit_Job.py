@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 
 import streamlit as st
 import boto3
+from boto3.s3.transfer import TransferConfig
 
 
 # -------------------------
@@ -45,6 +46,12 @@ if not AWS_BUCKET:
     st.stop()
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
+S3_UPLOAD_CONFIG = TransferConfig(
+    multipart_threshold=8 * 1024 * 1024,
+    multipart_chunksize=8 * 1024 * 1024,
+    max_concurrency=4,
+    use_threads=True,
+)
 
 JOBS_PENDING_PREFIX = "jobs/pending/"
 JOBS_PROCESSING_PREFIX = "jobs/processing/"
@@ -93,6 +100,18 @@ def guess_content_type(filename: str) -> str:
 
 def s3_put_bytes(key: str, data: bytes, content_type: str) -> None:
     s3.put_object(Bucket=AWS_BUCKET, Key=key, Body=data, ContentType=content_type)
+
+def s3_upload_stream(key: str, file_obj: Any, content_type: str) -> None:
+    # Stream multipart upload instead of loading full file bytes into app memory.
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    s3.upload_fileobj(
+        Fileobj=file_obj,
+        Bucket=AWS_BUCKET,
+        Key=key,
+        ExtraArgs={"ContentType": content_type},
+        Config=S3_UPLOAD_CONFIG,
+    )
 
 
 def s3_put_json(key: str, payload: Dict[str, Any]) -> None:
@@ -502,9 +521,9 @@ if run:
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
 
     try:
-        s3_put_bytes(
+        s3_upload_stream(
             key=input_key,
-            data=uploaded.getvalue(),
+            file_obj=uploaded,
             content_type=guess_content_type(uploaded.name or "input.mp4"),
         )
     except Exception as e:
