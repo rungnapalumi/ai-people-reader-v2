@@ -5,6 +5,8 @@ libxext6
 libxrender-dev
 libgomp1
 ffmpeg
+fonts-noto-core
+fonts-thai-tlwg
 
 
 

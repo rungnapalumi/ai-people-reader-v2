@@ -870,7 +870,14 @@ def generate_reports_for_lang(
     pdf_bytes = None
     pdf_out_path = os.path.join(out_dir, f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf")
     try:
-        build_pdf_report(report, pdf_out_path, graph1_path=graph1_path, graph2_path=graph2_path, lang=lang_code)
+        build_pdf_report(
+            report,
+            pdf_out_path,
+            graph1_path=graph1_path,
+            graph2_path=graph2_path,
+            lang=lang_code,
+            report_style=report_style,
+        )
         if os.path.exists(pdf_out_path):
             with open(pdf_out_path, "rb") as f:
                 pdf_bytes = f.read()

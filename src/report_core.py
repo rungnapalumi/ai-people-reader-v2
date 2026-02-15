@@ -1203,11 +1203,20 @@ def build_docx_report(
     # Save
     doc.save(output_bio)
 
-def build_pdf_report(report: ReportData, output_path: str, graph1_path: str, graph2_path: str, lang: str = "en"):
-    """Build a simple PDF report (text-first; graph embedding is optional)."""
+def build_pdf_report(
+    report: ReportData,
+    output_path: str,
+    graph1_path: str,
+    graph2_path: str,
+    lang: str = "en",
+    report_style: str = "full",
+):
+    """Build PDF report aligned with DOCX simple/full text structure (no graph embedding)."""
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.pdfgen import canvas
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
     except Exception as e:
         raise RuntimeError(f"reportlab is required for PDF generation: {e}")
 
@@ -1216,35 +1225,123 @@ def build_pdf_report(report: ReportData, output_path: str, graph1_path: str, gra
     x_left = 50
     y = height - 60
 
+    is_simple = str(report_style or "full").strip().lower().startswith("simple")
+    is_thai = (lang == "th")
+    regular_font = "Helvetica"
+    bold_font = "Helvetica-Bold"
+    requires_unicode_font = False
+
+    def _first_existing(paths: list) -> str:
+        for p in paths:
+            if p and os.path.exists(p):
+                return p
+        return ""
+
+    def _register_ttf(font_name: str, path: str) -> bool:
+        if not path:
+            return False
+        try:
+            pdfmetrics.getFont(font_name)
+            return True
+        except Exception:
+            pass
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, path))
+            return True
+        except Exception:
+            return False
+
+    if is_thai:
+        thai_regular_candidates = [
+            os.getenv("PDF_THAI_FONT_PATH", "").strip(),
+            os.getenv("THAI_FONT_PATH", "").strip(),
+            os.getenv("REPORT_THAI_FONT_PATH", "").strip(),
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
+            "/usr/share/fonts/truetype/thai/Sarabun-Regular.ttf",
+            "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+        ]
+        thai_bold_candidates = [
+            os.getenv("PDF_THAI_FONT_BOLD_PATH", "").strip(),
+            os.getenv("THAI_FONT_BOLD_PATH", "").strip(),
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
+            "/usr/share/fonts/truetype/thai/Sarabun-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Garuda-Bold.ttf",
+        ]
+
+        thai_regular = _first_existing(thai_regular_candidates)
+        thai_bold = _first_existing(thai_bold_candidates)
+        if not thai_bold:
+            thai_bold = thai_regular
+
+        ok_regular = _register_ttf("ThaiPDFRegular", thai_regular)
+        ok_bold = _register_ttf("ThaiPDFBold", thai_bold) if thai_bold else False
+        if not ok_regular:
+            raise RuntimeError(
+                "Thai font not found for PDF. Set PDF_THAI_FONT_PATH to a valid .ttf "
+                "(e.g., NotoSansThai-Regular.ttf or Sarabun-Regular.ttf)."
+            )
+        regular_font = "ThaiPDFRegular"
+        bold_font = "ThaiPDFBold" if ok_bold else "ThaiPDFRegular"
+        requires_unicode_font = True
+
     def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
-        font = "Helvetica-Bold" if bold else "Helvetica"
+        if y <= 70:
+            c.showPage()
+            y = height - 60
+        font = bold_font if bold else regular_font
         c.setFont(font, size)
-        # Keep PDF robust without requiring extra Unicode font files.
-        safe = str(text).encode("latin-1", "replace").decode("latin-1")
+        if requires_unicode_font:
+            safe = str(text)
+        else:
+            # Keep PDF robust without requiring extra Unicode font files.
+            safe = str(text).encode("latin-1", "replace").decode("latin-1")
         c.drawString(x_left, y, safe)
         y -= gap
 
-    write_line("AI People Reader - Presentation Analysis Report", size=16, bold=True, gap=24)
-    write_line(f"Client Name: {report.client_name}", bold=True)
-    write_line(f"Analysis Date: {report.analysis_date}")
-    write_line(f"Duration: {report.video_length_str}", gap=24)
+    def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
+        for line in lines:
+            write_line(line, size=size, bold=bold, gap=gap)
 
-    write_line("First Impression", size=13, bold=True, gap=20)
+    title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report"
+    write_line(title, size=16, bold=True, gap=24)
+    write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
+    write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {report.analysis_date}")
+    write_line(f"{'ระยะเวลา' if is_thai else 'Duration'}: {report.video_length_str}", gap=22)
+    write_line("Detailed Analysis", size=13, bold=True, gap=20)
+
+    # First impression sections (same narrative style as DOCX simple).
+    write_line("1. First impression", size=12, bold=True, gap=18)
     if report.first_impression:
         fi = report.first_impression
-        write_line(f"- Eye Contact: {fi.eye_contact_pct:.1f}%")
-        write_line(f"- Uprightness: {fi.upright_pct:.1f}%")
-        write_line(f"- Stance: {fi.stance_stability:.1f}/100", gap=24)
+        eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
+        up_lines = generate_uprightness_text_th(fi.upright_pct) if is_thai else generate_uprightness_text(fi.upright_pct)
+        st_lines = generate_stance_text_th(fi.stance_stability) if is_thai else generate_stance_text(fi.stance_stability)
+
+        write_line("Eye Contact", bold=True, gap=16)
+        write_block(eye_lines, gap=14)
+        write_line("Uprightness", bold=True, gap=16)
+        write_block(up_lines, gap=14)
+        write_line("Stance", bold=True, gap=16)
+        write_block(st_lines[:2], gap=14)
     else:
-        write_line("- Not available", gap=24)
+        write_line("- Not available", gap=20)
 
-    write_line("Core Categories", size=13, bold=True, gap=20)
-    for idx, cat in enumerate(report.categories, start=1):
-        label = f"{idx}. {cat.name_en} - Scale: {cat.scale.capitalize()}"
-        write_line(label)
+    # Categories (same order as DOCX)
+    labels = [
+        "2. Engaging & Connecting",
+        "3. Confidence",
+        "4. Authority",
+    ]
+    for idx, cat in enumerate(report.categories[:3]):
+        write_line(labels[idx], size=12, bold=True, gap=18)
+        write_line(f"Scale: {cat.scale.capitalize()}", bold=True, gap=16)
+        if not is_simple:
+            write_line(f"Description: Detected {cat.positives} positive indicators out of {cat.total}", gap=16)
 
-    write_line("", gap=12)
+    write_line("", gap=10)
     write_line("Generated by AI People Reader", size=10)
     c.showPage()
     c.save()
