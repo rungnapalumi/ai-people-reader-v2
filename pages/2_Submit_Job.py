@@ -175,6 +175,7 @@ def enqueue_report_only_job(
     report_style: str = "full",
     report_format: str = "docx",
     enterprise_folder: str = "",
+    notify_email: str = "",
 ) -> str:
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
     if not s3_key_exists(input_key):
@@ -199,6 +200,7 @@ def enqueue_report_only_job(
         "report_format": report_format,
         "priority": 1,
         "enterprise_folder": (enterprise_folder or "").strip(),
+        "notify_email": (notify_email or "").strip(),
     }
     return enqueue_legacy_job(job_report)
 
@@ -440,19 +442,18 @@ ensure_session_defaults()
 st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
 st.caption("Upload your video once, then click **Run Analysis** to generate dots + skeleton + reports (EN/TH). (DOCX only)")
 
-with st.expander("Optional: User Name (ชื่อผู้ใช้) — ใช้สำหรับติดตามงาน", expanded=False):
-    user_name = st.text_input("Enter User Name", value="", placeholder="e.g., Rung / Founder / Co-Founder")
-    enterprise_folder = st.text_input(
-        "Enterprise Folder (ชื่อโฟลเดอร์ลูกค้าองค์กร)",
-        value="",
-        placeholder="e.g., ttb / acme_group",
-        help="ถ้ากรอก ระบบจะรวมทุกงานของลูกค้าไว้ที่ jobs/customer_packages/<enterprise_folder>/<group_id>/",
-    )
-    notify_email = st.text_input(
-        "Notification Email (สำหรับส่งผลลัพธ์อัตโนมัติ)",
-        value="",
-        placeholder="name@example.com",
-    )
+enterprise_folder = st.text_input(
+    "Organization Name",
+    value="",
+    placeholder="e.g., TTB / ACME Group",
+)
+user_name = st.text_input(
+    "User Name (Email Address)",
+    value="",
+    placeholder="name@example.com",
+    help="ใช้เป็นชื่อโฟลเดอร์งาน และเป็นอีเมลสำหรับส่งผลลัพธ์",
+)
+notify_email = (user_name or "").strip()
 
 report_type_ui = st.selectbox(
     "Report Type",
@@ -552,7 +553,7 @@ if run:
         "max_frames": 300,
         "report_style": "simple" if report_type_ui == "Simple" else "full",
         "report_format": "pdf" if report_file_ui == "PDF" else "docx",
-        "notify_email": (notify_email or "").strip(),
+        "notify_email": notify_email,
         "enterprise_folder": (enterprise_folder or "").strip(),
     }
 
@@ -652,12 +653,17 @@ if videos_ready and not reports_ready:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
             rerun_style = get_report_style_for_group(group_id)
             rerun_format = get_report_format_for_group(group_id)
+            rerun_email = notify_email
+            if not rerun_email:
+                prev_notif = get_report_notification_status(group_id)
+                rerun_email = str(prev_notif.get("notify_email") or "").strip()
             new_report_key = enqueue_report_only_job(
                 group_id=group_id,
                 client_name=guessed_name,
                 report_style=rerun_style,
                 report_format=rerun_format,
                 enterprise_folder=(enterprise_folder or "").strip(),
+                notify_email=rerun_email,
             )
             st.success(f"Queued report job again ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:

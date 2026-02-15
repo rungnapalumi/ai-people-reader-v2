@@ -230,7 +230,7 @@ def sync_enterprise_package(
 ) -> Dict[str, Any]:
     """
     Keep a single S3 folder for enterprise handoff:
-      jobs/customer_packages/<enterprise_or_email>/<group_id>/
+      jobs/customer_packages/<organization>/<user_email>/<group_id>/
     It contains dots/skeleton/videos + EN/TH report + manifest.json
     """
     gid = str(group_id or "").strip()
@@ -239,12 +239,9 @@ def sync_enterprise_package(
     if not gid:
         return {}
 
-    customer_segment = (
-        safe_s3_segment(enterprise, fallback="")
-        or safe_s3_segment(email, fallback="")
-        or "unassigned_customer"
-    )
-    package_prefix = f"{JOBS_PREFIX}/customer_packages/{customer_segment}/{gid}"
+    customer_segment = safe_s3_segment(enterprise, fallback="unassigned_customer")
+    user_segment = safe_s3_segment(email, fallback="unknown_user")
+    package_prefix = f"{JOBS_PREFIX}/customer_packages/{customer_segment}/{user_segment}/{gid}"
 
     report_en_ext = ".pdf" if str(report_en_key or "").lower().endswith(".pdf") else ".docx"
     report_th_ext = ".pdf" if str(report_th_key or "").lower().endswith(".pdf") else ".docx"
@@ -269,6 +266,7 @@ def sync_enterprise_package(
         "enterprise_folder": enterprise,
         "notify_email": email,
         "customer_segment": customer_segment,
+        "user_segment": user_segment,
         "package_prefix": package_prefix,
         "updated_at": utc_now_iso(),
         "files": copied,
