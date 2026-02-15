@@ -160,10 +160,26 @@ def s3_key_exists(key: str) -> bool:
     except Exception:
         return False
 
-def presigned_get_url(key: str, expires: int = EMAIL_LINK_EXPIRES_SECONDS) -> str:
+def guess_content_type(filename: str) -> str:
+    fn = (filename or "").lower()
+    if fn.endswith(".mp4"):
+        return "video/mp4"
+    if fn.endswith(".pdf"):
+        return "application/pdf"
+    if fn.endswith(".docx"):
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return "application/octet-stream"
+
+
+def presigned_get_url(key: str, expires: int = EMAIL_LINK_EXPIRES_SECONDS, filename: str = "") -> str:
+    params: Dict[str, Any] = {"Bucket": AWS_BUCKET, "Key": key}
+    if filename:
+        params["ResponseContentType"] = guess_content_type(filename)
+        # Inline helps browser attempt to stream video instead of forcing download.
+        params["ResponseContentDisposition"] = f'inline; filename="{filename}"'
     return s3.generate_presigned_url(
         ClientMethod="get_object",
-        Params={"Bucket": AWS_BUCKET, "Key": key},
+        Params=params,
         ExpiresIn=expires,
     )
 
@@ -206,13 +222,18 @@ def send_result_email(
     ]
     for label, key in video_keys.items():
         if key:
-            lines.append(f"- {label}: {presigned_get_url(key)}")
+            vname = "dots.mp4" if "Dots" in label else "skeleton.mp4"
+            lines.append(f"- {label}: {presigned_get_url(key, filename=vname)}")
 
     # Fallback links for report DOCX in case attachment cannot be included.
     report_link_lines: List[str] = []
     for label, key in report_docx_keys.items():
         if key:
-            report_link_lines.append(f"- {label}: {presigned_get_url(key)}")
+            if str(key).lower().endswith(".pdf"):
+                rname = "report_en.pdf" if "EN" in label else "report_th.pdf"
+            else:
+                rname = "report_en.docx" if "EN" in label else "report_th.docx"
+            report_link_lines.append(f"- {label}: {presigned_get_url(key, filename=rname)}")
 
     lines.extend([
         "",
