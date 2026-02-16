@@ -38,6 +38,7 @@ from email.mime.application import MIMEApplication
 from html import escape
 
 import boto3
+from botocore.config import Config
 
 # ------------------------------------------------------------
 # IMPORTANT:
@@ -114,7 +115,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("report_worker")
 
-s3 = boto3.client("s3", region_name=AWS_REGION)
+s3 = boto3.client(
+    "s3",
+    region_name=AWS_REGION,
+    config=Config(signature_version="s3v4"),
+)
 ses = boto3.client("ses", region_name=SES_REGION)
 
 def log_ses_runtime_context() -> None:

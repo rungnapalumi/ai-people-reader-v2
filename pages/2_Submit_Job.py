@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 import streamlit as st
 import boto3
 from boto3.s3.transfer import TransferConfig
+from botocore.config import Config
 
 
 # -------------------------
@@ -45,7 +46,11 @@ if not AWS_BUCKET:
     st.error("Missing AWS_BUCKET (or S3_BUCKET) environment variable in Render.")
     st.stop()
 
-s3 = boto3.client("s3", region_name=AWS_REGION)
+s3 = boto3.client(
+    "s3",
+    region_name=AWS_REGION,
+    config=Config(signature_version="s3v4"),
+)
 S3_UPLOAD_CONFIG = TransferConfig(
     multipart_threshold=8 * 1024 * 1024,
     multipart_chunksize=8 * 1024 * 1024,
