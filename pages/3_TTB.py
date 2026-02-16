@@ -785,7 +785,7 @@ with c1:
 
 with c2:
     st.markdown("### Reports")
-    selected_pdf = bool(outputs.get("report_en_pdf") or outputs.get("report_th_pdf"))
+    selected_pdf = (get_report_format_for_group(group_id) == "pdf")
     en_key = outputs.get("report_en_pdf", "") if selected_pdf else outputs.get("report_en_docx", "")
     th_key = outputs.get("report_th_pdf", "") if selected_pdf else outputs.get("report_th_docx", "")
     en_name = "report_en.pdf" if selected_pdf else "report_en.docx"
