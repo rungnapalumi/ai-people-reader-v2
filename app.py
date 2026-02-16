@@ -107,11 +107,12 @@ def _get_org_settings(org_name: str) -> Dict[str, str]:
         "organization_id": org_id,
         "report_style": style,
         "report_format": fmt,
+        "default_page": str(payload.get("default_page") or "").strip().lower(),
         "updated_at": str(payload.get("updated_at") or ""),
     }
 
 
-def _save_org_settings(org_name: str, report_style: str, report_format: str) -> str:
+def _save_org_settings(org_name: str, report_style: str, report_format: str, default_page: str = "") -> str:
     if not AWS_BUCKET:
         raise RuntimeError("Missing AWS_BUCKET (or S3_BUCKET)")
 
@@ -131,6 +132,7 @@ def _save_org_settings(org_name: str, report_style: str, report_format: str) -> 
         "organization_id": org_id,
         "report_style": style,
         "report_format": fmt,
+        "default_page": str(default_page or "").strip().lower(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     key = _org_settings_key(org_name)
@@ -166,6 +168,7 @@ def _list_org_settings(limit: int = 200) -> List[Dict[str, str]]:
                     "organization_id": str(payload.get("organization_id") or ""),
                     "report_style": str(payload.get("report_style") or ""),
                     "report_format": str(payload.get("report_format") or ""),
+                    "default_page": str(payload.get("default_page") or ""),
                     "updated_at": _to_local_time_display(payload.get("updated_at")),
                 }
             )
@@ -407,9 +410,23 @@ def _render_admin_panel() -> None:
 
     default_style_ui = "Simple" if existing_org_cfg.get("report_style") == "simple" else "Full"
     default_format_ui = "PDF" if existing_org_cfg.get("report_format") == "pdf" else "DOCX"
+    page_options = {
+        "Any page": "",
+        "AI People Reader page": "ai_people_reader",
+        "TTB page": "ttb",
+    }
+    existing_page_value = str(existing_org_cfg.get("default_page") or "").strip().lower()
+    existing_page_label = next((k for k, v in page_options.items() if v == existing_page_value), "Any page")
+
     with st.form("org_settings_form", clear_on_submit=False):
         report_style_ui = st.selectbox("Default Report Type", options=["Full", "Simple"], index=0 if default_style_ui == "Full" else 1)
         report_format_ui = st.selectbox("Default Report File", options=["DOCX", "PDF"], index=0 if default_format_ui == "DOCX" else 1)
+        default_page_ui = st.selectbox(
+            "Default Page",
+            options=list(page_options.keys()),
+            index=list(page_options.keys()).index(existing_page_label),
+            help="If set, that page will auto-fill this organization as default.",
+        )
         save_org = st.form_submit_button("Save Organization Settings", type="primary")
     if save_org:
         try:
@@ -417,6 +434,7 @@ def _render_admin_panel() -> None:
                 org_name=org_name,
                 report_style="simple" if report_style_ui == "Simple" else "full",
                 report_format="pdf" if report_format_ui == "PDF" else "docx",
+                default_page=page_options.get(default_page_ui, ""),
             )
             st.success(f"Saved organization settings: {saved_key}")
             st.rerun()

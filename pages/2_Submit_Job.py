@@ -216,8 +216,42 @@ def get_org_settings(org_name: str) -> Dict[str, str]:
         "organization_id": org_id,
         "report_style": style,
         "report_format": fmt,
+        "default_page": str(payload.get("default_page") or "").strip().lower(),
         "updated_at": str(payload.get("updated_at") or ""),
     }
+
+
+def list_org_settings() -> list:
+    rows = []
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=ORG_SETTINGS_PREFIX):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                payload = s3_read_json(key) or {}
+                style = str(payload.get("report_style") or "").strip().lower()
+                fmt = str(payload.get("report_format") or "").strip().lower()
+                if style not in ("full", "simple") or fmt not in ("docx", "pdf"):
+                    continue
+                rows.append(payload)
+    except Exception:
+        return []
+    return rows
+
+
+def get_default_org_for_page(page_key: str) -> str:
+    page_key = str(page_key or "").strip().lower()
+    if not page_key:
+        return ""
+    settings = list_org_settings()
+    # Prefer latest updated record when multiple organizations target same page.
+    settings.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
+    for s in settings:
+        if str(s.get("default_page") or "").strip().lower() == page_key:
+            return str(s.get("organization_name") or "").strip()
+    return ""
 
 
 def employee_registry_key(employee_id: str) -> str:
@@ -530,11 +564,15 @@ ensure_session_defaults()
 st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
 st.caption("Upload your video once, then click **Run Analysis** to generate dots + skeleton + reports (EN/TH).")
 
+page_default_org = get_default_org_for_page("ai_people_reader")
 enterprise_folder = st.text_input(
     "Organization Name",
-    value="",
+    value=page_default_org,
     placeholder="e.g., TTB / ACME Group",
+    disabled=bool(page_default_org),
 )
+if page_default_org:
+    st.caption(f"Default organization from admin page setting: {page_default_org}")
 user_name = st.text_input(
     "User Name (Email Address)",
     value="",
