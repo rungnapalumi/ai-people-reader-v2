@@ -35,6 +35,92 @@ from botocore.config import Config
 # -------------------------
 st.set_page_config(page_title="Video Analysis (วิเคราะห์วิดีโอ)", layout="wide")
 
+THEME_CSS = """
+<style>
+:root {
+  --bg-main: #2c2723;
+  --bg-soft: #3a332d;
+  --bg-card: #473e36;
+  --text-main: #e6d9c8;
+  --text-dim: #ccbda8;
+  --accent: #c9a67a;
+  --accent-strong: #b48d5f;
+  --border: #6d5c4e;
+}
+
+.stApp {
+  background: var(--bg-main);
+  color: var(--text-main);
+}
+
+[data-testid="stSidebar"] {
+  background: #28231f;
+  border-right: 1px solid var(--border);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: #f0e4d4 !important;
+}
+
+p, label, span, div {
+  color: var(--text-main);
+}
+
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-testid="stTextArea"] textarea {
+  background: var(--bg-soft) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+}
+
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+  background: var(--bg-soft) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+}
+
+[data-testid="stFileUploader"] section {
+  background: var(--bg-soft) !important;
+  border: 1px dashed var(--border) !important;
+}
+
+.stButton > button,
+.stDownloadButton > button,
+.stLinkButton > a {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong)) !important;
+  color: #231d17 !important;
+  border: 0 !important;
+  font-weight: 600 !important;
+}
+
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+[data-testid="stAlert"] {
+  background: var(--bg-card) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.stCaption {
+  color: var(--text-dim) !important;
+}
+</style>
+"""
+
+
+def apply_theme() -> None:
+    st.markdown(THEME_CSS, unsafe_allow_html=True)
+
+BANNER_PATH_CANDIDATES = [
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "top_banner.png"),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "banner.png"),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png"),
+]
+
 
 # -------------------------
 # Env / S3
@@ -74,6 +160,13 @@ EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
 # -------------------------
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def render_top_banner() -> None:
+    for path in BANNER_PATH_CANDIDATES:
+        if os.path.exists(path):
+            st.image(path, use_container_width=True)
+            return
 
 
 def new_job_id() -> str:
@@ -560,6 +653,8 @@ def infer_job_bucket_status(job_key: str) -> str:
 # UI
 # -------------------------
 ensure_session_defaults()
+apply_theme()
+render_top_banner()
 
 st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
 st.caption("Upload your video once, then click **Run Analysis** to generate dots + skeleton + reports (EN/TH).")

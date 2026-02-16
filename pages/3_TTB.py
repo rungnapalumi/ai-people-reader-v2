@@ -35,6 +35,103 @@ from botocore.config import Config
 # -------------------------
 st.set_page_config(page_title="Video Analysis (วิเคราะห์วิดีโอ)", layout="wide")
 
+THEME_CSS = """
+<style>
+:root {
+  --bg-main: #edf4ff;
+  --bg-soft: #ffffff;
+  --bg-card: #f5f9ff;
+  --text-main: #0f2e5d;
+  --text-dim: #5e7497;
+  --accent: #1f5fe0;
+  --accent-strong: #144bb9;
+  --border: #c5d8fb;
+}
+
+.stApp {
+  background: var(--bg-main);
+  color: var(--text-main);
+}
+
+[data-testid="stSidebar"] {
+  background: #e8f1ff;
+  border-right: 1px solid var(--border);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: #0c2a55 !important;
+}
+
+p, label, span, div {
+  color: var(--text-main);
+}
+
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-testid="stTextArea"] textarea {
+  background: var(--bg-soft) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 10px !important;
+}
+
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+  background: var(--bg-soft) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 10px !important;
+}
+
+[data-testid="stFileUploader"] section {
+  background: #f7fbff !important;
+  border: 1px dashed #8fb2ee !important;
+}
+
+.stButton > button,
+.stDownloadButton > button,
+.stLinkButton > a {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong)) !important;
+  color: #ffffff !important;
+  border: 0 !important;
+  font-weight: 600 !important;
+  border-radius: 10px !important;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover,
+.stLinkButton > a:hover {
+  filter: brightness(1.06);
+}
+
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+[data-testid="stAlert"] {
+  background: var(--bg-card) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 10px !important;
+}
+
+.stCaption {
+  color: var(--text-dim) !important;
+}
+</style>
+"""
+
+
+def apply_theme() -> None:
+    st.markdown(THEME_CSS, unsafe_allow_html=True)
+
+BANNER_PATH_CANDIDATES = [
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "top_banner.png"),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "banner.png"),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png"),
+]
+
 
 # -------------------------
 # Env / S3
@@ -74,6 +171,13 @@ EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
 # -------------------------
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def render_top_banner() -> None:
+    for path in BANNER_PATH_CANDIDATES:
+        if os.path.exists(path):
+            st.image(path, use_container_width=True)
+            return
 
 
 def new_job_id() -> str:
@@ -558,6 +662,8 @@ def infer_job_bucket_status(job_key: str) -> str:
 # UI
 # -------------------------
 ensure_session_defaults()
+apply_theme()
+render_top_banner()
 
 st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
 st.caption("Upload your video once, then click **Run Analysis** to generate dots + skeleton + reports (EN/TH).")

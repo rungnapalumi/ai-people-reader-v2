@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 from datetime import datetime, timezone
 from typing import Dict, List
 
@@ -8,6 +9,95 @@ import streamlit as st
 from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="AI People Reader V2", layout="wide")
+
+
+THEME_CSS = """
+<style>
+:root {
+  --bg-main: #2c2723;
+  --bg-soft: #3a332d;
+  --bg-card: #473e36;
+  --text-main: #e6d9c8;
+  --text-dim: #ccbda8;
+  --accent: #c9a67a;
+  --accent-strong: #b48d5f;
+  --border: #6d5c4e;
+}
+
+.stApp {
+  background: var(--bg-main);
+  color: var(--text-main);
+}
+
+[data-testid="stSidebar"] {
+  background: #28231f;
+  border-right: 1px solid var(--border);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: #f0e4d4 !important;
+}
+
+p, label, span, div {
+  color: var(--text-main);
+}
+
+[data-testid="stMarkdownContainer"] p {
+  color: var(--text-main);
+}
+
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-testid="stTextArea"] textarea {
+  background: var(--bg-soft) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+}
+
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+  background: var(--bg-soft) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+}
+
+[data-testid="stFileUploader"] section {
+  background: var(--bg-soft) !important;
+  border: 1px dashed var(--border) !important;
+}
+
+.stButton > button,
+.stDownloadButton > button {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong)) !important;
+  color: #231d17 !important;
+  border: 0 !important;
+  font-weight: 600 !important;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover {
+  filter: brightness(1.05);
+}
+
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+[data-testid="stAlert"] {
+  background: var(--bg-card) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.stCaption {
+  color: var(--text-dim) !important;
+}
+</style>
+"""
+
+
+def _apply_theme() -> None:
+    st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 # Sidebar page names can be customized here.
 HOME_PAGE_TITLE = "Admin"
@@ -24,9 +114,72 @@ AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 APP_LOCAL_TIMEZONE = os.getenv("APP_LOCAL_TIMEZONE", "Asia/Bangkok")
 
+BANNER_PATH_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), "assets", "top_banner.png"),
+    os.path.join(os.path.dirname(__file__), "assets", "banner.png"),
+    os.path.join(os.path.dirname(__file__), "Header.png"),
+]
+TTB_SIDEBAR_LOGO_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), "assets", "ttb_logo.png"),
+    os.path.join(os.path.dirname(__file__), "assets", "ttb.png"),
+]
+
 
 def _get_s3_client():
     return boto3.client("s3", region_name=AWS_REGION)
+
+
+def _render_top_banner() -> None:
+    for path in BANNER_PATH_CANDIDATES:
+        if os.path.exists(path):
+            st.image(path, use_container_width=True)
+            return
+
+
+def _inject_ttb_sidebar_logo() -> None:
+    logo_path = ""
+    for path in TTB_SIDEBAR_LOGO_CANDIDATES:
+        if os.path.exists(path):
+            logo_path = path
+            break
+    if not logo_path:
+        return
+
+    try:
+        with open(logo_path, "rb") as f:
+            logo_b64 = base64.b64encode(f.read()).decode("ascii")
+    except Exception:
+        return
+
+    st.markdown(
+        f"""
+<style>
+[data-testid="stSidebarNav"] a[aria-label="TTB"] p,
+[data-testid="stSidebarNav"] a[aria-label="TTB"] span,
+[data-testid="stSidebarNav"] button[aria-label="TTB"] p,
+[data-testid="stSidebarNav"] button[aria-label="TTB"] span {{
+  font-size: 0 !important;
+  line-height: 0 !important;
+}}
+
+[data-testid="stSidebarNav"] a[aria-label="TTB"] p::before,
+[data-testid="stSidebarNav"] a[aria-label="TTB"] span::before,
+[data-testid="stSidebarNav"] button[aria-label="TTB"] p::before,
+[data-testid="stSidebarNav"] button[aria-label="TTB"] span::before {{
+  content: "";
+  display: inline-block;
+  width: 60px;
+  height: 34px;
+  background-image: url("data:image/png;base64,{logo_b64}");
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: left center;
+  vertical-align: middle;
+}}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _get_local_tz():
@@ -531,6 +684,8 @@ def _render_admin_panel() -> None:
 
 
 def _render_home() -> None:
+    _apply_theme()
+    _render_top_banner()
     st.title("AI People Reader V2")
     st.caption("Go to left menu -> AI People Reader")
     _render_admin_panel()
@@ -544,6 +699,7 @@ if hasattr(st, "Page") and hasattr(st, "navigation"):
             st.Page("pages/3_TTB.py", title=TTB_PAGE_TITLE),
         ]
     )
+    _inject_ttb_sidebar_logo()
     nav.run()
 else:
     # Backward-compatible fallback for older Streamlit versions.
