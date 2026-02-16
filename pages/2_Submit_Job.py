@@ -65,6 +65,8 @@ JOBS_FAILED_PREFIX = "jobs/failed/"
 
 JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
+ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
+EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
 
 
 # -------------------------
@@ -180,6 +182,68 @@ def safe_slug(text: str, fallback: str = "user") -> str:
     return s if s else fallback
 
 
+def normalize_org_name(name: str) -> str:
+    text = (name or "").strip().lower()
+    if not text:
+        return ""
+    out = []
+    for ch in text:
+        if ch.isalnum() or ch in ("_", "-"):
+            out.append(ch)
+        elif ch.isspace():
+            out.append("_")
+    normalized = "".join(out).strip("_")
+    return normalized
+
+
+def org_settings_key(org_name: str) -> str:
+    org_id = normalize_org_name(org_name)
+    return f"{ORG_SETTINGS_PREFIX}{org_id}.json"
+
+
+def get_org_settings(org_name: str) -> Dict[str, str]:
+    """Return admin-configured report defaults for organization, if any."""
+    org_id = normalize_org_name(org_name)
+    if not org_id:
+        return {}
+    payload = s3_read_json(org_settings_key(org_name)) or {}
+    style = str(payload.get("report_style") or "").strip().lower()
+    fmt = str(payload.get("report_format") or "").strip().lower()
+    if style not in ("full", "simple") or fmt not in ("docx", "pdf"):
+        return {}
+    return {
+        "organization_name": str(payload.get("organization_name") or org_name).strip(),
+        "organization_id": org_id,
+        "report_style": style,
+        "report_format": fmt,
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+
+
+def employee_registry_key(employee_id: str) -> str:
+    emp = safe_slug(employee_id, fallback="")
+    return f"{EMPLOYEE_REGISTRY_PREFIX}{emp}.json" if emp else ""
+
+
+def save_employee_registry(
+    employee_id: str,
+    employee_email: str,
+    employee_password: str,
+    organization_name: str,
+) -> None:
+    key = employee_registry_key(employee_id)
+    if not key:
+        return
+    payload = {
+        "employee_id": (employee_id or "").strip(),
+        "employee_email": (employee_email or "").strip(),
+        "employee_password": (employee_password or "").strip(),
+        "organization_name": (organization_name or "").strip(),
+        "updated_at": utc_now_iso(),
+    }
+    s3_put_json(key, payload)
+
+
 def build_output_keys(group_id: str) -> Dict[str, str]:
     base = f"{JOBS_OUTPUT_PREFIX}groups/{group_id}/"
     return {
@@ -249,7 +313,7 @@ def get_report_style_for_group(group_id: str) -> str:
                             return style
     except Exception:
         pass
-    return "simple" if report_type_ui == "Simple" else "full"
+    return "full"
 
 def get_report_format_for_group(group_id: str) -> str:
     """Best-effort lookup of previously requested report_format for this group."""
@@ -272,7 +336,7 @@ def get_report_format_for_group(group_id: str) -> str:
                             return fmt
     except Exception:
         pass
-    return "pdf" if report_file_ui == "PDF" else "docx"
+    return "docx"
 
 
 def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
@@ -464,7 +528,7 @@ def infer_job_bucket_status(job_key: str) -> str:
 ensure_session_defaults()
 
 st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
-st.caption("Upload your video once, then click **Run Analysis** to generate dots + skeleton + reports (EN/TH). (DOCX only)")
+st.caption("Upload your video once, then click **Run Analysis** to generate dots + skeleton + reports (EN/TH).")
 
 enterprise_folder = st.text_input(
     "Organization Name",
@@ -478,19 +542,26 @@ user_name = st.text_input(
     help="ใช้เป็นชื่อโฟลเดอร์งาน และเป็นอีเมลสำหรับส่งผลลัพธ์",
 )
 notify_email = (user_name or "").strip()
+employee_id = st.text_input(
+    "Employee ID",
+    value="",
+    placeholder="e.g., EMP001",
+)
+employee_password = st.text_input(
+    "Password",
+    value="",
+    type="password",
+    placeholder="Enter employee password",
+)
 
-report_type_ui = st.selectbox(
-    "Report Type",
-    options=["Full", "Simple"],
-    index=0,
-    help="Full = include graphs + detailed numbers, Simple = no graphs and no detection totals.",
-)
-report_file_ui = st.selectbox(
-    "Report File",
-    options=["DOCX", "PDF"],
-    index=0,
-    help="Choose output report file format.",
-)
+org_settings = get_org_settings(enterprise_folder)
+
+if org_settings:
+    st.info(
+        "Using admin organization settings: "
+        f"Report Type = **{'Simple' if org_settings.get('report_style') == 'simple' else 'Full'}**, "
+        f"Report File = **{'PDF' if org_settings.get('report_format') == 'pdf' else 'DOCX'}**"
+    )
 
 uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
@@ -520,6 +591,18 @@ if run:
     if not uploaded:
         note.error("Please upload a video first.")
         st.stop()
+    if not notify_email:
+        note.error("Please enter User Name (Email Address).")
+        st.stop()
+    if not employee_id.strip():
+        note.error("Please enter Employee ID.")
+        st.stop()
+    if not employee_password.strip():
+        note.error("Please enter Password.")
+        st.stop()
+
+    effective_report_style = org_settings.get("report_style") if org_settings else "full"
+    effective_report_format = org_settings.get("report_format") if org_settings else "docx"
 
     base_user = safe_slug(user_name, fallback="user")
     group_id = f"{new_group_id()}__{base_user}"
@@ -547,6 +630,8 @@ if run:
         "input_key": input_key,
         "output_key": outputs["dots_video"],
         "user_name": user_name or "",
+        "employee_id": (employee_id or "").strip(),
+        "employee_email": notify_email,
     }
 
     job_skel = {
@@ -558,6 +643,8 @@ if run:
         "input_key": input_key,
         "output_key": outputs["skeleton_video"],
         "user_name": user_name or "",
+        "employee_id": (employee_id or "").strip(),
+        "employee_email": notify_email,
     }
 
     # Report job - handled by report_worker.py
@@ -575,13 +662,21 @@ if run:
         "analysis_mode": "real",  # Use real MediaPipe analysis
         "sample_fps": 5,
         "max_frames": 300,
-        "report_style": "simple" if report_type_ui == "Simple" else "full",
-        "report_format": "pdf" if report_file_ui == "PDF" else "docx",
+        "report_style": effective_report_style,
+        "report_format": effective_report_format,
         "notify_email": notify_email,
         "enterprise_folder": (enterprise_folder or "").strip(),
+        "employee_id": (employee_id or "").strip(),
+        "employee_email": notify_email,
     }
 
     try:
+        save_employee_registry(
+            employee_id=employee_id,
+            employee_email=notify_email,
+            employee_password=employee_password,
+            organization_name=enterprise_folder,
+        )
         k1 = enqueue_legacy_job(job_dots)
         k2 = enqueue_legacy_job(job_skel)
         k3 = enqueue_legacy_job(job_report)
@@ -602,7 +697,9 @@ if run:
         "report": k3,
     }
 
-    note.success(f"Submitted! group_id = {group_id}")
+    note.success(
+        f"Submitted! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}"
+    )
     st.info("Wait a bit, then press Refresh. หรือ copy group_id เก็บไว้ แล้ว paste กลับมาได้เสมอ")
 
 
@@ -654,7 +751,7 @@ with c1:
 
 with c2:
     st.markdown("### Reports")
-    selected_pdf = (report_file_ui == "PDF")
+    selected_pdf = bool(outputs.get("report_en_pdf") or outputs.get("report_th_pdf"))
     en_key = outputs.get("report_en_pdf", "") if selected_pdf else outputs.get("report_en_docx", "")
     th_key = outputs.get("report_th_pdf", "") if selected_pdf else outputs.get("report_th_docx", "")
     en_name = "report_en.pdf" if selected_pdf else "report_en.docx"
@@ -677,6 +774,10 @@ if videos_ready and not reports_ready:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
             rerun_style = get_report_style_for_group(group_id)
             rerun_format = get_report_format_for_group(group_id)
+            rerun_org_cfg = get_org_settings(enterprise_folder)
+            if rerun_org_cfg:
+                rerun_style = str(rerun_org_cfg.get("report_style") or rerun_style)
+                rerun_format = str(rerun_org_cfg.get("report_format") or rerun_format)
             rerun_email = notify_email
             if not rerun_email:
                 prev_notif = get_report_notification_status(group_id)
