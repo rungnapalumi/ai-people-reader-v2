@@ -1273,11 +1273,17 @@ def build_pdf_report(
         try:
             tt = TTFont(font_name, path)
             if require_thai:
-                # Ensure this font truly contains core Thai glyphs.
+                # Best-effort Thai glyph validation. Do not over-reject fonts when metadata
+                # differs between platforms; runtime rendering is the final authority.
                 required = [ord("ก"), ord("า"), ord("ไ"), ord("ย")]
+                cmap = getattr(tt.face, "charToGlyph", {}) or {}
                 widths = getattr(tt.face, "charWidths", {}) or {}
-                if any(cp not in widths for cp in required):
-                    return False
+                if cmap:
+                    if any((cp not in cmap) and (str(cp) not in cmap) for cp in required):
+                        return False
+                elif widths:
+                    if any((cp not in widths) and (str(cp) not in widths) for cp in required):
+                        return False
             pdfmetrics.registerFont(tt)
             return True
         except Exception:
@@ -1299,6 +1305,9 @@ def build_pdf_report(
             os.getenv("PDF_THAI_FONT_PATH", "").strip(),
             os.getenv("THAI_FONT_PATH", "").strip(),
             os.getenv("REPORT_THAI_FONT_PATH", "").strip(),
+            "/Library/Fonts/THSarabunNew.ttf",
+            "/Library/Fonts/Sarabun-Regular.ttf",
+            "/System/Library/Fonts/Supplemental/Thonburi.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
             "/usr/share/fonts/truetype/thai/Sarabun-Regular.ttf",
@@ -1310,6 +1319,10 @@ def build_pdf_report(
         thai_bold_candidates = [
             os.getenv("PDF_THAI_FONT_BOLD_PATH", "").strip(),
             os.getenv("THAI_FONT_BOLD_PATH", "").strip(),
+            os.getenv("REPORT_THAI_FONT_BOLD_PATH", "").strip(),
+            "/Library/Fonts/THSarabunNew Bold.ttf",
+            "/Library/Fonts/Sarabun-Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Thonburi Bold.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
             "/usr/share/fonts/truetype/thai/Sarabun-Bold.ttf",
@@ -1396,7 +1409,31 @@ def build_pdf_report(
             )
             safe = normalized.encode("latin-1", "replace").decode("latin-1")
 
-        lines = simpleSplit(safe, font, size, usable_width) or [""]
+        def _split_by_chars(long_line: str) -> list:
+            parts = []
+            buf = ""
+            for ch in str(long_line or ""):
+                probe = f"{buf}{ch}"
+                if (not buf) or (pdfmetrics.stringWidth(probe, font, size) <= usable_width):
+                    buf = probe
+                else:
+                    parts.append(buf)
+                    buf = ch
+            if buf:
+                parts.append(buf)
+            return parts or [""]
+
+        initial_lines = simpleSplit(safe, font, size, usable_width) or [""]
+        lines = []
+        for ln in initial_lines:
+            if pdfmetrics.stringWidth(ln, font, size) <= usable_width:
+                lines.append(ln)
+                continue
+            if is_thai or (" " not in ln):
+                lines.extend(_split_by_chars(ln))
+            else:
+                lines.append(ln)
+
         wrapped_gap = max(12, int(size * 1.35))
         for idx, line in enumerate(lines):
             if y <= bottom_content_y:
@@ -1412,41 +1449,54 @@ def build_pdf_report(
             write_line(line, size=size, bold=bold, gap=gap)
 
     title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report"
+    detailed_analysis_label = "การวิเคราะห์โดยละเอียด" if is_thai else "Detailed Analysis"
+    first_impression_label = "1. ความประทับใจแรกพบ" if is_thai else "1. First impression"
+    eye_label = "การสบตา" if is_thai else "Eye Contact"
+    upright_label = "ความตั้งตรงของร่างกาย" if is_thai else "Uprightness"
+    stance_label = "การยืนและการวางเท้า" if is_thai else "Stance"
+    category_labels = (
+        ["2. การสร้างความเป็นมิตรและสัมพันธภาพ", "3. ความมั่นใจ", "4. ความเป็นผู้นำ"]
+        if is_thai
+        else ["2. Engaging & Connecting", "3. Confidence", "4. Authority"]
+    )
+
     write_line(title, size=16, bold=True, gap=24)
     write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
     write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {report.analysis_date}")
     write_line(f"{'ระยะเวลา' if is_thai else 'Duration'}: {report.video_length_str}", gap=22)
-    write_line("Detailed Analysis", size=13, bold=True, gap=20)
+    write_line(detailed_analysis_label, size=13, bold=True, gap=20)
 
     # First impression sections (same narrative style as DOCX simple).
-    write_line("1. First impression", size=12, bold=True, gap=18)
+    write_line(first_impression_label, size=12, bold=True, gap=18)
     if report.first_impression:
         fi = report.first_impression
         eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
         up_lines = generate_uprightness_text_th(fi.upright_pct) if is_thai else generate_uprightness_text(fi.upright_pct)
         st_lines = generate_stance_text_th(fi.stance_stability) if is_thai else generate_stance_text(fi.stance_stability)
 
-        write_line("Eye Contact", bold=True, gap=16)
+        write_line(eye_label, bold=True, gap=16)
         write_block(eye_lines, gap=14)
-        write_line("Uprightness", bold=True, gap=16)
+        write_line(upright_label, bold=True, gap=16)
         write_block(up_lines, gap=14)
-        write_line("Stance", bold=True, gap=16)
-        write_block(st_lines[:2], gap=14)
+        write_line(stance_label, bold=True, gap=16)
+        write_block(st_lines, gap=14)
     else:
         write_line("- Not available", gap=20)
 
     # Categories (same order as DOCX)
-    labels = [
-        "2. Engaging & Connecting",
-        "3. Confidence",
-        "4. Authority",
-    ]
     for idx, cat in enumerate(report.categories[:3]):
-        write_line(labels[idx], size=12, bold=True, gap=18)
-        write_line(f"Scale: {cat.scale.capitalize()}", bold=True, gap=16)
+        write_line(category_labels[idx], size=12, bold=True, gap=18)
+        write_line(
+            f"{'ระดับ' if is_thai else 'Scale'}: {cat.scale.capitalize()}",
+            bold=True,
+            gap=16,
+        )
         if not is_simple:
-            write_line(f"Description: Detected {cat.positives} positive indicators out of {cat.total}", gap=16)
+            if is_thai:
+                write_line(f"คำอธิบาย: ตรวจพบตัวชี้วัดเชิงบวก {cat.positives} จากทั้งหมด {cat.total}", gap=16)
+            else:
+                write_line(f"Description: Detected {cat.positives} positive indicators out of {cat.total}", gap=16)
 
     write_line("", gap=10)
-    write_line("Generated by AI People Reader", size=10)
+    write_line("สร้างโดย AI People Reader" if is_thai else "Generated by AI People Reader", size=10)
     c.save()

@@ -166,7 +166,7 @@ def _run_ffmpeg_transcode(cmd: List[str]) -> None:
 
 
 def transcode_dots_mp4(input_path: str, output_path: str) -> None:
-    """Stable dots profile (kept isolated so skeleton changes never affect dots)."""
+    """Ultra-compatible dots profile for browser playback from shared links."""
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
         raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
@@ -176,23 +176,58 @@ def transcode_dots_mp4(input_path: str, output_path: str) -> None:
         "-y",
         "-i",
         input_path,
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        (
+            "scale='if(gt(iw,854),854,iw)':'if(gt(ih,480),480,ih)':"
+            "force_original_aspect_ratio=decrease,"
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
+            "fps=24,format=yuv420p"
+        ),
         "-c:v",
         "libx264",
         "-profile:v",
         "baseline",
         "-level",
         "3.0",
+        "-x264-params",
+        "bframes=0:ref=1:cabac=0:keyint=48:min-keyint=48:scenecut=0",
         "-preset",
         "veryfast",
         "-crf",
-        "23",
+        "28",
+        "-maxrate",
+        "1200k",
+        "-bufsize",
+        "2400k",
+        "-g",
+        "48",
+        "-keyint_min",
+        "48",
+        "-sc_threshold",
+        "0",
         "-movflags",
         "+faststart",
         "-vsync",
         "cfr",
-        "-an",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-shortest",
+        "-r",
+        "24",
         output_path,
     ]
     _run_ffmpeg_transcode(cmd)
