@@ -1214,6 +1214,7 @@ def build_pdf_report(
     """Build PDF report aligned with DOCX simple/full text structure (no graph embedding)."""
     try:
         from reportlab.lib.pagesizes import A4
+        from reportlab.lib.utils import simpleSplit
         from reportlab.pdfgen import canvas
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
@@ -1223,7 +1224,13 @@ def build_pdf_report(
     c = canvas.Canvas(output_path, pagesize=A4)
     width, height = A4
     x_left = 50
-    y = height - 60
+    x_right = 50
+    usable_width = width - x_left - x_right
+    header_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png")
+    footer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Footer.png")
+    top_content_y = height - 95
+    bottom_content_y = 70
+    y = top_content_y
 
     is_simple = str(report_style or "full").strip().lower().startswith("simple")
     is_thai = (lang == "th")
@@ -1237,7 +1244,23 @@ def build_pdf_report(
                 return p
         return ""
 
-    def _register_ttf(font_name: str, path: str) -> bool:
+    def _glob_existing(patterns: list) -> list:
+        import glob
+        found = []
+        for pat in patterns:
+            if not pat:
+                continue
+            found.extend(glob.glob(pat))
+        # Keep deterministic order and unique entries.
+        uniq = []
+        seen = set()
+        for p in sorted(found):
+            if p not in seen and os.path.isfile(p):
+                uniq.append(p)
+                seen.add(p)
+        return uniq
+
+    def _register_ttf(font_name: str, path: str, require_thai: bool = False) -> bool:
         if not path:
             return False
         try:
@@ -1246,12 +1269,30 @@ def build_pdf_report(
         except Exception:
             pass
         try:
-            pdfmetrics.registerFont(TTFont(font_name, path))
+            tt = TTFont(font_name, path)
+            if require_thai:
+                # Ensure this font truly contains core Thai glyphs.
+                required = [ord("ก"), ord("า"), ord("ไ"), ord("ย")]
+                widths = getattr(tt.face, "charWidths", {}) or {}
+                if any(cp not in widths for cp in required):
+                    return False
+            pdfmetrics.registerFont(tt)
             return True
         except Exception:
             return False
 
     if is_thai:
+        thai_glob_candidates = _glob_existing(
+            [
+                "/usr/share/fonts/**/*.ttf",
+                "/usr/local/share/fonts/**/*.ttf",
+            ]
+        )
+        thai_glob_preferred = [
+            p for p in thai_glob_candidates
+            if any(k in os.path.basename(p).lower() for k in ("noto", "sarabun", "thsarabun", "thai", "garuda", "waree", "kinnari", "loma"))
+        ]
+
         thai_regular_candidates = [
             os.getenv("PDF_THAI_FONT_PATH", "").strip(),
             os.getenv("THAI_FONT_PATH", "").strip(),
@@ -1260,6 +1301,9 @@ def build_pdf_report(
             "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
             "/usr/share/fonts/truetype/thai/Sarabun-Regular.ttf",
             "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree.ttf",
+            "/usr/share/fonts/truetype/tlwg/Loma.ttf",
+            "/usr/share/fonts/truetype/tlwg/Kinnari.ttf",
         ]
         thai_bold_candidates = [
             os.getenv("PDF_THAI_FONT_BOLD_PATH", "").strip(),
@@ -1268,38 +1312,93 @@ def build_pdf_report(
             "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
             "/usr/share/fonts/truetype/thai/Sarabun-Bold.ttf",
             "/usr/share/fonts/truetype/tlwg/Garuda-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Loma-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Kinnari-Bold.ttf",
         ]
+        thai_regular_candidates.extend(thai_glob_preferred)
+        thai_bold_candidates.extend(thai_glob_preferred)
 
-        thai_regular = _first_existing(thai_regular_candidates)
-        thai_bold = _first_existing(thai_bold_candidates)
-        if not thai_bold:
-            thai_bold = thai_regular
+        ok_regular = False
+        for path in thai_regular_candidates:
+            if _register_ttf("ThaiPDFRegular", path, require_thai=True):
+                ok_regular = True
+                break
 
-        ok_regular = _register_ttf("ThaiPDFRegular", thai_regular)
-        ok_bold = _register_ttf("ThaiPDFBold", thai_bold) if thai_bold else False
+        ok_bold = False
+        for path in thai_bold_candidates:
+            if _register_ttf("ThaiPDFBold", path, require_thai=True):
+                ok_bold = True
+                break
+
         if not ok_regular:
             raise RuntimeError(
                 "Thai font not found for PDF. Set PDF_THAI_FONT_PATH to a valid .ttf "
-                "(e.g., NotoSansThai-Regular.ttf or Sarabun-Regular.ttf)."
+                "(e.g., NotoSansThai-Regular.ttf, Sarabun-Regular.ttf, or TLWG Waree.ttf)."
             )
         regular_font = "ThaiPDFRegular"
         bold_font = "ThaiPDFBold" if ok_bold else "ThaiPDFRegular"
         requires_unicode_font = True
 
+    def draw_header_footer() -> None:
+        # Match DOCX branding as closely as possible for PDF output.
+        if os.path.exists(header_path):
+            try:
+                c.drawImage(
+                    header_path,
+                    x=28,
+                    y=height - 62,
+                    width=width - 56,
+                    height=36,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+        if os.path.exists(footer_path):
+            try:
+                c.drawImage(
+                    footer_path,
+                    x=28,
+                    y=18,
+                    width=width - 56,
+                    height=30,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+
+    draw_header_footer()
+
     def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
-        if y <= 70:
-            c.showPage()
-            y = height - 60
         font = bold_font if bold else regular_font
-        c.setFont(font, size)
         if requires_unicode_font:
-            safe = str(text)
+            safe = str(text or "")
         else:
-            # Keep PDF robust without requiring extra Unicode font files.
-            safe = str(text).encode("latin-1", "replace").decode("latin-1")
-        c.drawString(x_left, y, safe)
-        y -= gap
+            # Normalize common unicode punctuation for ASCII/Latin fonts.
+            normalized = (
+                str(text or "")
+                .replace("•", "- ")
+                .replace("—", "-")
+                .replace("–", "-")
+                .replace("“", '"')
+                .replace("”", '"')
+                .replace("’", "'")
+            )
+            safe = normalized.encode("latin-1", "replace").decode("latin-1")
+
+        lines = simpleSplit(safe, font, size, usable_width) or [""]
+        wrapped_gap = max(12, int(size * 1.35))
+        for idx, line in enumerate(lines):
+            if y <= bottom_content_y:
+                c.showPage()
+                draw_header_footer()
+                y = top_content_y
+            c.setFont(font, size)
+            c.drawString(x_left, y, line)
+            y -= gap if idx == len(lines) - 1 else wrapped_gap
 
     def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
         for line in lines:
@@ -1343,5 +1442,4 @@ def build_pdf_report(
 
     write_line("", gap=10)
     write_line("Generated by AI People Reader", size=10)
-    c.showPage()
     c.save()
