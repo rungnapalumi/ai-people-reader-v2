@@ -109,6 +109,7 @@ JOBS_PENDING_PREFIX = "jobs/pending/"
 JOBS_PROCESSING_PREFIX = "jobs/processing/"
 JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_FAILED_PREFIX = "jobs/failed/"
+JOBS_EMAIL_PENDING_PREFIX = "jobs/email_pending/"
 ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
 EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
 AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
@@ -420,18 +421,23 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
                     out.append(
                         {
                             "key": key,
+                            "source_prefix": prefix,
                             "last_modified_raw": str(obj.get("LastModified") or ""),
                         }
                     )
         return out
 
-    # Primary source: finished jobs.
-    # Fallback: if finished is empty, scan other queues to avoid blank monitor.
-    finished_objects = _collect_objects([JOBS_FINISHED_PREFIX])
-    if not finished_objects:
-        finished_objects = _collect_objects(
-            [JOBS_FINISHED_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_PENDING_PREFIX, JOBS_FAILED_PREFIX]
-        )
+    # Scan all relevant queues so the monitor remains visible even if jobs are
+    # not currently in jobs/finished (or were moved between queues).
+    finished_objects = _collect_objects(
+        [
+            JOBS_FINISHED_PREFIX,
+            JOBS_PROCESSING_PREFIX,
+            JOBS_PENDING_PREFIX,
+            JOBS_FAILED_PREFIX,
+            JOBS_EMAIL_PENDING_PREFIX,
+        ]
+    )
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for item in finished_objects:
@@ -443,6 +449,7 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         except Exception:
             continue
 
+        source_prefix = str(item.get("source_prefix") or "")
         group_id = str(payload.get("group_id") or "").strip()
         if not group_id:
             group_id = f"no_group::{key.split('/')[-1].replace('.json', '')}"
@@ -477,6 +484,17 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
             group["employee_email"] = emp_email
 
         status_text = str(payload.get("status") or "").strip().lower()
+        if not status_text:
+            if source_prefix.startswith(JOBS_FINISHED_PREFIX):
+                status_text = "finished"
+            elif source_prefix.startswith(JOBS_PROCESSING_PREFIX):
+                status_text = "processing"
+            elif source_prefix.startswith(JOBS_PENDING_PREFIX):
+                status_text = "pending"
+            elif source_prefix.startswith(JOBS_FAILED_PREFIX):
+                status_text = "failed"
+            elif source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
+                status_text = "email_pending"
         if status_text:
             group["job_status"] = status_text
 
@@ -485,7 +503,7 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
             group["job_updated_at_raw"] = updated_at_raw
 
         notification = payload.get("notification") or {}
-        if mode in ("report", "report_th_en", "report_generator") or notification:
+        if mode in ("report", "report_th_en", "report_generator") or notification or source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
             notify_email = str(notification.get("notify_email") or payload.get("notify_email") or "").strip()
             if notify_email:
                 group["sent_to_email"] = notify_email
@@ -494,6 +512,8 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
             if sent_flag:
                 group["email_sent"] = "yes"
             status = str(notification.get("status") or "").strip()
+            if not status and source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
+                status = "waiting_for_all_outputs"
             if status:
                 group["email_status"] = status
             email_updated_raw = str(notification.get("updated_at") or "")
