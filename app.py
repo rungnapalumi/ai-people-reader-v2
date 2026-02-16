@@ -106,6 +106,7 @@ TTB_PAGE_TITLE = "TTB"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "0108"
 JOBS_PENDING_PREFIX = "jobs/pending/"
+JOBS_PROCESSING_PREFIX = "jobs/processing/"
 JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_FAILED_PREFIX = "jobs/failed/"
 ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
@@ -407,19 +408,30 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         return []
 
     s3 = _get_s3_client()
-    paginator = s3.get_paginator("list_objects_v2")
-    finished_objects: List[Dict[str, str]] = []
+    def _collect_objects(prefixes: List[str]) -> List[Dict[str, str]]:
+        paginator = s3.get_paginator("list_objects_v2")
+        out: List[Dict[str, str]] = []
+        for prefix in prefixes:
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    key = str(obj.get("Key") or "")
+                    if not key.endswith(".json"):
+                        continue
+                    out.append(
+                        {
+                            "key": key,
+                            "last_modified_raw": str(obj.get("LastModified") or ""),
+                        }
+                    )
+        return out
 
-    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_FINISHED_PREFIX):
-        for obj in page.get("Contents", []):
-            key = str(obj.get("Key") or "")
-            if key.endswith(".json"):
-                finished_objects.append(
-                    {
-                        "key": key,
-                        "last_modified": _to_local_time_display(obj.get("LastModified")),
-                    }
-                )
+    # Primary source: finished jobs.
+    # Fallback: if finished is empty, scan other queues to avoid blank monitor.
+    finished_objects = _collect_objects([JOBS_FINISHED_PREFIX])
+    if not finished_objects:
+        finished_objects = _collect_objects(
+            [JOBS_FINISHED_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_PENDING_PREFIX, JOBS_FAILED_PREFIX]
+        )
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for item in finished_objects:
@@ -464,7 +476,11 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         if emp_email and not group["employee_email"]:
             group["employee_email"] = emp_email
 
-        updated_at_raw = str(payload.get("updated_at") or item.get("last_modified") or "")
+        status_text = str(payload.get("status") or "").strip().lower()
+        if status_text:
+            group["job_status"] = status_text
+
+        updated_at_raw = str(payload.get("updated_at") or item.get("last_modified_raw") or "")
         if updated_at_raw and updated_at_raw > str(group.get("job_updated_at_raw") or ""):
             group["job_updated_at_raw"] = updated_at_raw
 
@@ -503,7 +519,7 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
             }
         )
 
-    rows.sort(key=lambda x: str(x.get("job_updated_at") or ""), reverse=True)
+    rows.sort(key=lambda x: str(x.get("job_updated_at_raw") or x.get("job_updated_at") or ""), reverse=True)
     return rows[: max(1, int(limit))]
 
 
