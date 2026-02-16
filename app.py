@@ -489,11 +489,14 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
     for item in all_json:
         key = item["key"]
         source_prefix = str(item.get("source_prefix") or "")
+        key_last_modified_raw = str(item.get("last_modified_raw") or "")
+        payload: Dict[str, Any] = {}
         try:
             obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
             payload = json.loads(obj["Body"].read().decode("utf-8"))
         except Exception:
-            continue
+            # Keep legacy/corrupt rows visible in monitor instead of hiding all data.
+            payload = {}
 
         group_id = str(payload.get("group_id") or payload.get("group") or "").strip()
         if not group_id:
@@ -546,11 +549,25 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
             elif source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
                 status_text = "email_pending"
 
-        updated_at_raw = str(payload.get("updated_at") or item.get("last_modified_raw") or "")
+        updated_at_raw = str(payload.get("updated_at") or key_last_modified_raw or "")
         if _as_dt(updated_at_raw) >= _as_dt(g.get("job_updated_at_raw")):
             g["job_updated_at_raw"] = updated_at_raw
             if status_text:
                 g["job_status"] = status_text
+
+        if not str(g.get("job_status") or "").strip():
+            if source_prefix.startswith(JOBS_FINISHED_PREFIX):
+                g["job_status"] = "finished"
+            elif source_prefix.startswith(JOBS_PROCESSING_PREFIX):
+                g["job_status"] = "processing"
+            elif source_prefix.startswith(JOBS_PENDING_PREFIX):
+                g["job_status"] = "pending"
+            elif source_prefix.startswith(JOBS_FAILED_PREFIX):
+                g["job_status"] = "failed"
+            elif source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
+                g["job_status"] = "email_pending"
+            else:
+                g["job_status"] = "unknown"
 
         notification = payload.get("notification") or {}
         # Support both current notification object and legacy flat fields.
