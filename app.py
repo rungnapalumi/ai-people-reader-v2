@@ -110,6 +110,7 @@ JOBS_PROCESSING_PREFIX = "jobs/processing/"
 JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_FAILED_PREFIX = "jobs/failed/"
 JOBS_EMAIL_PENDING_PREFIX = "jobs/email_pending/"
+JOBS_OUTPUT_GROUPS_PREFIX = "jobs/output/groups/"
 ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
 EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
 AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
@@ -409,7 +410,19 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         return []
 
     s3 = _get_s3_client()
-    def _collect_objects(prefixes: List[str]) -> List[Dict[str, str]]:
+    def _as_dt(v: Any) -> datetime:
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        text = str(v or "").strip()
+        if not text:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    def _collect_json_objects(prefixes: List[str]) -> List[Dict[str, str]]:
         paginator = s3.get_paginator("list_objects_v2")
         out: List[Dict[str, str]] = []
         for prefix in prefixes:
@@ -427,9 +440,42 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
                     )
         return out
 
-    # Scan all relevant queues so the monitor remains visible even if jobs are
-    # not currently in jobs/finished (or were moved between queues).
-    finished_objects = _collect_objects(
+    def _collect_output_group_summaries() -> Dict[str, Dict[str, Any]]:
+        paginator = s3.get_paginator("list_objects_v2")
+        groups: Dict[str, Dict[str, Any]] = {}
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_OUTPUT_GROUPS_PREFIX):
+            for obj in page.get("Contents", []):
+                key = str(obj.get("Key") or "")
+                if key.endswith("/") or key == JOBS_OUTPUT_GROUPS_PREFIX:
+                    continue
+                parts = key.split("/")
+                if len(parts) < 5:  # jobs/output/groups/<group_id>/<file>
+                    continue
+                group_id = str(parts[3] or "").strip()
+                file_name = str(parts[-1] or "").lower()
+                if not group_id:
+                    continue
+                g = groups.setdefault(
+                    group_id,
+                    {
+                        "job_updated_at_raw": "",
+                        "modes_done": set(),
+                        "jobs_in_group": 0,
+                    },
+                )
+                g["jobs_in_group"] = int(g.get("jobs_in_group") or 0) + 1
+                mod_raw = str(obj.get("LastModified") or "")
+                if _as_dt(mod_raw) > _as_dt(g.get("job_updated_at_raw")):
+                    g["job_updated_at_raw"] = mod_raw
+                if file_name == "dots.mp4":
+                    g["modes_done"].add("dots")
+                elif file_name == "skeleton.mp4":
+                    g["modes_done"].add("skeleton")
+                elif file_name.endswith(".docx") or file_name.endswith(".pdf"):
+                    g["modes_done"].add("report")
+        return groups
+
+    all_json = _collect_json_objects(
         [
             JOBS_FINISHED_PREFIX,
             JOBS_PROCESSING_PREFIX,
@@ -440,27 +486,26 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
     )
 
     grouped: Dict[str, Dict[str, Any]] = {}
-    for item in finished_objects:
+    for item in all_json:
         key = item["key"]
+        source_prefix = str(item.get("source_prefix") or "")
         try:
             obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
-            raw = obj["Body"].read().decode("utf-8")
-            payload = json.loads(raw)
+            payload = json.loads(obj["Body"].read().decode("utf-8"))
         except Exception:
             continue
 
-        source_prefix = str(item.get("source_prefix") or "")
         group_id = str(payload.get("group_id") or "").strip()
         if not group_id:
-            group_id = f"no_group::{key.split('/')[-1].replace('.json', '')}"
+            continue
 
-        group = grouped.setdefault(
+        g = grouped.setdefault(
             group_id,
             {
                 "group_id": group_id,
                 "employee_id": "",
                 "employee_email": "",
-                "job_status": "finished",
+                "job_status": "",
                 "job_updated_at_raw": "",
                 "modes_done": set(),
                 "jobs_in_group": 0,
@@ -471,17 +516,17 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
             },
         )
 
-        group["jobs_in_group"] = int(group.get("jobs_in_group") or 0) + 1
+        g["jobs_in_group"] = int(g.get("jobs_in_group") or 0) + 1
         mode = str(payload.get("mode") or "").strip().lower()
         if mode:
-            group["modes_done"].add(mode)
+            g["modes_done"].add(mode)
 
         emp_id = str(payload.get("employee_id") or "").strip()
         emp_email = str(payload.get("employee_email") or payload.get("notify_email") or "").strip()
-        if emp_id and not group["employee_id"]:
-            group["employee_id"] = emp_id
-        if emp_email and not group["employee_email"]:
-            group["employee_email"] = emp_email
+        if emp_id and not g["employee_id"]:
+            g["employee_id"] = emp_id
+        if emp_email and not g["employee_email"]:
+            g["employee_email"] = emp_email
 
         status_text = str(payload.get("status") or "").strip().lower()
         if not status_text:
@@ -495,51 +540,76 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
                 status_text = "failed"
             elif source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
                 status_text = "email_pending"
-        if status_text:
-            group["job_status"] = status_text
 
         updated_at_raw = str(payload.get("updated_at") or item.get("last_modified_raw") or "")
-        if updated_at_raw and updated_at_raw > str(group.get("job_updated_at_raw") or ""):
-            group["job_updated_at_raw"] = updated_at_raw
+        if _as_dt(updated_at_raw) >= _as_dt(g.get("job_updated_at_raw")):
+            g["job_updated_at_raw"] = updated_at_raw
+            if status_text:
+                g["job_status"] = status_text
 
         notification = payload.get("notification") or {}
-        if mode in ("report", "report_th_en", "report_generator") or notification or source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
-            notify_email = str(notification.get("notify_email") or payload.get("notify_email") or "").strip()
-            if notify_email:
-                group["sent_to_email"] = notify_email
+        notify_email = str(notification.get("notify_email") or payload.get("notify_email") or "").strip()
+        if notify_email:
+            g["sent_to_email"] = notify_email
 
-            sent_flag = bool(notification.get("sent"))
-            if sent_flag:
-                group["email_sent"] = "yes"
-            status = str(notification.get("status") or "").strip()
-            if not status and source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
-                status = "waiting_for_all_outputs"
-            if status:
-                group["email_status"] = status
-            email_updated_raw = str(notification.get("updated_at") or "")
-            if email_updated_raw and email_updated_raw > str(group.get("email_updated_at_raw") or ""):
-                group["email_updated_at_raw"] = email_updated_raw
+        if bool(notification.get("sent")):
+            g["email_sent"] = "yes"
+        email_status = str(notification.get("status") or "").strip()
+        if not email_status and source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
+            email_status = "waiting_for_all_outputs"
+        if email_status:
+            g["email_status"] = email_status
+
+        email_updated_raw = str(notification.get("updated_at") or "")
+        if _as_dt(email_updated_raw) > _as_dt(g.get("email_updated_at_raw")):
+            g["email_updated_at_raw"] = email_updated_raw
+
+    output_groups = _collect_output_group_summaries()
+    for group_id, og in output_groups.items():
+        g = grouped.setdefault(
+            group_id,
+            {
+                "group_id": group_id,
+                "employee_id": "",
+                "employee_email": "",
+                "job_status": "finished_from_outputs",
+                "job_updated_at_raw": "",
+                "modes_done": set(),
+                "jobs_in_group": 0,
+                "sent_to_email": "",
+                "email_sent": "unknown",
+                "email_status": "no_job_json_found",
+                "email_updated_at_raw": "",
+            },
+        )
+        g["jobs_in_group"] = max(int(g.get("jobs_in_group") or 0), int(og.get("jobs_in_group") or 0))
+        g["modes_done"].update(og.get("modes_done") or set())
+        if _as_dt(og.get("job_updated_at_raw")) > _as_dt(g.get("job_updated_at_raw")):
+            g["job_updated_at_raw"] = str(og.get("job_updated_at_raw") or "")
+        if not str(g.get("job_status") or "").strip():
+            g["job_status"] = "finished_from_outputs"
 
     rows: List[Dict[str, str]] = []
-    for group in grouped.values():
-        modes_done = sorted(list(group.get("modes_done") or []))
+    for g in grouped.values():
+        modes_done = sorted(list(g.get("modes_done") or []))
         rows.append(
             {
-                "group_id": str(group.get("group_id") or ""),
-                "jobs_in_group": str(group.get("jobs_in_group") or 0),
+                "group_id": str(g.get("group_id") or ""),
+                "jobs_in_group": str(g.get("jobs_in_group") or 0),
                 "modes_done": ", ".join(modes_done),
-                "employee_id": str(group.get("employee_id") or ""),
-                "employee_email": str(group.get("employee_email") or ""),
-                "job_status": str(group.get("job_status") or "finished"),
-                "job_updated_at": _to_local_time_display(group.get("job_updated_at_raw")),
-                "sent_to_email": str(group.get("sent_to_email") or ""),
-                "email_sent": str(group.get("email_sent") or "no"),
-                "email_status": str(group.get("email_status") or ""),
-                "email_updated_at": _to_local_time_display(group.get("email_updated_at_raw")),
+                "employee_id": str(g.get("employee_id") or ""),
+                "employee_email": str(g.get("employee_email") or ""),
+                "job_status": str(g.get("job_status") or ""),
+                "job_updated_at_raw": str(g.get("job_updated_at_raw") or ""),
+                "job_updated_at": _to_local_time_display(g.get("job_updated_at_raw")),
+                "sent_to_email": str(g.get("sent_to_email") or ""),
+                "email_sent": str(g.get("email_sent") or "no"),
+                "email_status": str(g.get("email_status") or ""),
+                "email_updated_at": _to_local_time_display(g.get("email_updated_at_raw")),
             }
         )
 
-    rows.sort(key=lambda x: str(x.get("job_updated_at_raw") or x.get("job_updated_at") or ""), reverse=True)
+    rows.sort(key=lambda x: _as_dt(x.get("job_updated_at_raw")), reverse=True)
     return rows[: max(1, int(limit))]
 
 
@@ -593,6 +663,27 @@ def _list_failed_jobs(limit: int = 50) -> List[Dict[str, str]]:
         )
 
     return rows
+
+
+def _queue_prefix_snapshot(prefix: str, sample_limit: int = 3) -> Dict[str, Any]:
+    """
+    Return lightweight queue diagnostics for admin UI.
+    """
+    if not AWS_BUCKET:
+        return {"prefix": prefix, "count": 0, "sample_keys": []}
+    s3 = _get_s3_client()
+    paginator = s3.get_paginator("list_objects_v2")
+    count = 0
+    sample: List[str] = []
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if not key.endswith(".json"):
+                continue
+            count += 1
+            if len(sample) < sample_limit:
+                sample.append(key)
+    return {"prefix": prefix, "count": count, "sample_keys": sample}
 
 
 def _render_admin_panel() -> None:
@@ -719,6 +810,18 @@ def _render_admin_panel() -> None:
     st.markdown("---")
     st.markdown("### Finished Jobs & Email Monitor")
     st.caption(f"Time zone: {APP_LOCAL_TIMEZONE}")
+    with st.expander("Monitor debug (job JSON queue snapshot)", expanded=False):
+        try:
+            snapshots = [
+                _queue_prefix_snapshot(JOBS_FINISHED_PREFIX),
+                _queue_prefix_snapshot(JOBS_PROCESSING_PREFIX),
+                _queue_prefix_snapshot(JOBS_PENDING_PREFIX),
+                _queue_prefix_snapshot(JOBS_FAILED_PREFIX),
+                _queue_prefix_snapshot(JOBS_EMAIL_PENDING_PREFIX),
+            ]
+            st.dataframe(snapshots, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Unable to load queue snapshot: {e}")
     monitor_limit = st.slider("Show recent finished jobs", min_value=10, max_value=200, value=50, step=10)
     try:
         finished_rows = _list_finished_jobs_with_email(limit=monitor_limit)
