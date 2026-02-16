@@ -777,21 +777,21 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     engaging_score = min(7, max(1, int(
         (effort_detection.get("Spreading", 0) * 0.4 +
          effort_detection.get("Enclosing", 0) * 0.3 +
-         effort_detection.get("Gliding", 0) * 0.3) / 10 + 2
+         effort_detection.get("Gliding", 0) * 0.3) / 5 + 2
     )))
     
     # Confidence: Directing, Punching, Advancing (assertiveness, clarity)
     convince_score = min(7, max(1, int(
         (effort_detection.get("Directing", 0) * 0.4 +
          effort_detection.get("Punching", 0) * 0.3 +
-         effort_detection.get("Advancing", 0) * 0.3) / 10 + 2
+         effort_detection.get("Advancing", 0) * 0.3) / 5 + 2
     )))
     
     # Authority: Pressing, Punching, Directing (power, command)
     authority_score = min(7, max(1, int(
         (effort_detection.get("Pressing", 0) * 0.4 +
          effort_detection.get("Punching", 0) * 0.3 +
-         effort_detection.get("Directing", 0) * 0.3) / 10 + 2
+         effort_detection.get("Directing", 0) * 0.3) / 5 + 2
     )))
     
     return {
