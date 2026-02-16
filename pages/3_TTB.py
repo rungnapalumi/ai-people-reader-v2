@@ -38,14 +38,14 @@ st.set_page_config(page_title="Video Analysis (วิเคราะห์วิ
 THEME_CSS = """
 <style>
 :root {
-  --bg-main: #edf4ff;
-  --bg-soft: #ffffff;
-  --bg-card: #f5f9ff;
-  --text-main: #0f2e5d;
-  --text-dim: #5e7497;
-  --accent: #1f5fe0;
-  --accent-strong: #144bb9;
-  --border: #c5d8fb;
+  --bg-main: #2c2723;
+  --bg-soft: #3a332d;
+  --bg-card: #473e36;
+  --text-main: #e6d9c8;
+  --text-dim: #ccbda8;
+  --accent: #c9a67a;
+  --accent-strong: #b48d5f;
+  --border: #6d5c4e;
 }
 
 .stApp {
@@ -54,12 +54,12 @@ THEME_CSS = """
 }
 
 [data-testid="stSidebar"] {
-  background: #e8f1ff;
+  background: #28231f;
   border-right: 1px solid var(--border);
 }
 
 h1, h2, h3, h4, h5, h6 {
-  color: #0c2a55 !important;
+  color: #f0e4d4 !important;
 }
 
 p, label, span, div {
@@ -72,48 +72,37 @@ p, label, span, div {
   background: var(--bg-soft) !important;
   color: var(--text-main) !important;
   border: 1px solid var(--border) !important;
-  border-radius: 10px !important;
 }
 
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
   background: var(--bg-soft) !important;
   color: var(--text-main) !important;
   border: 1px solid var(--border) !important;
-  border-radius: 10px !important;
 }
 
 [data-testid="stFileUploader"] section {
-  background: #f7fbff !important;
-  border: 1px dashed #8fb2ee !important;
+  background: var(--bg-soft) !important;
+  border: 1px dashed var(--border) !important;
 }
 
 .stButton > button,
 .stDownloadButton > button,
 .stLinkButton > a {
   background: linear-gradient(180deg, var(--accent), var(--accent-strong)) !important;
-  color: #ffffff !important;
+  color: #231d17 !important;
   border: 0 !important;
   font-weight: 600 !important;
-  border-radius: 10px !important;
-}
-
-.stButton > button:hover,
-.stDownloadButton > button:hover,
-.stLinkButton > a:hover {
-  filter: brightness(1.06);
 }
 
 [data-testid="stDataFrame"] {
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: #ffffff;
 }
 
 [data-testid="stAlert"] {
   background: var(--bg-card) !important;
   color: var(--text-main) !important;
   border: 1px solid var(--border) !important;
-  border-radius: 10px !important;
 }
 
 .stCaption {
