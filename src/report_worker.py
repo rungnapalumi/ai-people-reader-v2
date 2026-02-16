@@ -243,8 +243,11 @@ def presigned_get_url(key: str, expires: int = EMAIL_LINK_EXPIRES_SECONDS, filen
     params: Dict[str, Any] = {"Bucket": AWS_BUCKET, "Key": key}
     if filename:
         params["ResponseContentType"] = guess_content_type(filename)
-        # Inline helps browser attempt to stream video instead of forcing download.
-        params["ResponseContentDisposition"] = f'inline; filename="{filename}"'
+        # For MP4 links in email, forcing attachment is more reliable across clients.
+        if str(filename).lower().endswith(".mp4"):
+            params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+        else:
+            params["ResponseContentDisposition"] = f'inline; filename="{filename}"'
     return s3.generate_presigned_url(
         ClientMethod="get_object",
         Params=params,
