@@ -82,15 +82,19 @@ def get_video_duration_seconds(video_path: str) -> float:
     return float(frames / fps)
 
 def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5, max_frames: int = 200) -> FirstImpressionData:
-    """Real First Impression analysis with MediaPipe"""
+    """Real First Impression analysis with MediaPipe using continuous scoring."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
 
     total = 0
-    eye_ok = 0
-    upright_ok = 0
+    eye_frame_scores = []
+    upright_frame_scores = []
     ankle_dist = []
+    ankle_center_x = []
+    stance_width_ratios = []
+    prev_nose_offset_ratio = None
+    prev_torso_angle = None
 
     with Pose(static_image_mode=False, model_complexity=1) as pose:
         i = 0
@@ -123,13 +127,20 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
 
             total += 1
 
-            # Eye contact
-            minx = min(leye.x, reye.x)
-            maxx = max(leye.x, reye.x)
-            if minx <= nose.x <= maxx:
-                eye_ok += 1
+            # Eye contact (continuous): frontal face symmetry + gaze jitter penalty.
+            eye_dist = abs(leye.x - reye.x)
+            if eye_dist > 1e-4:
+                mid_eye_x = (leye.x + reye.x) / 2.0
+                nose_offset_ratio = abs(nose.x - mid_eye_x) / eye_dist
+                symmetry_score = max(0.0, 1.0 - (nose_offset_ratio / 0.75))
+                stability_bonus = 1.0
+                if prev_nose_offset_ratio is not None:
+                    jitter = abs(nose_offset_ratio - prev_nose_offset_ratio)
+                    stability_bonus = max(0.70, 1.0 - (jitter / 0.35))
+                prev_nose_offset_ratio = nose_offset_ratio
+                eye_frame_scores.append(100.0 * symmetry_score * stability_bonus)
 
-            # Uprightness
+            # Uprightness (continuous): torso vertical angle + shoulder level + abrupt tilt penalty.
             mid_sh = np.array([(lsh.x + rsh.x) / 2.0, (lsh.y + rsh.y) / 2.0])
             mid_hip = np.array([(lhip.x + rhip.x) / 2.0, (lhip.y + rhip.y) / 2.0])
             v = mid_sh - mid_hip
@@ -137,14 +148,31 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
             v_norm = np.linalg.norm(v) + 1e-9
             cosang = float(np.dot(v / v_norm, vert))
             ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
-            if ang <= 15.0:
-                upright_ok += 1
+            shoulder_tilt = abs(lsh.y - rsh.y)
+            shoulder_tilt_ratio = shoulder_tilt / v_norm
 
-            # Stance
+            angle_score = max(0.0, 1.0 - (ang / 28.0))
+            shoulder_score = max(0.0, 1.0 - (shoulder_tilt_ratio / 0.20))
+            temporal_bonus = 1.0
+            if prev_torso_angle is not None:
+                angle_jump = abs(ang - prev_torso_angle)
+                temporal_bonus = max(0.75, 1.0 - (angle_jump / 45.0))
+            prev_torso_angle = ang
+
+            upright_frame_scores.append(
+                100.0 * (0.75 * angle_score + 0.25 * shoulder_score) * temporal_bonus
+            )
+
+            # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
             if min(lank.visibility, rank.visibility) >= 0.5:
                 dx = (lank.x - rank.x)
                 dy = (lank.y - rank.y)
-                ankle_dist.append(math.sqrt(dx*dx + dy*dy))
+                dist = math.sqrt(dx * dx + dy * dy)
+                ankle_dist.append(dist)
+                ankle_center_x.append((lank.x + rank.x) / 2.0)
+                shoulder_width = abs(lsh.x - rsh.x)
+                if shoulder_width > 1e-4:
+                    stance_width_ratios.append(dist / shoulder_width)
 
             if total >= max_frames:
                 break
@@ -154,12 +182,37 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
     if total == 0:
         return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
 
-    eye_pct = 100.0 * (eye_ok / total)
-    upright_pct = 100.0 * (upright_ok / total)
+    eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
+    upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
 
     if len(ankle_dist) >= 10:
-        std = float(np.std(np.array(ankle_dist)))
-        stability = max(0.0, min(100.0, 100.0 * (1.0 - (std / 0.20))))
+        dist_arr = np.array(ankle_dist)
+        dist_std = float(np.std(dist_arr))
+        dist_mean = float(np.mean(dist_arr)) + 1e-9
+        rel_std = dist_std / dist_mean
+
+        # Lower relative ankle-distance variance -> better lower-body stability.
+        base_stability = max(0.0, min(100.0, 100.0 * (1.0 - (rel_std / 0.35))))
+
+        sway_score = 0.0
+        if len(ankle_center_x) >= 10:
+            sway_std = float(np.std(np.array(ankle_center_x)))
+            sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.06))))
+
+        width_score = 0.0
+        if stance_width_ratios:
+            ratios = np.array(stance_width_ratios)
+            ratio_mean = float(np.mean(ratios))
+            ratio_std = float(np.std(ratios))
+            # Preferred stance is around shoulder width to slightly wider.
+            width_pref = max(0.0, 1.0 - (abs(ratio_mean - 1.10) / 0.90))
+            width_stability = max(0.0, 1.0 - (ratio_std / 0.35))
+            width_score = 100.0 * (0.65 * width_pref + 0.35 * width_stability)
+
+        stability = max(
+            0.0,
+            min(100.0, 0.50 * base_stability + 0.30 * sway_score + 0.20 * width_score),
+        )
     else:
         stability = 0.0
 
@@ -777,21 +830,21 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     engaging_score = min(7, max(1, round(
         (effort_detection.get("Spreading", 0) * 0.4 +
          effort_detection.get("Enclosing", 0) * 0.3 +
-         effort_detection.get("Gliding", 0) * 0.3) / 5 + 2
+         effort_detection.get("Gliding", 0) * 0.3) / 7 + 2
     )))
     
     # Confidence: Directing, Punching, Advancing (assertiveness, clarity)
     convince_score = min(7, max(1, round(
         (effort_detection.get("Directing", 0) * 0.4 +
          effort_detection.get("Punching", 0) * 0.3 +
-         effort_detection.get("Advancing", 0) * 0.3) / 5 + 2
+         effort_detection.get("Advancing", 0) * 0.3) / 7 + 2
     )))
     
     # Authority: Pressing, Punching, Directing (power, command)
     authority_score = min(7, max(1, round(
         (effort_detection.get("Pressing", 0) * 0.4 +
          effort_detection.get("Punching", 0) * 0.3 +
-         effort_detection.get("Directing", 0) * 0.3) / 5 + 2
+         effort_detection.get("Directing", 0) * 0.3) / 7 + 2
     )))
     
     return {

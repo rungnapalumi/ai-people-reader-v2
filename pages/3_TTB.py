@@ -590,12 +590,6 @@ employee_password = st.text_input(
     placeholder="Enter employee password",
 )
 org_settings = get_org_settings(enterprise_folder)
-if org_settings:
-    st.info(
-        "Using admin organization settings: "
-        f"Report Type = **{'Simple' if org_settings.get('report_style') == 'simple' else 'Full'}**, "
-        f"Report File = **{'PDF' if org_settings.get('report_format') == 'pdf' else 'DOCX'}**"
-    )
 
 uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",

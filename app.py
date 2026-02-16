@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 st.set_page_config(page_title="AI People Reader V2", layout="wide")
 
 # Sidebar page names can be customized here.
-HOME_PAGE_TITLE = "admi"
+HOME_PAGE_TITLE = "Admin"
 SUBMIT_PAGE_TITLE = "AI People Reader"
 TTB_PAGE_TITLE = "TTB"
 ADMIN_USERNAME = "admin"
