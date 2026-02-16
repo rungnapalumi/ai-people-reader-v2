@@ -3,6 +3,7 @@ import os
 import io
 import math
 import random
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -1211,6 +1212,7 @@ def build_pdf_report(
     lang: str = "en",
     report_style: str = "full",
 ):
+    logger = logging.getLogger("report_core_pdf")
     """Build PDF report aligned with DOCX simple/full text structure (no graph embedding)."""
     try:
         from reportlab.lib.pagesizes import A4
@@ -1250,7 +1252,7 @@ def build_pdf_report(
         for pat in patterns:
             if not pat:
                 continue
-            found.extend(glob.glob(pat))
+            found.extend(glob.glob(pat, recursive=True))
         # Keep deterministic order and unique entries.
         uniq = []
         seen = set()
@@ -1332,13 +1334,18 @@ def build_pdf_report(
                 break
 
         if not ok_regular:
-            raise RuntimeError(
-                "Thai font not found for PDF. Set PDF_THAI_FONT_PATH to a valid .ttf "
-                "(e.g., NotoSansThai-Regular.ttf, Sarabun-Regular.ttf, or TLWG Waree.ttf)."
+            # Do not fail the whole job. Fallback to readable English PDF if Thai font is missing.
+            logger.warning(
+                "Thai font not found for PDF. Falling back to English labels/content for this PDF."
             )
-        regular_font = "ThaiPDFRegular"
-        bold_font = "ThaiPDFBold" if ok_bold else "ThaiPDFRegular"
-        requires_unicode_font = True
+            is_thai = False
+            regular_font = "Helvetica"
+            bold_font = "Helvetica-Bold"
+            requires_unicode_font = False
+        else:
+            regular_font = "ThaiPDFRegular"
+            bold_font = "ThaiPDFBold" if ok_bold else "ThaiPDFRegular"
+            requires_unicode_font = True
 
     def draw_header_footer() -> None:
         # Match DOCX branding as closely as possible for PDF output.
