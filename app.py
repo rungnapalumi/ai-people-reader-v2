@@ -495,9 +495,14 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         except Exception:
             continue
 
-        group_id = str(payload.get("group_id") or "").strip()
+        group_id = str(payload.get("group_id") or payload.get("group") or "").strip()
         if not group_id:
-            continue
+            # Backward compatibility for older jobs that don't store group_id.
+            fallback_job_id = str(payload.get("job_id") or "").strip()
+            if fallback_job_id:
+                group_id = fallback_job_id
+            else:
+                group_id = f"legacy::{key.split('/')[-1].replace('.json', '')}"
 
         g = grouped.setdefault(
             group_id,
@@ -548,19 +553,23 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
                 g["job_status"] = status_text
 
         notification = payload.get("notification") or {}
-        notify_email = str(notification.get("notify_email") or payload.get("notify_email") or "").strip()
+        # Support both current notification object and legacy flat fields.
+        legacy_notify_email = str(payload.get("sent_to_email") or "").strip()
+        notify_email = str(notification.get("notify_email") or payload.get("notify_email") or legacy_notify_email).strip()
         if notify_email:
             g["sent_to_email"] = notify_email
 
-        if bool(notification.get("sent")):
+        legacy_sent = payload.get("email_sent")
+        legacy_sent_bool = str(legacy_sent).strip().lower() in ("1", "true", "yes", "y")
+        if bool(notification.get("sent")) or legacy_sent_bool:
             g["email_sent"] = "yes"
-        email_status = str(notification.get("status") or "").strip()
+        email_status = str(notification.get("status") or payload.get("email_status") or "").strip()
         if not email_status and source_prefix.startswith(JOBS_EMAIL_PENDING_PREFIX):
             email_status = "waiting_for_all_outputs"
         if email_status:
             g["email_status"] = email_status
 
-        email_updated_raw = str(notification.get("updated_at") or "")
+        email_updated_raw = str(notification.get("updated_at") or payload.get("email_updated_at") or "")
         if _as_dt(email_updated_raw) > _as_dt(g.get("email_updated_at_raw")):
             g["email_updated_at_raw"] = email_updated_raw
 
