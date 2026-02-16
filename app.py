@@ -2,7 +2,7 @@ import os
 import json
 import base64
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import boto3
 import streamlit as st
@@ -401,7 +401,7 @@ def _clear_pending_jobs() -> int:
 
 def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
     """
-    Return recent finished jobs with notification/email status for admin monitoring.
+    Return recent finished jobs grouped by group_id for admin monitoring.
     """
     if not AWS_BUCKET:
         return []
@@ -421,12 +421,8 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
                     }
                 )
 
-    # Show newest first.
-    finished_objects.sort(key=lambda x: x["last_modified"], reverse=True)
-    target = finished_objects[: max(1, int(limit))]
-
-    rows: List[Dict[str, str]] = []
-    for item in target:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for item in finished_objects:
         key = item["key"]
         try:
             obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
@@ -435,26 +431,80 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         except Exception:
             continue
 
-        notification = payload.get("notification") or {}
-        notify_email = str(notification.get("notify_email") or payload.get("notify_email") or "").strip()
-        sent_flag = bool(notification.get("sent"))
-        sent_display = "yes" if sent_flag else "no"
+        group_id = str(payload.get("group_id") or "").strip()
+        if not group_id:
+            group_id = f"no_group::{key.split('/')[-1].replace('.json', '')}"
 
+        group = grouped.setdefault(
+            group_id,
+            {
+                "group_id": group_id,
+                "employee_id": "",
+                "employee_email": "",
+                "job_status": "finished",
+                "job_updated_at_raw": "",
+                "modes_done": set(),
+                "jobs_in_group": 0,
+                "sent_to_email": "",
+                "email_sent": "no",
+                "email_status": "",
+                "email_updated_at_raw": "",
+            },
+        )
+
+        group["jobs_in_group"] = int(group.get("jobs_in_group") or 0) + 1
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode:
+            group["modes_done"].add(mode)
+
+        emp_id = str(payload.get("employee_id") or "").strip()
+        emp_email = str(payload.get("employee_email") or payload.get("notify_email") or "").strip()
+        if emp_id and not group["employee_id"]:
+            group["employee_id"] = emp_id
+        if emp_email and not group["employee_email"]:
+            group["employee_email"] = emp_email
+
+        updated_at_raw = str(payload.get("updated_at") or item.get("last_modified") or "")
+        if updated_at_raw and updated_at_raw > str(group.get("job_updated_at_raw") or ""):
+            group["job_updated_at_raw"] = updated_at_raw
+
+        notification = payload.get("notification") or {}
+        if mode in ("report", "report_th_en", "report_generator") or notification:
+            notify_email = str(notification.get("notify_email") or payload.get("notify_email") or "").strip()
+            if notify_email:
+                group["sent_to_email"] = notify_email
+
+            sent_flag = bool(notification.get("sent"))
+            if sent_flag:
+                group["email_sent"] = "yes"
+            status = str(notification.get("status") or "").strip()
+            if status:
+                group["email_status"] = status
+            email_updated_raw = str(notification.get("updated_at") or "")
+            if email_updated_raw and email_updated_raw > str(group.get("email_updated_at_raw") or ""):
+                group["email_updated_at_raw"] = email_updated_raw
+
+    rows: List[Dict[str, str]] = []
+    for group in grouped.values():
+        modes_done = sorted(list(group.get("modes_done") or []))
         rows.append(
             {
-                "job_id": str(payload.get("job_id") or key.split("/")[-1].replace(".json", "")),
-                "employee_id": str(payload.get("employee_id") or ""),
-                "employee_email": str(payload.get("employee_email") or payload.get("notify_email") or ""),
-                "job_status": str(payload.get("status") or "finished"),
-                "job_updated_at": _to_local_time_display(payload.get("updated_at") or item["last_modified"]),
-                "sent_to_email": notify_email,
-                "email_sent": sent_display,
-                "email_status": str(notification.get("status") or ""),
-                "email_updated_at": _to_local_time_display(notification.get("updated_at")),
+                "group_id": str(group.get("group_id") or ""),
+                "jobs_in_group": str(group.get("jobs_in_group") or 0),
+                "modes_done": ", ".join(modes_done),
+                "employee_id": str(group.get("employee_id") or ""),
+                "employee_email": str(group.get("employee_email") or ""),
+                "job_status": str(group.get("job_status") or "finished"),
+                "job_updated_at": _to_local_time_display(group.get("job_updated_at_raw")),
+                "sent_to_email": str(group.get("sent_to_email") or ""),
+                "email_sent": str(group.get("email_sent") or "no"),
+                "email_status": str(group.get("email_status") or ""),
+                "email_updated_at": _to_local_time_display(group.get("email_updated_at_raw")),
             }
         )
 
-    return rows
+    rows.sort(key=lambda x: str(x.get("job_updated_at") or ""), reverse=True)
+    return rows[: max(1, int(limit))]
 
 
 def _list_failed_jobs(limit: int = 50) -> List[Dict[str, str]]:

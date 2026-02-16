@@ -223,28 +223,28 @@ def generate_eye_contact_text(pct: float) -> list:
     if pct >= 90:  # Outstanding
         return [
             "• Your eye contact is outstanding — consistently steady, warm, and completely audience-focused throughout the entire presentation.",
-            "• You maintain unwavering direct gaze during all key message points, which maximizes trust, clarity, and audience engagement.",
+            "• You maintain unwavering direct gaze during key moments, which maximizes trust, clarity, and audience engagement.",
             "• Every gaze shift is purposeful, natural, and enhances your communication (e.g., thinking pauses, emphasis).",
             "• Your eye contact is a masterclass in confidence and credibility, with zero signs of avoidance or nervousness."
         ]
     elif pct >= 80:  # Excellent
         return [
             "• Your eye contact is excellent — steady, engaging, and audience-focused almost throughout the presentation.",
-            "• You consistently maintain direct gaze during key message points, which strongly increases trust and clarity.",
+            "• You consistently maintain direct gaze during key moments, which strongly increases trust and clarity.",
             "• Gaze shifts are purposeful and natural, never detracting from your professional presence.",
             "• Your eye contact demonstrates strong confidence and builds exceptional credibility with the audience."
         ]
     elif pct >= 70:  # Very Strong
         return [
             "• Your eye contact is very strong — steady and audience-focused for most of the time.",
-            "• You maintain direct gaze during key message points effectively, which clearly builds trust and clarity.",
+            "• You maintain direct gaze during key moments effectively, which clearly builds trust and clarity.",
             "• Occasional gaze shifts are natural and appropriate, showing thoughtfulness without reducing engagement.",
             "• Overall, your eye contact strongly supports confidence and credibility with the audience."
         ]
     elif pct >= 60:  # Strong
         return [
             "• Your eye contact is strong — generally steady and audience-focused during important moments.",
-            "• You maintain direct gaze during most key message points, which helps establish trust.",
+            "• You maintain direct gaze during most key moments, which helps establish trust.",
             "• Some gaze shifts occur but they're mostly natural and don't significantly impact your presence.",
             "• Your eye contact effectively supports good confidence and reasonable credibility."
         ]
@@ -265,7 +265,7 @@ def generate_eye_contact_text(pct: float) -> list:
     elif pct >= 30:  # Average
         return [
             "• Your eye contact is average, with noticeable inconsistency throughout the presentation.",
-            "• You make some direct eye contact, but it lacks the duration needed during key message points.",
+            "• You make some direct eye contact, but it lacks the duration needed during key moments.",
             "• Frequent gaze shifts away from the audience reduce connection and engagement.",
             "• Your eye contact needs strengthening to build more effective trust and credibility."
         ]
@@ -1055,7 +1055,7 @@ def build_docx_report(
         "detailed_analysis": "การวิเคราะห์โดยละเอียด (Detailed Analysis)" if is_thai else "Detailed Analysis",
         "first_impression": "1.  ความประทับใจแรกพบ (First Impression)" if is_thai else "1.  First impression",
         "eye_contact": "การสบตา (Eye Contact)" if is_thai else "Eye Contact",
-        "uprightness": "ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "Uprightness (Posture & Upper-Body Alignment",
+        "uprightness": "ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "Uprightness (Posture & Upper-Body Alignment)",
         "stance": "การยืนและการวางเท้า (Stance)" if is_thai else "Stance (Lower-Body Stability & Grounding)",
         "impact_clients": "ผลกระทบ:" if is_thai else "Impact:",
         "engaging": "2.  การสร้างความเป็นมิตรและสัมพันธภาพ (Engaging & Connecting):" if is_thai else "2.  Engaging & Connecting:",
@@ -1086,6 +1086,37 @@ def build_docx_report(
     impact_eye_en = "Strong eye contact signals presence, sincerity, and leadership confidence, making your message feel more reliable."
     impact_upright_en = "Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators."
     impact_stance_en = "A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible."
+
+    def normalize_spacing() -> None:
+        """
+        Keep a consistent spacing pattern for numbered headings and bullet points
+        across pages (especially sections 2-4).
+        """
+        for p in doc.paragraphs:
+            t = (p.text or "").strip()
+            if not t:
+                continue
+
+            pf = p.paragraph_format
+            # Numbered section headings: "1.", "2.", "3.", "4."
+            if t[:2] in ("1.", "2.", "3.", "4."):
+                pf.space_before = Pt(14)
+                pf.space_after = Pt(6)
+                pf.line_spacing = 1.1
+                continue
+
+            # Bullets use explicit "•" in content; keep unified compact rhythm.
+            if t.startswith("•"):
+                pf.space_before = Pt(0)
+                pf.space_after = Pt(6)
+                pf.line_spacing = 1.2
+                continue
+
+            # Keep impact labels/body visually grouped.
+            if t in (texts["impact_clients"], "Impact:", "ผลกระทบ:"):
+                pf.space_before = Pt(6)
+                pf.space_after = Pt(0)
+                continue
     
     # Add header and footer images to all pages
     section = doc.sections[0]
@@ -1158,7 +1189,7 @@ def build_docx_report(
         doc.add_paragraph(impact_eye_thai if is_thai else impact_eye_en)
     else:
         doc.add_paragraph("• Your eye contact is steady, warm, and audience-focused.")
-        doc.add_paragraph("• You maintain direct gaze during key message points, which increases trust and clarity.")
+        doc.add_paragraph("• You maintain direct gaze during key moments, which increases trust and clarity.")
         doc.add_paragraph("• When you shift your gaze, it is done purposefully (e.g., thinking, emphasizing).")
         doc.add_paragraph("• There is no sign of avoidance — overall, the eye contact supports confidence and credibility.")
         
@@ -1222,6 +1253,8 @@ def build_docx_report(
 
     # PAGE BREAK TO PAGE 2
     doc.add_page_break()
+    # Add one extra line of top spacing on the next page.
+    doc.add_paragraph()
     
     # ============================================================
     # PAGE 2: Engaging & Connecting + Confidence
@@ -1324,6 +1357,10 @@ def build_docx_report(
         doc.add_paragraph()
     else:
         doc.add_paragraph()
+
+    # Normalize paragraph rhythm so numbered headings and bullets follow
+    # a consistent spacing pattern throughout the document.
+    normalize_spacing()
 
     generated_para = doc.add_paragraph(texts["generated"])
     generated_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
