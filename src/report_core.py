@@ -821,31 +821,108 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     # Calculate percentages
     total_detections = max(1, sum(effort_counts.values()))
     effort_detection = {k: round(v / total_detections * 100, 1) for k, v in effort_counts.items()}
-    
+
     total_shape = max(1, sum(shape_counts.values()))
     shape_detection = {k: round(v / total_shape * 100, 1) for k, v in shape_counts.items()}
-    
-    # Calculate category scores (based on dominant movements)
-    # Engaging & Connecting: Spreading, Enclosing, Gliding (openness, warmth)
-    engaging_score = min(7, max(1, round(
-        (effort_detection.get("Spreading", 0) * 0.4 +
-         effort_detection.get("Enclosing", 0) * 0.3 +
-         effort_detection.get("Gliding", 0) * 0.3) / 5.5 + 2
-    )))
-    
-    # Confidence: Directing, Punching, Advancing (assertiveness, clarity)
-    convince_score = min(7, max(1, round(
-        (effort_detection.get("Directing", 0) * 0.4 +
-         effort_detection.get("Punching", 0) * 0.3 +
-         effort_detection.get("Advancing", 0) * 0.3) / 5.5 + 2
-    )))
-    
-    # Authority: Pressing, Punching, Directing (power, command)
-    authority_score = min(7, max(1, round(
-        (effort_detection.get("Pressing", 0) * 0.4 +
-         effort_detection.get("Punching", 0) * 0.3 +
-         effort_detection.get("Directing", 0) * 0.3) / 5.5 + 2
-    )))
+
+    # Add diversity/consistency signals so different speaking styles separate better.
+    dominant_share = max(effort_detection.values()) / 100.0 if effort_detection else 0.0
+    variety_floor = max(2, int(max(1, analyzed) * 0.03))
+    variety_count = sum(1 for v in effort_counts.values() if v >= variety_floor)
+    monotony_penalty = max(0.0, (dominant_share - 0.35) * 8.0)
+    variety_factor = max(0.85, min(1.20, 0.85 + (variety_count / 11.0) * 0.35))
+
+    total_frames = max(1, analyzed)
+    engaging_activity = (
+        effort_counts.get("Spreading", 0)
+        + effort_counts.get("Enclosing", 0)
+        + effort_counts.get("Gliding", 0)
+        + effort_counts.get("Indirecting", 0)
+    ) / total_frames
+    confidence_activity = (
+        effort_counts.get("Directing", 0)
+        + effort_counts.get("Punching", 0)
+        + effort_counts.get("Advancing", 0)
+        + effort_counts.get("Pressing", 0)
+    ) / total_frames
+    authority_activity = (
+        effort_counts.get("Pressing", 0)
+        + effort_counts.get("Punching", 0)
+        + effort_counts.get("Directing", 0)
+        + effort_counts.get("Advancing", 0)
+    ) / total_frames
+
+    engaging_boost = max(0.85, min(1.35, 0.85 + engaging_activity * 1.60))
+    confidence_boost = max(0.85, min(1.35, 0.85 + confidence_activity * 1.50))
+    authority_boost = max(0.85, min(1.35, 0.85 + authority_activity * 1.50))
+
+    # Category raw signals: positives minus small penalties from counter-signals.
+    engaging_raw = (
+        effort_detection.get("Spreading", 0) * 0.34
+        + effort_detection.get("Enclosing", 0) * 0.26
+        + effort_detection.get("Gliding", 0) * 0.22
+        + effort_detection.get("Indirecting", 0) * 0.18
+        - effort_detection.get("Punching", 0) * 0.12
+        - effort_detection.get("Retreating", 0) * 0.10
+    )
+    confidence_raw = (
+        effort_detection.get("Directing", 0) * 0.36
+        + effort_detection.get("Punching", 0) * 0.24
+        + effort_detection.get("Advancing", 0) * 0.24
+        + effort_detection.get("Pressing", 0) * 0.16
+        - effort_detection.get("Retreating", 0) * 0.18
+        - effort_detection.get("Indirecting", 0) * 0.08
+    )
+    authority_raw = (
+        effort_detection.get("Pressing", 0) * 0.34
+        + effort_detection.get("Punching", 0) * 0.26
+        + effort_detection.get("Directing", 0) * 0.24
+        + effort_detection.get("Advancing", 0) * 0.16
+        - effort_detection.get("Flicking", 0) * 0.18
+        - effort_detection.get("Retreating", 0) * 0.12
+    )
+
+    # Shape-based alignment helps separate categories with similar effort mixes.
+    engaging_shape = (
+        shape_detection.get("Spreading", 0) * 0.45
+        + shape_detection.get("Enclosing", 0) * 0.35
+        + shape_detection.get("Indirecting", 0) * 0.20
+    )
+    confidence_shape = (
+        shape_detection.get("Directing", 0) * 0.60
+        + shape_detection.get("Advancing", 0) * 0.35
+        - shape_detection.get("Retreating", 0) * 0.25
+    )
+    authority_shape = (
+        shape_detection.get("Directing", 0) * 0.55
+        + shape_detection.get("Advancing", 0) * 0.30
+        - shape_detection.get("Retreating", 0) * 0.40
+    )
+
+    engaging_raw = max(
+        0.0,
+        (engaging_raw * engaging_boost + engaging_shape * 0.22) * variety_factor - monotony_penalty * 0.90,
+    )
+    confidence_raw = max(
+        0.0,
+        (confidence_raw * confidence_boost + confidence_shape * 0.25) * variety_factor - monotony_penalty * 1.00,
+    )
+    authority_raw = max(
+        0.0,
+        (authority_raw * authority_boost + authority_shape * 0.25) * variety_factor - monotony_penalty * 1.10,
+    )
+
+    # Mild contrast expansion to avoid all categories collapsing into the same band.
+    raw_vec = np.array([engaging_raw, confidence_raw, authority_raw], dtype=float)
+    raw_mean = float(np.mean(raw_vec))
+    contrast = 0.95
+    engaging_raw = engaging_raw + contrast * (engaging_raw - raw_mean)
+    confidence_raw = confidence_raw + contrast * (confidence_raw - raw_mean)
+    authority_raw = authority_raw + contrast * (authority_raw - raw_mean)
+
+    engaging_score = min(7, max(1, round(engaging_raw / 5.4 + 1.4)))
+    convince_score = min(7, max(1, round(confidence_raw / 5.4 + 1.4)))
+    authority_score = min(7, max(1, round(authority_raw / 5.4 + 1.4)))
     
     return {
         "analysis_engine": "mediapipe_real_enhanced",
