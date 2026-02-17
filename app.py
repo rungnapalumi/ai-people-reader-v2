@@ -135,7 +135,7 @@ def _get_s3_client():
 def _render_top_banner() -> None:
     for path in BANNER_PATH_CANDIDATES:
         if os.path.exists(path):
-            st.image(path, use_container_width=True)
+            st.image(path, width="stretch")
             return
 
 
@@ -712,6 +712,122 @@ def _queue_prefix_snapshot(prefix: str, sample_limit: int = 3) -> Dict[str, Any]
     return {"prefix": prefix, "count": count, "sample_keys": sample}
 
 
+def _list_submission_inputs(limit: int = 300) -> List[Dict[str, str]]:
+    """
+    Show submitted input metadata across all job queues, grouped by group_id.
+    """
+    if not AWS_BUCKET:
+        return []
+
+    s3 = _get_s3_client()
+    prefixes = [
+        JOBS_FINISHED_PREFIX,
+        JOBS_PROCESSING_PREFIX,
+        JOBS_PENDING_PREFIX,
+        JOBS_FAILED_PREFIX,
+    ]
+    paginator = s3.get_paginator("list_objects_v2")
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    def _prefix_status(prefix: str) -> str:
+        if prefix.startswith(JOBS_FINISHED_PREFIX):
+            return "finished"
+        if prefix.startswith(JOBS_PROCESSING_PREFIX):
+            return "processing"
+        if prefix.startswith(JOBS_PENDING_PREFIX):
+            return "pending"
+        if prefix.startswith(JOBS_FAILED_PREFIX):
+            return "failed"
+        return "unknown"
+
+    for prefix in prefixes:
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                last_modified_raw = str(item.get("LastModified") or "")
+                payload: Dict[str, Any] = {}
+                try:
+                    obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
+                    payload = json.loads(obj["Body"].read().decode("utf-8"))
+                except Exception:
+                    payload = {}
+
+                group_id = str(payload.get("group_id") or "").strip()
+                if not group_id:
+                    fallback_job_id = str(payload.get("job_id") or "").strip()
+                    group_id = fallback_job_id or f"legacy::{key.split('/')[-1].replace('.json', '')}"
+
+                g = grouped.setdefault(
+                    group_id,
+                    {
+                        "group_id": group_id,
+                        "input_key": "",
+                        "organization_name": "",
+                        "notify_email": "",
+                        "employee_id": "",
+                        "employee_email": "",
+                        "status": "",
+                        "modes": set(),
+                        "updated_at_raw": "",
+                        "source_keys": 0,
+                    },
+                )
+                g["source_keys"] = int(g.get("source_keys") or 0) + 1
+
+                mode = str(payload.get("mode") or "").strip().lower()
+                if mode:
+                    g["modes"].add(mode)
+
+                input_key = str(payload.get("input_key") or "").strip()
+                if input_key and not g["input_key"]:
+                    g["input_key"] = input_key
+
+                org_name = str(payload.get("enterprise_folder") or "").strip()
+                if org_name and not g["organization_name"]:
+                    g["organization_name"] = org_name
+
+                notify_email = str(payload.get("notify_email") or "").strip()
+                if notify_email and not g["notify_email"]:
+                    g["notify_email"] = notify_email
+
+                emp_id = str(payload.get("employee_id") or "").strip()
+                if emp_id and not g["employee_id"]:
+                    g["employee_id"] = emp_id
+
+                emp_email = str(payload.get("employee_email") or "").strip()
+                if emp_email and not g["employee_email"]:
+                    g["employee_email"] = emp_email
+
+                status = str(payload.get("status") or "").strip().lower() or _prefix_status(prefix)
+                g["status"] = status
+
+                updated_at_raw = str(payload.get("updated_at") or last_modified_raw or "")
+                if updated_at_raw and updated_at_raw > str(g.get("updated_at_raw") or ""):
+                    g["updated_at_raw"] = updated_at_raw
+
+    rows: List[Dict[str, str]] = []
+    for g in grouped.values():
+        rows.append(
+            {
+                "group_id": str(g.get("group_id") or ""),
+                "organization_name": str(g.get("organization_name") or ""),
+                "employee_id": str(g.get("employee_id") or ""),
+                "employee_email": str(g.get("employee_email") or ""),
+                "notify_email": str(g.get("notify_email") or ""),
+                "input_key": str(g.get("input_key") or ""),
+                "status": str(g.get("status") or ""),
+                "modes": ", ".join(sorted(list(g.get("modes") or []))),
+                "updated_at": _to_local_time_display(g.get("updated_at_raw")),
+                "source_keys": str(g.get("source_keys") or 0),
+            }
+        )
+
+    rows.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
+    return rows[: max(1, int(limit))]
+
+
 def _render_admin_panel() -> None:
     st.subheader("Admin")
     st.caption("Login to view and clear pending jobs.")
@@ -734,7 +850,7 @@ def _render_admin_panel() -> None:
         return
 
     st.success("Logged in as admin")
-    if st.button("Logout", use_container_width=True):
+    if st.button("Logout", width="stretch"):
         st.session_state.admin_authenticated = False
         st.rerun()
 
@@ -804,7 +920,7 @@ def _render_admin_panel() -> None:
             st.error(f"Unable to load organization settings: {e}")
             org_rows = []
         if org_rows:
-            st.dataframe(org_rows, use_container_width=True, hide_index=True)
+            st.dataframe(org_rows, width="stretch", hide_index=True)
         else:
             st.caption("No organization settings yet.")
 
@@ -815,9 +931,21 @@ def _render_admin_panel() -> None:
             st.error(f"Unable to load employee registry: {e}")
             employee_rows = []
         if employee_rows:
-            st.dataframe(employee_rows, use_container_width=True, hide_index=True)
+            st.dataframe(employee_rows, width="stretch", hide_index=True)
         else:
             st.caption("No employee data yet.")
+
+    with st.expander("All Submission Inputs", expanded=False):
+        input_limit = st.slider("Show recent submission input rows", min_value=50, max_value=1000, value=300, step=50)
+        try:
+            input_rows = _list_submission_inputs(limit=input_limit)
+        except Exception as e:
+            st.error(f"Unable to load submission inputs: {e}")
+            input_rows = []
+        if input_rows:
+            st.dataframe(input_rows, width="stretch", hide_index=True)
+        else:
+            st.caption("No submission input rows found.")
 
     st.markdown("---")
     st.markdown("### Pending Jobs")
@@ -829,7 +957,7 @@ def _render_admin_panel() -> None:
 
     st.write(f"Total pending jobs: **{len(pending_rows)}**")
     if pending_rows:
-        st.dataframe(pending_rows, use_container_width=True, hide_index=True)
+        st.dataframe(pending_rows, width="stretch", hide_index=True)
     else:
         st.info("No pending jobs found.")
 
@@ -845,7 +973,7 @@ def _render_admin_panel() -> None:
                 _queue_prefix_snapshot(JOBS_FAILED_PREFIX),
                 _queue_prefix_snapshot(JOBS_EMAIL_PENDING_PREFIX),
             ]
-            st.dataframe(snapshots, use_container_width=True, hide_index=True)
+            st.dataframe(snapshots, width="stretch", hide_index=True)
         except Exception as e:
             st.error(f"Unable to load queue snapshot: {e}")
     monitor_limit = st.slider("Show recent finished jobs", min_value=10, max_value=200, value=50, step=10)
@@ -858,7 +986,7 @@ def _render_admin_panel() -> None:
     if finished_rows:
         sent_count = sum(1 for row in finished_rows if row.get("email_sent") == "yes")
         st.write(f"Loaded jobs: **{len(finished_rows)}** | Email sent: **{sent_count}**")
-        st.dataframe(finished_rows, use_container_width=True, hide_index=True)
+        st.dataframe(finished_rows, width="stretch", hide_index=True)
     else:
         st.info("No finished jobs found.")
 
@@ -873,7 +1001,7 @@ def _render_admin_panel() -> None:
 
     if failed_rows:
         st.write(f"Loaded failed jobs: **{len(failed_rows)}**")
-        st.dataframe(failed_rows, use_container_width=True, hide_index=True)
+        st.dataframe(failed_rows, width="stretch", hide_index=True)
     else:
         st.info("No failed jobs found.")
 
@@ -887,7 +1015,7 @@ def _render_admin_panel() -> None:
     if st.button(
         "Clear Pending Jobs",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         disabled=not can_clear,
     ):
         try:

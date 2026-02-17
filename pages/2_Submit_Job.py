@@ -165,7 +165,7 @@ def utc_now_iso() -> str:
 def render_top_banner() -> None:
     for path in BANNER_PATH_CANDIDATES:
         if os.path.exists(path):
-            st.image(path, use_container_width=True)
+            st.image(path, width="stretch")
             return
 
 
@@ -697,9 +697,9 @@ uploaded = st.file_uploader(
 
 colA, colB, colC = st.columns([1, 1, 2])
 with colA:
-    run = st.button("🎬 Run Analysis", type="primary", use_container_width=True)
+    run = st.button("🎬 Run Analysis", type="primary", width="stretch")
 with colB:
-    refresh = st.button("🔄 Refresh", use_container_width=True)
+    refresh = st.button("🔄 Refresh", width="stretch")
 
 with colC:
     manual_group = st.text_input(
@@ -860,7 +860,7 @@ def download_block(title: str, key: str, filename: str) -> None:
     if ready:
         url = presigned_get_url(key, expires=3600, filename=filename)
         st.success(f"✅ {title} ready")
-        st.link_button(f"Download {title}", url, use_container_width=True)
+        st.link_button(f"Download {title}", url, width="stretch")
         st.code(key, language="text")
     else:
         st.warning(f"⏳ {title} not ready yet")
@@ -895,7 +895,7 @@ videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_vi
 if videos_ready and not reports_ready:
     st.divider()
     st.warning("Reports are still not ready. You can re-run report generation for this group. (รายงานยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
-    if st.button("Re-run report generation", use_container_width=False):
+    if st.button("Re-run report generation", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
             rerun_style = get_report_style_for_group(group_id)
