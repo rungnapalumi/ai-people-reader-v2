@@ -404,7 +404,7 @@ def enqueue_report_only_job(
         "input_key": input_key,
         "client_name": client_name or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th", "en"],
+        "languages": ["th"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",
         "sample_fps": 5,
@@ -582,8 +582,10 @@ def get_report_notification_status(group_id: str) -> Dict[str, Any]:
         "notify_email": str(notif.get("notify_email") or latest_job.get("notify_email") or ""),
         "sent": bool(notif.get("sent")),
         "status": str(notif.get("status") or ""),
-        "report_sent": bool(notif.get("report_sent")),
+        "report_th_sent": bool(notif.get("report_th_sent") or notif.get("report_sent")),
+        "report_en_sent": bool(notif.get("report_en_sent")),
         "skeleton_sent": bool(notif.get("skeleton_sent")),
+        "dots_sent": bool(notif.get("dots_sent")),
         "updated_at": str(notif.get("updated_at") or latest_job.get("updated_at") or ""),
     }
 
@@ -786,7 +788,7 @@ if run:
         "input_key": input_key,
         "client_name": user_name or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th", "en"],
+        "languages": ["th"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",  # Use real MediaPipe analysis
         "sample_fps": 5,
@@ -795,6 +797,7 @@ if run:
         "report_format": effective_report_format,
         "notify_email": notify_email,
         "enterprise_folder": (enterprise_folder or "").strip(),
+        "expect_dots": False,
         "employee_id": (employee_id or "").strip(),
         "employee_email": notify_email,
     }
@@ -893,39 +896,40 @@ reports_ready = bool(en_key) and bool(th_key) and s3_key_exists(en_key) and s3_k
 skeleton_ready = bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("skeleton_video", ""))
 en_report_ready = bool(en_key) and s3_key_exists(en_key)
 th_report_ready = bool(th_key) and s3_key_exists(th_key)
+primary_done = th_report_ready
 
 st.divider()
 st.subheader("Processing Status")
 status_items = [
-    ("Skeleton Video", skeleton_ready),
-    ("Report EN", en_report_ready),
-    ("Report TH", th_report_ready),
+    ("Report TH (primary)", th_report_ready),
+    ("Report EN (follow-up)", en_report_ready),
+    ("Skeleton Video (follow-up)", skeleton_ready),
 ]
-overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
+if primary_done:
+    overall_pct = 100
+else:
+    overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
 st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
 for label, ready in status_items:
     item_pct = 100 if ready else 0
     st.progress(item_pct, text=f"{label}: {'ready' if ready else 'processing'} ({item_pct}%)")
 
 # Clear step guidance for users while waiting.
-if skeleton_ready and en_report_ready and th_report_ready:
+if th_report_ready and en_report_ready and skeleton_ready:
     current_step = "All outputs are ready."
     next_step = "Download files below. Email delivery (report/skeleton) should complete shortly."
-elif (en_report_ready and th_report_ready) and not skeleton_ready:
-    current_step = "Reports are ready; skeleton is still processing."
-    next_step = "Wait for skeleton to complete. System will send skeleton email once ready."
-elif skeleton_ready and not (en_report_ready and th_report_ready):
-    current_step = "Skeleton is ready; reports are still generating."
-    next_step = "Wait for EN/TH reports to complete. System will send report email as soon as both are ready."
+elif th_report_ready:
+    current_step = "Primary result is ready: Report TH."
+    next_step = "Job is complete. Report EN and skeleton can arrive later by email."
 else:
-    current_step = "Video analysis is running."
-    next_step = "System is generating skeleton and EN/TH reports. Keep this page open to monitor progress."
+    current_step = "Generating Report TH."
+    next_step = "Please wait for Thai report completion (primary milestone)."
 
 st.info(f"Current step: {current_step}")
 st.caption(f"Next step: {next_step}")
 
-if skeleton_ready and not reports_ready:
-    st.warning("Reports are still not ready. You can re-run report generation for this group. (รายงานยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
+if skeleton_ready and not th_report_ready:
+    st.warning("Thai report is still not ready. You can re-run report generation for this group. (รายงานภาษาไทยยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
     if st.button("Re-run report generation", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
@@ -953,18 +957,22 @@ if notification:
     st.subheader("Email Status")
     email_to = notification.get("notify_email", "")
     status = notification.get("status", "")
-    report_sent = bool(notification.get("report_sent"))
+    report_th_sent = bool(notification.get("report_th_sent"))
+    report_en_sent = bool(notification.get("report_en_sent"))
     skeleton_sent = bool(notification.get("skeleton_sent"))
+    dots_sent = bool(notification.get("dots_sent"))
     st.caption(
-        f"Report email sent: {'yes' if report_sent else 'no'} | "
-        f"Skeleton email sent: {'yes' if skeleton_sent else 'no'}"
+        f"Report TH: {'yes' if report_th_sent else 'no'} | "
+        f"Report EN: {'yes' if report_en_sent else 'no'} | "
+        f"Skeleton: {'yes' if skeleton_sent else 'no'} | "
+        f"Dots: {'yes' if dots_sent else 'no'}"
     )
-    if report_sent and skeleton_sent:
+    if report_th_sent and report_en_sent and skeleton_sent:
         st.success(f"All emails sent to: {email_to}")
-    elif report_sent and not skeleton_sent:
-        st.info(f"Report email sent to: {email_to} | Skeleton will send via mail soon.")
-    elif skeleton_sent and not report_sent:
-        st.info(f"Skeleton email sent to: {email_to} | Report will send via mail soon.")
+    elif report_th_sent and not (report_en_sent and skeleton_sent):
+        st.info(f"Thai report email sent to: {email_to} | English report and skeleton will send via mail soon.")
+    elif report_en_sent or skeleton_sent or dots_sent:
+        st.info(f"Partial email sent to: {email_to} | remaining files will send via mail soon.")
     elif status.startswith("waiting_for_"):
         st.info(f"Email queued: {status} (to: {email_to})")
     elif status in ("sending", "queued"):
@@ -976,4 +984,4 @@ if notification:
     elif status:
         st.warning(f"Email status: {status} (to: {email_to})")
 
-st.caption("Tip: ถ้า refresh แล้วไม่ขึ้น ให้ paste group_id ที่ใช้งานจริง แล้วกด Refresh ใหม่ได้ตลอด")
+st.caption("Status updates are automatic. Keep this page open to follow progress.")

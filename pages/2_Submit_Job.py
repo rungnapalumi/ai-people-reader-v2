@@ -406,7 +406,7 @@ def enqueue_report_only_job(
         "input_key": input_key,
         "client_name": client_name or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th", "en"],
+        "languages": ["th"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",
         "sample_fps": 5,
@@ -800,7 +800,7 @@ if run:
         "input_key": input_key,
         "client_name": user_name or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th", "en"],
+        "languages": ["th"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",  # Use real MediaPipe analysis
         "sample_fps": 5,
@@ -913,41 +913,42 @@ dots_ready = bool(outputs.get("dots_video")) and s3_key_exists(outputs.get("dots
 skeleton_ready = bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("skeleton_video", ""))
 en_report_ready = bool(en_key) and s3_key_exists(en_key)
 th_report_ready = bool(th_key) and s3_key_exists(th_key)
+primary_done = th_report_ready
 
 st.divider()
 st.subheader("Processing Status")
 status_items = [
-    ("Dots Video", dots_ready),
+    ("Report TH (primary)", th_report_ready),
+    ("Report EN (follow-up)", en_report_ready),
+    ("Dots Video (follow-up)", dots_ready),
     ("Skeleton Video", skeleton_ready),
-    ("Report EN", en_report_ready),
-    ("Report TH", th_report_ready),
 ]
-overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
+if primary_done:
+    overall_pct = 100
+else:
+    overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
 st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
 for label, ready in status_items:
     item_pct = 100 if ready else 0
     st.progress(item_pct, text=f"{label}: {'ready' if ready else 'processing'} ({item_pct}%)")
 
 # Clear step guidance for users while waiting.
-if dots_ready and skeleton_ready and en_report_ready and th_report_ready:
+if th_report_ready and dots_ready and skeleton_ready and en_report_ready:
     current_step = "All outputs are ready."
     next_step = "Download videos/reports below. Email delivery should complete shortly."
-elif (en_report_ready and th_report_ready) and not (dots_ready and skeleton_ready):
-    current_step = "Reports are ready; videos are still processing."
-    next_step = "Wait for dots/skeleton videos to complete."
-elif (dots_ready and skeleton_ready) and not (en_report_ready and th_report_ready):
-    current_step = "Videos are ready; reports are still generating."
-    next_step = "Wait for EN/TH reports to complete."
+elif th_report_ready:
+    current_step = "Primary result is ready: Report TH."
+    next_step = "Job is complete. Report EN and dots can arrive later by email."
 else:
-    current_step = "Video analysis is running."
-    next_step = "System is processing dots/skeleton and generating EN/TH reports."
+    current_step = "Generating Report TH."
+    next_step = "Please wait for Thai report completion (primary milestone)."
 
 st.info(f"Current step: {current_step}")
 st.caption(f"Next step: {next_step}")
 
-if videos_ready and not reports_ready:
+if videos_ready and not th_report_ready:
     st.divider()
-    st.warning("Reports are still not ready. You can re-run report generation for this group. (รายงานยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
+    st.warning("Thai report is still not ready. You can re-run report generation for this group. (รายงานภาษาไทยยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
     if st.button("Re-run report generation", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
@@ -992,4 +993,4 @@ if notification:
     elif status:
         st.warning(f"Email status: {status} (to: {email_to})")
 
-st.caption("Tip: ถ้า refresh แล้วไม่ขึ้น ให้ paste group_id ที่ใช้งานจริง แล้วกด Refresh ใหม่ได้ตลอด")
+st.caption("Status updates are automatic. Keep this page open to follow progress.")
