@@ -78,9 +78,22 @@ def s3_put_bytes(key: str, data: bytes, content_type: str) -> None:
     s3.put_object(Bucket=AWS_BUCKET, Key=key, Body=data, ContentType=content_type)
 
 
-def list_pending(limit: int = 10) -> List[str]:
-    resp = s3.list_objects_v2(Bucket=AWS_BUCKET, Prefix=PENDING, MaxKeys=limit)
-    return [x["Key"] for x in resp.get("Contents", []) if x["Key"].endswith(".json")]
+def list_pending(limit: int = 200) -> List[str]:
+    """
+    List more pending keys to avoid starvation when queue is crowded with
+    report jobs (handled by report_worker). This worker then picks non-report
+    jobs like skeleton/dots from the same pending queue.
+    """
+    keys: List[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PENDING):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if key.endswith(".json"):
+                keys.append(key)
+                if len(keys) >= limit:
+                    return keys
+    return keys
 
 
 def claim_job(pending_key: str) -> Optional[str]:
@@ -720,7 +733,9 @@ def main_loop(poll_seconds: int = 3) -> None:
     logging.info("Worker started. Bucket=%s region=%s", AWS_BUCKET, AWS_REGION)
 
     while True:
-        keys = list_pending(limit=10)
+        # Scan deeper in pending queue so skeleton/dots are not starved
+        # by many report jobs.
+        keys = list_pending(limit=200)
         if not keys:
             time.sleep(poll_seconds)
             continue

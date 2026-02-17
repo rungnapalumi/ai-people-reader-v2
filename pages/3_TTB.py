@@ -717,23 +717,12 @@ uploaded = st.file_uploader(
     accept_multiple_files=False,
 )
 
-colA, colB, colC = st.columns([1, 1, 2])
-with colA:
-    run = st.button("🎬 Run Analysis", type="primary", width="stretch")
-with colB:
-    refresh = st.button("🔄 Refresh", width="stretch")
+run = st.button("🎬 Run Analysis", type="primary", width="stretch")
 
-with colC:
-    default_group = url_group_id or st.session_state.get("last_group_id", "")
-    manual_group = st.text_input(
-        "Paste group_id to load old results (กันหายเวลา refresh/deploy)",
-        value=default_group,
-        key="manual_group_ttb",
-        placeholder="e.g., 20260207_164107_3d658__user",
-    )
-if manual_group.strip():
-    st.session_state["last_group_id"] = manual_group.strip()
-    _persist_group_id_to_url(manual_group.strip())
+active_group_id = url_group_id or st.session_state.get("last_group_id", "")
+if active_group_id:
+    st.session_state["last_group_id"] = active_group_id
+    _persist_group_id_to_url(active_group_id)
 
 note = st.empty()
 
@@ -838,7 +827,7 @@ if run:
     note.success(
         f"Submitted! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}"
     )
-    st.info("Wait a bit, then press Refresh. หรือ copy group_id เก็บไว้ แล้ว paste กลับมาได้เสมอ")
+    st.info("Processing started. You can stay on this page and wait for status/progress updates.")
 
 
 # -------------------------
@@ -847,7 +836,7 @@ if run:
 st.divider()
 st.subheader("Downloads (ผลลัพธ์สำหรับดาวน์โหลด)")
 
-group_id = (manual_group or "").strip()
+group_id = active_group_id
 if group_id:
     outputs = build_output_keys(group_id)
     # Get actual report paths from finished job JSON
@@ -917,6 +906,23 @@ st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
 for label, ready in status_items:
     item_pct = 100 if ready else 0
     st.progress(item_pct, text=f"{label}: {'ready' if ready else 'processing'} ({item_pct}%)")
+
+# Clear step guidance for users while waiting.
+if skeleton_ready and en_report_ready and th_report_ready:
+    current_step = "All outputs are ready."
+    next_step = "Download files below. Email delivery (report/skeleton) should complete shortly."
+elif (en_report_ready and th_report_ready) and not skeleton_ready:
+    current_step = "Reports are ready; skeleton is still processing."
+    next_step = "Wait for skeleton to complete. System will send skeleton email once ready."
+elif skeleton_ready and not (en_report_ready and th_report_ready):
+    current_step = "Skeleton is ready; reports are still generating."
+    next_step = "Wait for EN/TH reports to complete. System will send report email as soon as both are ready."
+else:
+    current_step = "Video analysis is running."
+    next_step = "System is generating skeleton and EN/TH reports. Keep this page open to monitor progress."
+
+st.info(f"Current step: {current_step}")
+st.caption(f"Next step: {next_step}")
 
 if skeleton_ready and not reports_ready:
     st.warning("Reports are still not ready. You can re-run report generation for this group. (รายงานยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
