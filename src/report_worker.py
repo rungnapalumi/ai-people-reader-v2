@@ -581,21 +581,33 @@ def send_result_email(
 
 def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[str, Any]:
     group_id = str(job.get("group_id") or "").strip()
+    job_id = str(job.get("job_id") or "").strip()
     en_report = outputs.get("reports", {}).get("EN", {}) or {}
     th_report = outputs.get("reports", {}).get("TH", {}) or {}
     en_key = en_report.get("docx_key") or en_report.get("pdf_key") or ""
     th_key = th_report.get("docx_key") or th_report.get("pdf_key") or ""
+    output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
+    analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+    report_format = str(job.get("report_format") or "docx").strip().lower()
+    ext = "pdf" if report_format == "pdf" else "docx"
+    if output_prefix and not th_key:
+        th_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_TH.{ext}"
+    if output_prefix and not en_key:
+        en_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_EN.{ext}"
     return {
-        "job_id": str(job.get("job_id") or "").strip(),
+        "job_id": job_id,
         "group_id": group_id,
         "enterprise_folder": str(job.get("enterprise_folder") or "").strip(),
         "notify_email": str(job.get("notify_email") or "").strip(),
+        "expect_dots": bool(job.get("expect_dots", True)),
         "dots_key": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
         "skeleton_key": f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else "",
         "report_en_key": en_key,
         "report_th_key": th_key,
-        "report_email_sent": False,
+        "report_th_email_sent": False,
+        "report_en_email_sent": False,
         "skeleton_email_sent": False,
+        "dots_email_sent": False,
         "attempts": 0,
         "updated_at": utc_now_iso(),
     }
@@ -619,9 +631,23 @@ def email_payload_report_ready(payload: Dict[str, Any]) -> bool:
         return False
     return s3_key_exists(en_key) and s3_key_exists(th_key)
 
+def email_payload_report_th_ready(payload: Dict[str, Any]) -> bool:
+    th_key = str(payload.get("report_th_key") or "").strip()
+    return bool(th_key) and s3_key_exists(th_key)
+
+def email_payload_report_en_ready(payload: Dict[str, Any]) -> bool:
+    en_key = str(payload.get("report_en_key") or "").strip()
+    return bool(en_key) and s3_key_exists(en_key)
+
 def email_payload_skeleton_ready(payload: Dict[str, Any]) -> bool:
     sk_key = str(payload.get("skeleton_key") or "").strip()
     return bool(sk_key) and s3_key_exists(sk_key)
+
+def email_payload_dots_ready(payload: Dict[str, Any]) -> bool:
+    dots_key = str(payload.get("dots_key") or "").strip()
+    if not bool(payload.get("expect_dots", True)):
+        return True
+    return bool(dots_key) and s3_key_exists(dots_key)
 
 def queue_email_pending(payload: Dict[str, Any]) -> str:
     job_id = str(payload.get("job_id") or "").strip()
@@ -635,8 +661,10 @@ def update_finished_job_notification(
     job_id: str,
     sent: bool,
     status: str,
-    report_sent: Optional[bool] = None,
+    report_th_sent: Optional[bool] = None,
+    report_en_sent: Optional[bool] = None,
     skeleton_sent: Optional[bool] = None,
+    dots_sent: Optional[bool] = None,
 ) -> None:
     if not job_id:
         return
@@ -650,10 +678,14 @@ def update_finished_job_notification(
         "status": status,
         "updated_at": utc_now_iso(),
     }
-    if report_sent is not None:
-        job["notification"]["report_sent"] = bool(report_sent)
+    if report_th_sent is not None:
+        job["notification"]["report_th_sent"] = bool(report_th_sent)
+    if report_en_sent is not None:
+        job["notification"]["report_en_sent"] = bool(report_en_sent)
     if skeleton_sent is not None:
         job["notification"]["skeleton_sent"] = bool(skeleton_sent)
+    if dots_sent is not None:
+        job["notification"]["dots_sent"] = bool(dots_sent)
     s3_put_json(key, job)
 
 def process_pending_email_queue(max_items: int = 10) -> None:
@@ -675,15 +707,19 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             job_id = str(payload.get("job_id") or "").strip()
             notify_email = str(payload.get("notify_email") or "").strip()
-            report_sent = bool(payload.get("report_email_sent"))
+            report_th_sent = bool(payload.get("report_th_email_sent"))
+            report_en_sent = bool(payload.get("report_en_email_sent"))
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
+            dots_sent = bool(payload.get("dots_email_sent"))
             if not notify_email:
                 update_finished_job_notification(
                     job_id,
                     False,
                     "skipped_no_notify_email",
-                    report_sent=report_sent,
+                    report_th_sent=report_th_sent,
+                    report_en_sent=report_en_sent,
                     skeleton_sent=skeleton_sent,
+                    dots_sent=dots_sent,
                 )
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
                 continue
@@ -691,41 +727,63 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             statuses: List[str] = []
             sent_any = False
 
-            if (not report_sent) and email_payload_report_ready(payload):
+            # Stage 1: TH report first.
+            if (not report_th_sent) and email_payload_report_th_ready(payload):
+                sent, status = send_result_email(
+                    {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
+                    {},
+                    {
+                        "Report TH": payload.get("report_th_key", ""),
+                    },
+                )
+                statuses.append(f"report_th:{status}")
+                if sent:
+                    report_th_sent = True
+                    payload["report_th_email_sent"] = True
+                    sent_any = True
+
+            # Stage 2: EN report later.
+            if (not report_en_sent) and email_payload_report_en_ready(payload):
                 sent, status = send_result_email(
                     {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
                     {},
                     {
                         "Report EN": payload.get("report_en_key", ""),
-                        "Report TH": payload.get("report_th_key", ""),
                     },
                 )
-                statuses.append(f"report:{status}")
+                statuses.append(f"report_en:{status}")
                 if sent:
-                    report_sent = True
-                    payload["report_email_sent"] = True
+                    report_en_sent = True
+                    payload["report_en_email_sent"] = True
                     sent_any = True
 
-            if (not skeleton_sent) and email_payload_skeleton_ready(payload):
-                sent, status = send_result_email(
-                    {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
-                    {
-                        "Skeleton video (MP4)": payload.get("skeleton_key", ""),
-                    },
-                    {},
-                )
-                statuses.append(f"skeleton:{status}")
-                if sent:
-                    skeleton_sent = True
-                    payload["skeleton_email_sent"] = True
-                    sent_any = True
+            # Stage 3: Dots later, independent from report readiness.
+            if (not dots_sent) and email_payload_dots_ready(payload):
+                if bool(payload.get("expect_dots", True)):
+                    sent, status = send_result_email(
+                        {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
+                        {
+                            "Dots video (MP4)": payload.get("dots_key", ""),
+                        },
+                        {},
+                    )
+                    statuses.append(f"dots:{status}")
+                    if sent:
+                        dots_sent = True
+                        payload["dots_email_sent"] = True
+                        sent_any = True
+                else:
+                    dots_sent = True
+                    payload["dots_email_sent"] = True
 
             if not statuses:
                 waiting = []
-                if not report_sent:
-                    waiting.append("report")
-                if not skeleton_sent:
-                    waiting.append("skeleton")
+                if not report_th_sent:
+                    waiting.append("report_th")
+                if not report_en_sent:
+                    waiting.append("report_en")
+                if bool(payload.get("expect_dots", True)) and not dots_sent:
+                    waiting.append("dots")
                 statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
 
             # Keep the enterprise handoff folder in sync once all outputs are ready.
@@ -745,16 +803,19 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 logger.warning("[enterprise_package] sync failed in email queue job_id=%s: %s", job_id, e)
 
             status_text = " | ".join(statuses)
-            overall_sent = bool(report_sent or skeleton_sent or sent_any)
+            overall_sent = bool(report_th_sent or report_en_sent or dots_sent or sent_any)
             update_finished_job_notification(
                 job_id,
                 overall_sent,
                 status_text,
-                report_sent=report_sent,
+                report_th_sent=report_th_sent,
+                report_en_sent=report_en_sent,
                 skeleton_sent=skeleton_sent,
+                dots_sent=dots_sent,
             )
 
-            if report_sent and skeleton_sent:
+            all_done = report_th_sent and report_en_sent and (dots_sent or (not bool(payload.get("expect_dots", True))))
+            if all_done:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
             else:
                 payload["attempts"] = int(payload.get("attempts") or 0) + 1
@@ -981,8 +1042,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if not input_key:
         raise ValueError("Job JSON missing 'input_key'")
 
-    # languages: default TH+EN
-    languages = job.get("languages") or ["th", "en"]
+    # languages: default TH only for fastest first delivery.
+    languages = job.get("languages") or ["th"]
     if isinstance(languages, str):
         languages = [languages]
     languages = [str(x).strip().lower() for x in languages if str(x).strip()]
@@ -1081,64 +1142,87 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning("[enterprise_package] initial sync failed for group_id=%s: %s", group_id, e)
 
         # Notification flow:
-        # - send report email as soon as EN+TH reports are ready
-        # - send skeleton email as soon as skeleton is ready
+        # - send TH report as soon as ready (primary milestone)
+        # - EN report and dots are follow-up deliveries
         if ENABLE_EMAIL_NOTIFICATIONS:
             payload = build_email_payload(job, outputs)
             if str(payload.get("notify_email") or "").strip():
                 statuses: List[str] = []
-                report_sent = False
+                report_th_sent = False
+                report_en_sent = False
                 skeleton_sent = False
+                dots_sent = False
 
-                if email_payload_report_ready(payload):
+                if email_payload_report_th_ready(payload):
+                    sent, status = send_result_email(
+                        {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
+                        {},
+                        {
+                            "Report TH": payload.get("report_th_key", ""),
+                        },
+                    )
+                    statuses.append(f"report_th:{status}")
+                    report_th_sent = bool(sent)
+                    payload["report_th_email_sent"] = report_th_sent
+
+                if email_payload_report_en_ready(payload):
                     sent, status = send_result_email(
                         {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
                         {},
                         {
                             "Report EN": payload.get("report_en_key", ""),
-                            "Report TH": payload.get("report_th_key", ""),
                         },
                     )
-                    statuses.append(f"report:{status}")
-                    report_sent = bool(sent)
-                    payload["report_email_sent"] = report_sent
+                    statuses.append(f"report_en:{status}")
+                    report_en_sent = bool(sent)
+                    payload["report_en_email_sent"] = report_en_sent
 
-                if email_payload_skeleton_ready(payload):
+                if bool(payload.get("expect_dots", True)) and email_payload_dots_ready(payload):
                     sent, status = send_result_email(
                         {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
                         {
-                            "Skeleton video (MP4)": payload.get("skeleton_key", ""),
+                            "Dots video (MP4)": payload.get("dots_key", ""),
                         },
                         {},
                     )
-                    statuses.append(f"skeleton:{status}")
-                    skeleton_sent = bool(sent)
-                    payload["skeleton_email_sent"] = skeleton_sent
+                    statuses.append(f"dots:{status}")
+                    dots_sent = bool(sent)
+                    payload["dots_email_sent"] = dots_sent
+                elif not bool(payload.get("expect_dots", True)):
+                    dots_sent = True
+                    payload["dots_email_sent"] = True
 
-                if not (report_sent and skeleton_sent):
+                # Primary completion milestone: TH report delivered.
+                primary_done = report_th_sent
+                followups_done = report_en_sent and (dots_sent or (not bool(payload.get("expect_dots", True))))
+                if (not primary_done) or (not followups_done):
                     queue_email_pending(payload)
                     waiting = []
-                    if not report_sent:
-                        waiting.append("report")
-                    if not skeleton_sent:
-                        waiting.append("skeleton")
+                    if not report_th_sent:
+                        waiting.append("report_th")
+                    if not report_en_sent:
+                        waiting.append("report_en")
+                    if bool(payload.get("expect_dots", True)) and not dots_sent:
+                        waiting.append("dots")
                     statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
 
-                email_sent = bool(report_sent or skeleton_sent)
+                email_sent = bool(primary_done or report_en_sent or dots_sent)
                 email_status = " | ".join(statuses) if statuses else "queued"
             else:
                 email_sent, email_status = False, "skipped_no_notify_email"
-                report_sent, skeleton_sent = False, False
+                report_th_sent, report_en_sent, skeleton_sent, dots_sent = False, False, False, False
         else:
             email_sent, email_status = False, "disabled_by_config"
-            report_sent, skeleton_sent = False, False
+            report_th_sent, report_en_sent, skeleton_sent, dots_sent = False, False, False, False
         job["notification"] = {
             "notify_email": str(job.get("notify_email") or "").strip(),
             "sent": email_sent,
             "status": email_status,
             "updated_at": utc_now_iso(),
-            "report_sent": bool(report_sent),
+            "report_th_sent": bool(report_th_sent),
+            "report_en_sent": bool(report_en_sent),
             "skeleton_sent": bool(skeleton_sent),
+            "dots_sent": bool(dots_sent),
         }
         
         # Debug: Log the outputs structure
