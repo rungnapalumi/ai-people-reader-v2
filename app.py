@@ -783,65 +783,65 @@ def _list_submission_inputs(limit: int = 300) -> List[Dict[str, str]]:
         prefix = str(item.get("prefix") or "")
         key = str(item.get("key") or "")
         last_modified_raw = str(item.get("last_modified_raw") or "")
-                payload: Dict[str, Any] = {}
-                try:
-                    obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
-                    payload = json.loads(obj["Body"].read().decode("utf-8"))
-                except Exception:
-                    payload = {}
+        payload: Dict[str, Any] = {}
+        try:
+            obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
+            payload = json.loads(obj["Body"].read().decode("utf-8"))
+        except Exception:
+            payload = {}
 
-                group_id = str(payload.get("group_id") or "").strip()
-                if not group_id:
-                    fallback_job_id = str(payload.get("job_id") or "").strip()
-                    group_id = fallback_job_id or f"legacy::{key.split('/')[-1].replace('.json', '')}"
+        group_id = str(payload.get("group_id") or "").strip()
+        if not group_id:
+            fallback_job_id = str(payload.get("job_id") or "").strip()
+            group_id = fallback_job_id or f"legacy::{key.split('/')[-1].replace('.json', '')}"
 
-                g = grouped.setdefault(
-                    group_id,
-                    {
-                        "group_id": group_id,
-                        "input_key": "",
-                        "organization_name": "",
-                        "notify_email": "",
-                        "employee_id": "",
-                        "employee_email": "",
-                        "status": "",
-                        "modes": set(),
-                        "updated_at_raw": "",
-                        "source_keys": 0,
-                    },
-                )
-                g["source_keys"] = int(g.get("source_keys") or 0) + 1
+        g = grouped.setdefault(
+            group_id,
+            {
+                "group_id": group_id,
+                "input_key": "",
+                "organization_name": "",
+                "notify_email": "",
+                "employee_id": "",
+                "employee_email": "",
+                "status": "",
+                "modes": set(),
+                "updated_at_raw": "",
+                "source_keys": 0,
+            },
+        )
+        g["source_keys"] = int(g.get("source_keys") or 0) + 1
 
-                mode = str(payload.get("mode") or "").strip().lower()
-                if mode:
-                    g["modes"].add(mode)
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode:
+            g["modes"].add(mode)
 
-                input_key = str(payload.get("input_key") or "").strip()
-                if input_key and not g["input_key"]:
-                    g["input_key"] = input_key
+        input_key = str(payload.get("input_key") or "").strip()
+        if input_key and not g["input_key"]:
+            g["input_key"] = input_key
 
-                org_name = str(payload.get("enterprise_folder") or "").strip()
-                if org_name and not g["organization_name"]:
-                    g["organization_name"] = org_name
+        org_name = str(payload.get("enterprise_folder") or "").strip()
+        if org_name and not g["organization_name"]:
+            g["organization_name"] = org_name
 
-                notify_email = str(payload.get("notify_email") or "").strip()
-                if notify_email and not g["notify_email"]:
-                    g["notify_email"] = notify_email
+        notify_email = str(payload.get("notify_email") or "").strip()
+        if notify_email and not g["notify_email"]:
+            g["notify_email"] = notify_email
 
-                emp_id = str(payload.get("employee_id") or "").strip()
-                if emp_id and not g["employee_id"]:
-                    g["employee_id"] = emp_id
+        emp_id = str(payload.get("employee_id") or "").strip()
+        if emp_id and not g["employee_id"]:
+            g["employee_id"] = emp_id
 
-                emp_email = str(payload.get("employee_email") or "").strip()
-                if emp_email and not g["employee_email"]:
-                    g["employee_email"] = emp_email
+        emp_email = str(payload.get("employee_email") or "").strip()
+        if emp_email and not g["employee_email"]:
+            g["employee_email"] = emp_email
 
-                status = str(payload.get("status") or "").strip().lower() or _prefix_status(prefix)
-                g["status"] = status
+        status = str(payload.get("status") or "").strip().lower() or _prefix_status(prefix)
+        g["status"] = status
 
-                updated_at_raw = str(payload.get("updated_at") or last_modified_raw or "")
-                if updated_at_raw and updated_at_raw > str(g.get("updated_at_raw") or ""):
-                    g["updated_at_raw"] = updated_at_raw
+        updated_at_raw = str(payload.get("updated_at") or last_modified_raw or "")
+        if updated_at_raw and updated_at_raw > str(g.get("updated_at_raw") or ""):
+            g["updated_at_raw"] = updated_at_raw
 
     rows: List[Dict[str, str]] = []
     for g in grouped.values():
