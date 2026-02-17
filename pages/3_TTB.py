@@ -582,6 +582,8 @@ def get_report_notification_status(group_id: str) -> Dict[str, Any]:
         "notify_email": str(notif.get("notify_email") or latest_job.get("notify_email") or ""),
         "sent": bool(notif.get("sent")),
         "status": str(notif.get("status") or ""),
+        "report_sent": bool(notif.get("report_sent")),
+        "skeleton_sent": bool(notif.get("skeleton_sent")),
         "updated_at": str(notif.get("updated_at") or latest_job.get("updated_at") or ""),
     }
 
@@ -655,7 +657,7 @@ apply_theme()
 render_top_banner()
 
 st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
-st.caption("Upload your video once, then click **Run Analysis** to generate dots + skeleton + reports (EN/TH).")
+st.caption("Upload your video once, then click **Run Analysis** to generate skeleton + reports (EN/TH).")
 
 page_default_org = get_default_org_for_page("ttb")
 enterprise_folder = st.text_input(
@@ -744,19 +746,6 @@ if run:
     outputs = build_output_keys(group_id)
     created_at = utc_now_iso()
 
-    job_dots = {
-        "job_id": new_job_id(),
-        "group_id": group_id,
-        "created_at": created_at,
-        "status": "pending",
-        "mode": "dots",
-        "input_key": input_key,
-        "output_key": outputs["dots_video"],
-        "user_name": user_name or "",
-        "employee_id": (employee_id or "").strip(),
-        "employee_email": notify_email,
-    }
-
     job_skel = {
         "job_id": new_job_id(),
         "group_id": group_id,
@@ -800,7 +789,6 @@ if run:
             employee_password=employee_password,
             organization_name=enterprise_folder,
         )
-        k1 = enqueue_legacy_job(job_dots)
         k2 = enqueue_legacy_job(job_skel)
         k3 = enqueue_legacy_job(job_report)
     except Exception as e:
@@ -810,12 +798,10 @@ if run:
     st.session_state["last_group_id"] = group_id
     st.session_state["last_outputs"] = outputs
     st.session_state["last_jobs"] = {
-        "dots": job_dots["job_id"],
         "skeleton": job_skel["job_id"],
         "report": job_report["job_id"],
     }
     st.session_state["last_job_json_keys"] = {
-        "dots": k1,
         "skeleton": k2,
         "report": k3,
     }
@@ -869,7 +855,6 @@ c1, c2 = st.columns(2)
 
 with c1:
     st.markdown("### Videos")
-    download_block("Dots video", outputs.get("dots_video", ""), "dots.mp4")
     download_block("Skeleton video", outputs.get("skeleton_video", ""), "skeleton.mp4")
 
 with c2:
@@ -887,10 +872,16 @@ with c2:
     download_block(f"Report TH ({report_label})", th_key, th_name)
 
 reports_ready = bool(en_key) and bool(th_key) and s3_key_exists(en_key) and s3_key_exists(th_key)
-videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("dots_video", "")) and s3_key_exists(outputs.get("skeleton_video", ""))
+skeleton_ready = bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("skeleton_video", ""))
 
-if videos_ready and not reports_ready:
-    st.divider()
+st.divider()
+st.subheader("Processing Status")
+st.write(
+    f"Skeleton: **{'ready' if skeleton_ready else 'processing'}** | "
+    f"Reports (EN/TH): **{'ready' if reports_ready else 'processing'}**"
+)
+
+if skeleton_ready and not reports_ready:
     st.warning("Reports are still not ready. You can re-run report generation for this group. (รายงานยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
     if st.button("Re-run report generation", width="content"):
         try:
@@ -919,10 +910,16 @@ if notification:
     st.subheader("Email Status")
     email_to = notification.get("notify_email", "")
     status = notification.get("status", "")
+    report_sent = bool(notification.get("report_sent"))
+    skeleton_sent = bool(notification.get("skeleton_sent"))
+    st.caption(
+        f"Report email sent: {'yes' if report_sent else 'no'} | "
+        f"Skeleton email sent: {'yes' if skeleton_sent else 'no'}"
+    )
     if notification.get("sent"):
         st.success(f"Email sent to: {email_to}")
-    elif status == "waiting_for_all_outputs":
-        st.info(f"Email queued: waiting for all outputs to complete (to: {email_to})")
+    elif status.startswith("waiting_for_"):
+        st.info(f"Email queued: {status} (to: {email_to})")
     elif status in ("sending", "queued"):
         st.info(f"Email is being sent... (to: {email_to})")
     elif status == "skipped_no_notify_email":

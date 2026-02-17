@@ -413,16 +413,24 @@ def send_result_email(
     job_id = str(job.get("job_id") or "").strip()
     group_id = str(job.get("group_id") or "").strip()
     subject = f"AI People Reader - Results Ready ({group_id or job_id})"
+    has_video_links = any(bool(v) for v in video_keys.values())
+    has_report_links = any(bool(v) for v in report_docx_keys.values())
     lines = [
         f"Job ID: {job_id}",
         f"Your analysis results are ready for group: {group_id}",
         "",
-        "Attached files:",
-        "- Report EN",
-        "- Report TH",
-        "",
-        "Video links:",
     ]
+    if has_report_links:
+        lines.extend(
+            [
+                "Attached files:",
+                "- Report EN",
+                "- Report TH",
+                "",
+            ]
+        )
+    if has_video_links:
+        lines.append("Video links:")
     for label, key in video_keys.items():
         if key:
             vname = "dots.mp4" if "Dots" in label else "skeleton.mp4"
@@ -438,11 +446,12 @@ def send_result_email(
                 rname = "report_en.docx" if "EN" in label else "report_th.docx"
             report_link_lines.append(f"- {label}: {presigned_get_url(key, filename=rname)}")
 
-    lines.extend([
-        "",
-        "Backup report links (if your email client blocks attachments):",
-    ])
-    lines.extend(report_link_lines if report_link_lines else ["- Not available"])
+    if has_report_links:
+        lines.extend([
+            "",
+            "Backup report links (if your email client blocks attachments):",
+        ])
+        lines.extend(report_link_lines if report_link_lines else ["- Not available"])
     lines.extend([
         "",
         "Links expire in 7 days.",
@@ -473,16 +482,17 @@ def send_result_email(
             url = presigned_get_url(key, filename=rname)
             html_report_rows.append(f"<li><a href=\"{escape(url)}\">{escape(label)}</a></li>")
 
+    attached_html = "<p>Attached files:<br/>- Report EN<br/>- Report TH</p>" if has_report_links else ""
+    videos_html = f"<p><b>Video links</b></p><ul>{''.join(html_video_rows) if html_video_rows else '<li>Not available</li>'}</ul>" if has_video_links else ""
+    reports_html = f"<p><b>Backup report links</b></p><ul>{''.join(html_report_rows) if html_report_rows else '<li>Not available</li>'}</ul>" if has_report_links else ""
     body_html = f"""
 <html>
   <body>
     <p><b>Job ID:</b> {escape(job_id)}<br/>
        <b>Group ID:</b> {escape(group_id)}</p>
-    <p>Attached files:<br/>- Report EN<br/>- Report TH</p>
-    <p><b>Video links</b></p>
-    <ul>{''.join(html_video_rows) if html_video_rows else '<li>Not available</li>'}</ul>
-    <p><b>Backup report links</b></p>
-    <ul>{''.join(html_report_rows) if html_report_rows else '<li>Not available</li>'}</ul>
+    {attached_html}
+    {videos_html}
+    {reports_html}
     <p>Links expire in 7 days.</p>
   </body>
 </html>
@@ -584,13 +594,15 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "skeleton_key": f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else "",
         "report_en_key": en_key,
         "report_th_key": th_key,
+        "report_email_sent": False,
+        "skeleton_email_sent": False,
         "attempts": 0,
         "updated_at": utc_now_iso(),
     }
 
 def email_payload_all_ready(payload: Dict[str, Any]) -> bool:
+    # Dots is optional now; send email when skeleton + both reports are ready.
     required = [
-        payload.get("dots_key", ""),
         payload.get("skeleton_key", ""),
         payload.get("report_en_key", ""),
         payload.get("report_th_key", ""),
@@ -600,6 +612,17 @@ def email_payload_all_ready(payload: Dict[str, Any]) -> bool:
         return False
     return all(s3_key_exists(k) for k in required)
 
+def email_payload_report_ready(payload: Dict[str, Any]) -> bool:
+    en_key = str(payload.get("report_en_key") or "").strip()
+    th_key = str(payload.get("report_th_key") or "").strip()
+    if not en_key or not th_key:
+        return False
+    return s3_key_exists(en_key) and s3_key_exists(th_key)
+
+def email_payload_skeleton_ready(payload: Dict[str, Any]) -> bool:
+    sk_key = str(payload.get("skeleton_key") or "").strip()
+    return bool(sk_key) and s3_key_exists(sk_key)
+
 def queue_email_pending(payload: Dict[str, Any]) -> str:
     job_id = str(payload.get("job_id") or "").strip()
     if not job_id:
@@ -608,7 +631,13 @@ def queue_email_pending(payload: Dict[str, Any]) -> str:
     s3_put_json(key, payload)
     return key
 
-def update_finished_job_notification(job_id: str, sent: bool, status: str) -> None:
+def update_finished_job_notification(
+    job_id: str,
+    sent: bool,
+    status: str,
+    report_sent: Optional[bool] = None,
+    skeleton_sent: Optional[bool] = None,
+) -> None:
     if not job_id:
         return
     key = f"{FINISHED_PREFIX}/{job_id}.json"
@@ -621,6 +650,10 @@ def update_finished_job_notification(job_id: str, sent: bool, status: str) -> No
         "status": status,
         "updated_at": utc_now_iso(),
     }
+    if report_sent is not None:
+        job["notification"]["report_sent"] = bool(report_sent)
+    if skeleton_sent is not None:
+        job["notification"]["skeleton_sent"] = bool(skeleton_sent)
     s3_put_json(key, job)
 
 def process_pending_email_queue(max_items: int = 10) -> None:
@@ -642,15 +675,58 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             job_id = str(payload.get("job_id") or "").strip()
             notify_email = str(payload.get("notify_email") or "").strip()
+            report_sent = bool(payload.get("report_email_sent"))
+            skeleton_sent = bool(payload.get("skeleton_email_sent"))
             if not notify_email:
-                update_finished_job_notification(job_id, False, "skipped_no_notify_email")
+                update_finished_job_notification(
+                    job_id,
+                    False,
+                    "skipped_no_notify_email",
+                    report_sent=report_sent,
+                    skeleton_sent=skeleton_sent,
+                )
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
                 continue
 
-            if not email_payload_all_ready(payload):
-                # Keep waiting until all outputs are ready.
-                update_finished_job_notification(job_id, False, "waiting_for_all_outputs")
-                continue
+            statuses: List[str] = []
+            sent_any = False
+
+            if (not report_sent) and email_payload_report_ready(payload):
+                sent, status = send_result_email(
+                    {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
+                    {},
+                    {
+                        "Report EN": payload.get("report_en_key", ""),
+                        "Report TH": payload.get("report_th_key", ""),
+                    },
+                )
+                statuses.append(f"report:{status}")
+                if sent:
+                    report_sent = True
+                    payload["report_email_sent"] = True
+                    sent_any = True
+
+            if (not skeleton_sent) and email_payload_skeleton_ready(payload):
+                sent, status = send_result_email(
+                    {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
+                    {
+                        "Skeleton video (MP4)": payload.get("skeleton_key", ""),
+                    },
+                    {},
+                )
+                statuses.append(f"skeleton:{status}")
+                if sent:
+                    skeleton_sent = True
+                    payload["skeleton_email_sent"] = True
+                    sent_any = True
+
+            if not statuses:
+                waiting = []
+                if not report_sent:
+                    waiting.append("report")
+                if not skeleton_sent:
+                    waiting.append("skeleton")
+                statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
 
             # Keep the enterprise handoff folder in sync once all outputs are ready.
             try:
@@ -668,21 +744,17 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             except Exception as e:
                 logger.warning("[enterprise_package] sync failed in email queue job_id=%s: %s", job_id, e)
 
-            sent, status = send_result_email(
-                {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
-                {
-                    "Dots video (MP4)": payload.get("dots_key", ""),
-                    "Skeleton video (MP4)": payload.get("skeleton_key", ""),
-                },
-                {
-                    "Report EN": payload.get("report_en_key", ""),
-                    "Report TH": payload.get("report_th_key", ""),
-                },
+            status_text = " | ".join(statuses)
+            overall_sent = bool(report_sent or skeleton_sent or sent_any)
+            update_finished_job_notification(
+                job_id,
+                overall_sent,
+                status_text,
+                report_sent=report_sent,
+                skeleton_sent=skeleton_sent,
             )
-            # Keep the real SES status/error reason for debugging in UI.
-            update_finished_job_notification(job_id, sent, status)
 
-            if sent or status in ("invalid_or_missing_notify_email", "missing_ses_from_email"):
+            if report_sent and skeleton_sent:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
             else:
                 payload["attempts"] = int(payload.get("attempts") or 0) + 1
@@ -1009,35 +1081,64 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning("[enterprise_package] initial sync failed for group_id=%s: %s", group_id, e)
 
         # Notification flow:
-        # - report job finishes normally
-        # - email is sent when all outputs (dots/skeleton/reports) are ready
+        # - send report email as soon as EN+TH reports are ready
+        # - send skeleton email as soon as skeleton is ready
         if ENABLE_EMAIL_NOTIFICATIONS:
             payload = build_email_payload(job, outputs)
             if str(payload.get("notify_email") or "").strip():
-                if email_payload_all_ready(payload):
-                    email_sent, email_status = send_result_email(
+                statuses: List[str] = []
+                report_sent = False
+                skeleton_sent = False
+
+                if email_payload_report_ready(payload):
+                    sent, status = send_result_email(
                         {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
-                        {
-                            "Dots video (MP4)": payload.get("dots_key", ""),
-                            "Skeleton video (MP4)": payload.get("skeleton_key", ""),
-                        },
+                        {},
                         {
                             "Report EN": payload.get("report_en_key", ""),
                             "Report TH": payload.get("report_th_key", ""),
                         },
                     )
-                else:
+                    statuses.append(f"report:{status}")
+                    report_sent = bool(sent)
+                    payload["report_email_sent"] = report_sent
+
+                if email_payload_skeleton_ready(payload):
+                    sent, status = send_result_email(
+                        {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
+                        {
+                            "Skeleton video (MP4)": payload.get("skeleton_key", ""),
+                        },
+                        {},
+                    )
+                    statuses.append(f"skeleton:{status}")
+                    skeleton_sent = bool(sent)
+                    payload["skeleton_email_sent"] = skeleton_sent
+
+                if not (report_sent and skeleton_sent):
                     queue_email_pending(payload)
-                    email_sent, email_status = False, "waiting_for_all_outputs"
+                    waiting = []
+                    if not report_sent:
+                        waiting.append("report")
+                    if not skeleton_sent:
+                        waiting.append("skeleton")
+                    statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
+
+                email_sent = bool(report_sent or skeleton_sent)
+                email_status = " | ".join(statuses) if statuses else "queued"
             else:
                 email_sent, email_status = False, "skipped_no_notify_email"
+                report_sent, skeleton_sent = False, False
         else:
             email_sent, email_status = False, "disabled_by_config"
+            report_sent, skeleton_sent = False, False
         job["notification"] = {
             "notify_email": str(job.get("notify_email") or "").strip(),
             "sent": email_sent,
             "status": email_status,
             "updated_at": utc_now_iso(),
+            "report_sent": bool(report_sent),
+            "skeleton_sent": bool(skeleton_sent),
         }
         
         # Debug: Log the outputs structure

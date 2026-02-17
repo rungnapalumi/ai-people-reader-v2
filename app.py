@@ -422,7 +422,7 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         except Exception:
             return datetime.min.replace(tzinfo=timezone.utc)
 
-    def _collect_json_objects(prefixes: List[str]) -> List[Dict[str, str]]:
+    def _collect_json_objects(prefixes: List[str], max_items: int) -> List[Dict[str, str]]:
         paginator = s3.get_paginator("list_objects_v2")
         out: List[Dict[str, str]] = []
         for prefix in prefixes:
@@ -438,9 +438,16 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
                             "last_modified_raw": str(obj.get("LastModified") or ""),
                         }
                     )
-        return out
+                    if len(out) >= max_items:
+                        break
+                if len(out) >= max_items:
+                    break
+            if len(out) >= max_items:
+                break
+        out.sort(key=lambda x: _as_dt(x.get("last_modified_raw")), reverse=True)
+        return out[:max_items]
 
-    def _collect_output_group_summaries() -> Dict[str, Dict[str, Any]]:
+    def _collect_output_group_summaries(max_groups: int) -> Dict[str, Dict[str, Any]]:
         paginator = s3.get_paginator("list_objects_v2")
         groups: Dict[str, Dict[str, Any]] = {}
         for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_OUTPUT_GROUPS_PREFIX):
@@ -473,8 +480,11 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
                     g["modes_done"].add("skeleton")
                 elif file_name.endswith(".docx") or file_name.endswith(".pdf"):
                     g["modes_done"].add("report")
+                if len(groups) >= max_groups:
+                    return groups
         return groups
 
+    max_scan = max(200, min(2000, int(limit) * 10))
     all_json = _collect_json_objects(
         [
             JOBS_FINISHED_PREFIX,
@@ -482,7 +492,8 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
             JOBS_PENDING_PREFIX,
             JOBS_FAILED_PREFIX,
             JOBS_EMAIL_PENDING_PREFIX,
-        ]
+        ],
+        max_items=max_scan,
     )
 
     grouped: Dict[str, Dict[str, Any]] = {}
@@ -590,30 +601,32 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         if _as_dt(email_updated_raw) > _as_dt(g.get("email_updated_at_raw")):
             g["email_updated_at_raw"] = email_updated_raw
 
-    output_groups = _collect_output_group_summaries()
-    for group_id, og in output_groups.items():
-        g = grouped.setdefault(
-            group_id,
-            {
-                "group_id": group_id,
-                "employee_id": "",
-                "employee_email": "",
-                "job_status": "finished_from_outputs",
-                "job_updated_at_raw": "",
-                "modes_done": set(),
-                "jobs_in_group": 0,
-                "sent_to_email": "",
-                "email_sent": "unknown",
-                "email_status": "no_job_json_found",
-                "email_updated_at_raw": "",
-            },
-        )
-        g["jobs_in_group"] = max(int(g.get("jobs_in_group") or 0), int(og.get("jobs_in_group") or 0))
-        g["modes_done"].update(og.get("modes_done") or set())
-        if _as_dt(og.get("job_updated_at_raw")) > _as_dt(g.get("job_updated_at_raw")):
-            g["job_updated_at_raw"] = str(og.get("job_updated_at_raw") or "")
-        if not str(g.get("job_status") or "").strip():
-            g["job_status"] = "finished_from_outputs"
+    # Only scan output fallback when no job JSON rows are available.
+    if not grouped:
+        output_groups = _collect_output_group_summaries(max_groups=max(100, min(2000, int(limit) * 20)))
+        for group_id, og in output_groups.items():
+            g = grouped.setdefault(
+                group_id,
+                {
+                    "group_id": group_id,
+                    "employee_id": "",
+                    "employee_email": "",
+                    "job_status": "finished_from_outputs",
+                    "job_updated_at_raw": "",
+                    "modes_done": set(),
+                    "jobs_in_group": 0,
+                    "sent_to_email": "",
+                    "email_sent": "unknown",
+                    "email_status": "no_job_json_found",
+                    "email_updated_at_raw": "",
+                },
+            )
+            g["jobs_in_group"] = max(int(g.get("jobs_in_group") or 0), int(og.get("jobs_in_group") or 0))
+            g["modes_done"].update(og.get("modes_done") or set())
+            if _as_dt(og.get("job_updated_at_raw")) > _as_dt(g.get("job_updated_at_raw")):
+                g["job_updated_at_raw"] = str(og.get("job_updated_at_raw") or "")
+            if not str(g.get("job_status") or "").strip():
+                g["job_status"] = "finished_from_outputs"
 
     rows: List[Dict[str, str]] = []
     for g in grouped.values():
@@ -740,13 +753,36 @@ def _list_submission_inputs(limit: int = 300) -> List[Dict[str, str]]:
             return "failed"
         return "unknown"
 
+    # Prevent OOM by scanning only a bounded number of most-recent keys.
+    raw_items: List[Dict[str, str]] = []
+    max_scan = max(300, min(3000, int(limit) * 12))
     for prefix in prefixes:
         for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
             for item in page.get("Contents", []):
                 key = str(item.get("Key") or "")
                 if not key.endswith(".json"):
                     continue
-                last_modified_raw = str(item.get("LastModified") or "")
+                raw_items.append(
+                    {
+                        "prefix": prefix,
+                        "key": key,
+                        "last_modified_raw": str(item.get("LastModified") or ""),
+                    }
+                )
+                if len(raw_items) >= max_scan:
+                    break
+            if len(raw_items) >= max_scan:
+                break
+        if len(raw_items) >= max_scan:
+            break
+
+    raw_items.sort(key=lambda x: str(x.get("last_modified_raw") or ""), reverse=True)
+    target_items = raw_items[:max_scan]
+
+    for item in target_items:
+        prefix = str(item.get("prefix") or "")
+        key = str(item.get("key") or "")
+        last_modified_raw = str(item.get("last_modified_raw") or "")
                 payload: Dict[str, Any] = {}
                 try:
                     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
