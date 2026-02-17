@@ -623,6 +623,25 @@ def ensure_session_defaults() -> None:
     if "last_job_json_keys" not in st.session_state:
         st.session_state["last_job_json_keys"] = {}
 
+def _read_group_id_from_url() -> str:
+    try:
+        val = st.query_params.get("group_id", "")
+        if isinstance(val, list):
+            val = val[0] if val else ""
+        return str(val or "").strip()
+    except Exception:
+        return ""
+
+def _persist_group_id_to_url(group_id: str) -> None:
+    gid = str(group_id or "").strip()
+    try:
+        if gid:
+            st.query_params["group_id"] = gid
+        elif "group_id" in st.query_params:
+            del st.query_params["group_id"]
+    except Exception:
+        pass
+
 
 def find_job_json(job_id: str) -> Optional[str]:
     candidates = [
@@ -655,6 +674,10 @@ def infer_job_bucket_status(job_key: str) -> str:
 ensure_session_defaults()
 apply_theme()
 render_top_banner()
+
+url_group_id = _read_group_id_from_url()
+if url_group_id and not st.session_state.get("last_group_id"):
+    st.session_state["last_group_id"] = url_group_id
 
 st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
 st.caption("Upload your video once, then click **Run Analysis** to generate skeleton + reports (EN/TH).")
@@ -701,11 +724,16 @@ with colB:
     refresh = st.button("🔄 Refresh", width="stretch")
 
 with colC:
+    default_group = url_group_id or st.session_state.get("last_group_id", "")
     manual_group = st.text_input(
         "Paste group_id to load old results (กันหายเวลา refresh/deploy)",
-        value=st.session_state.get("last_group_id", ""),
+        value=default_group,
+        key="manual_group_ttb",
         placeholder="e.g., 20260207_164107_3d658__user",
     )
+if manual_group.strip():
+    st.session_state["last_group_id"] = manual_group.strip()
+    _persist_group_id_to_url(manual_group.strip())
 
 note = st.empty()
 
@@ -796,6 +824,7 @@ if run:
         st.stop()
 
     st.session_state["last_group_id"] = group_id
+    _persist_group_id_to_url(group_id)
     st.session_state["last_outputs"] = outputs
     st.session_state["last_jobs"] = {
         "skeleton": job_skel["job_id"],
@@ -873,13 +902,21 @@ with c2:
 
 reports_ready = bool(en_key) and bool(th_key) and s3_key_exists(en_key) and s3_key_exists(th_key)
 skeleton_ready = bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("skeleton_video", ""))
+en_report_ready = bool(en_key) and s3_key_exists(en_key)
+th_report_ready = bool(th_key) and s3_key_exists(th_key)
 
 st.divider()
 st.subheader("Processing Status")
-st.write(
-    f"Skeleton: **{'ready' if skeleton_ready else 'processing'}** | "
-    f"Reports (EN/TH): **{'ready' if reports_ready else 'processing'}**"
-)
+status_items = [
+    ("Skeleton Video", skeleton_ready),
+    ("Report EN", en_report_ready),
+    ("Report TH", th_report_ready),
+]
+overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
+st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
+for label, ready in status_items:
+    item_pct = 100 if ready else 0
+    st.progress(item_pct, text=f"{label}: {'ready' if ready else 'processing'} ({item_pct}%)")
 
 if skeleton_ready and not reports_ready:
     st.warning("Reports are still not ready. You can re-run report generation for this group. (รายงานยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
