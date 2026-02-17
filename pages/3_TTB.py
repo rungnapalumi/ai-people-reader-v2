@@ -959,8 +959,12 @@ if notification:
         f"Report email sent: {'yes' if report_sent else 'no'} | "
         f"Skeleton email sent: {'yes' if skeleton_sent else 'no'}"
     )
-    if notification.get("sent"):
-        st.success(f"Email sent to: {email_to}")
+    if report_sent and skeleton_sent:
+        st.success(f"All emails sent to: {email_to}")
+    elif report_sent and not skeleton_sent:
+        st.info(f"Report email sent to: {email_to} | Skeleton will send via mail soon.")
+    elif skeleton_sent and not report_sent:
+        st.info(f"Skeleton email sent to: {email_to} | Report will send via mail soon.")
     elif status.startswith("waiting_for_"):
         st.info(f"Email queued: {status} (to: {email_to})")
     elif status in ("sending", "queued"):

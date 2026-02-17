@@ -1219,6 +1219,10 @@ def main() -> None:
             job_key = find_one_pending_job_key()
             if job_key:
                 process_job(job_key)
+                # Prevent starvation: keep draining email queue even when
+                # report jobs keep arriving continuously.
+                if ENABLE_EMAIL_NOTIFICATIONS:
+                    process_pending_email_queue(max_items=5)
             else:
                 if ENABLE_EMAIL_NOTIFICATIONS:
                     process_pending_email_queue(max_items=10)
