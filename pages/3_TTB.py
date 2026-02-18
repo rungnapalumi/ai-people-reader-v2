@@ -166,6 +166,23 @@ def utc_now_iso() -> str:
 def is_valid_email_format(value: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (value or "").strip()))
 
+def is_blocked_typo_domain(value: str) -> bool:
+    email = (value or "").strip().lower()
+    if "@" not in email:
+        return False
+    domain = email.split("@", 1)[1]
+    blocked_domains = {
+        "gmail.co",
+        "gmai.com",
+        "gnail.com",
+        "yahoo.co",
+        "yaho.com",
+        "hotmail.co",
+        "hotmai.com",
+        "outlook.co",
+    }
+    return domain in blocked_domains
+
 
 def render_top_banner() -> None:
     for path in BANNER_PATH_CANDIDATES:
@@ -704,9 +721,13 @@ user_name = st.text_input(
     placeholder="name@example.com",
     help="ใช้เป็นชื่อโฟลเดอร์งาน และเป็นอีเมลสำหรับส่งผลลัพธ์",
 )
+st.caption("กรุณาตรวจสอบการพิมพ์ e-mail ให้ถูกต้องก่อนกด Run Analysis (Please double-check your e-mail).")
 notify_email = (user_name or "").strip()
-if notify_email and not is_valid_email_format(notify_email):
-    st.warning("กรุณาตรวจสอบ e-mail ให้ถูกต้องอีกครั้ง (Please check your e-mail format).")
+if notify_email:
+    if not is_valid_email_format(notify_email):
+        st.warning("กรุณาตรวจสอบ e-mail ให้ถูกต้องอีกครั้ง (Please check your e-mail format).")
+    elif is_blocked_typo_domain(notify_email):
+        st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
 employee_id = st.text_input(
     "Employee ID",
     value="",
@@ -745,7 +766,7 @@ if run:
     if not notify_email:
         note.error("Please enter User Name (Email Address).")
         st.stop()
-    if not is_valid_email_format(notify_email):
+    if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
         note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
         st.stop()
     if not employee_id.strip():
@@ -951,7 +972,7 @@ if skeleton_ready and not th_report_ready:
             if not rerun_email:
                 prev_notif = get_report_notification_status(group_id)
                 rerun_email = str(prev_notif.get("notify_email") or "").strip()
-            if rerun_email and not is_valid_email_format(rerun_email):
+            if rerun_email and ((not is_valid_email_format(rerun_email)) or is_blocked_typo_domain(rerun_email)):
                 st.error("Cannot re-queue report job: invalid e-mail format. Please check e-mail again.")
                 st.stop()
             new_report_key = enqueue_report_only_job(
