@@ -1,7 +1,7 @@
 import os
 import json
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 
 import boto3
@@ -401,14 +401,37 @@ def _list_pending_jobs() -> List[Dict[str, str]]:
     return rows
 
 
-def _clear_pending_jobs() -> int:
-    """Delete all pending JSON jobs and return deleted count."""
-    pending_rows = _list_pending_jobs()
-    if not pending_rows or not AWS_BUCKET:
+def _clear_pending_jobs(older_than_minutes: int = 0) -> int:
+    """
+    Delete pending JSON jobs and return deleted count.
+    If older_than_minutes > 0, delete only jobs older than that threshold.
+    """
+    if not AWS_BUCKET:
         return 0
 
     s3 = _get_s3_client()
-    keys = [row["key"] for row in pending_rows]
+    cutoff: datetime | None = None
+    if int(older_than_minutes or 0) > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=int(older_than_minutes))
+
+    keys: List[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_PENDING_PREFIX):
+        for obj in page.get("Contents", []):
+            key = str(obj.get("Key") or "")
+            if not key.endswith(".json"):
+                continue
+            if cutoff is not None:
+                last_modified = obj.get("LastModified")
+                if isinstance(last_modified, datetime):
+                    lm = last_modified if last_modified.tzinfo else last_modified.replace(tzinfo=timezone.utc)
+                    if lm > cutoff:
+                        continue
+            keys.append(key)
+
+    if not keys:
+        return 0
+
     deleted = 0
     for i in range(0, len(keys), 1000):
         batch = keys[i : i + 1000]
@@ -1061,7 +1084,27 @@ def _render_admin_panel() -> None:
 
     st.markdown("---")
     st.markdown("### Clear Pending Jobs")
-    st.warning("Danger zone: this will permanently delete all pending job JSON files.")
+    delete_scope = st.radio(
+        "Delete scope",
+        options=["All pending jobs", "Only jobs older than (minutes)"],
+        index=1,
+        horizontal=True,
+    )
+    delete_only_older = delete_scope == "Only jobs older than (minutes)"
+    older_than_minutes = st.number_input(
+        "Older than (minutes)",
+        min_value=1,
+        max_value=10080,
+        value=30,
+        step=5,
+        disabled=not delete_only_older,
+    )
+    if delete_only_older:
+        st.warning(
+            f'Danger zone: this will permanently delete pending job JSON files older than {int(older_than_minutes)} minutes.'
+        )
+    else:
+        st.warning("Danger zone: this will permanently delete all pending job JSON files.")
     confirm_checked = st.checkbox("I understand this action cannot be undone.")
     confirm_text = st.text_input('Type "CLEAR" to confirm')
     can_clear = confirm_checked and (confirm_text.strip().upper() == "CLEAR")
@@ -1073,8 +1116,12 @@ def _render_admin_panel() -> None:
         disabled=not can_clear,
     ):
         try:
-            deleted = _clear_pending_jobs()
-            st.success(f"Cleared pending jobs: {deleted}")
+            cutoff_minutes = int(older_than_minutes) if delete_only_older else 0
+            deleted = _clear_pending_jobs(older_than_minutes=cutoff_minutes)
+            if cutoff_minutes > 0:
+                st.success(f"Cleared pending jobs older than {cutoff_minutes} minutes: {deleted}")
+            else:
+                st.success(f"Cleared pending jobs: {deleted}")
             st.rerun()
         except Exception as e:
             st.error(f"Failed to clear pending jobs: {e}")
