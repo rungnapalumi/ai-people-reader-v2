@@ -34,7 +34,7 @@ from botocore.config import Config
 # -------------------------
 # Page setup
 # -------------------------
-st.set_page_config(page_title="Video Analysis (วิเคราะห์วิดีโอ)", layout="wide")
+st.set_page_config(page_title="วิเคราะห์วิดีโอ", layout="wide")
 
 THEME_CSS = """
 <style>
@@ -172,6 +172,10 @@ JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
 ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
 EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
+TRAINING_VIDEO_KEYS = [
+    "Training/คลิปแนะนำการใช้ AI People Reader.mp4",
+    "Training/คลิปแนะนำผู้สอนและการคิดค้น AI People Reader.mp4",
+]
 
 
 # -------------------------
@@ -719,25 +723,25 @@ url_group_id = _read_group_id_from_url()
 if url_group_id and not st.session_state.get("last_group_id"):
     st.session_state["last_group_id"] = url_group_id
 
-st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
-st.caption("Upload your video once, then click **Run Analysis** to generate dots + skeleton + reports (EN/TH).")
+st.markdown("# วิเคราะห์วิดีโอ")
+st.caption("อัปโหลดวิดีโอ 1 ครั้ง แล้วกด **เริ่มวิเคราะห์** เพื่อสร้าง dots + skeleton + รายงาน")
 
 page_default_org = get_default_org_for_page("ai_people_reader")
 enterprise_folder = st.text_input(
-    "Organization Name",
+    "ชื่อองค์กร",
     value=page_default_org,
-    placeholder="e.g., TTB / ACME Group",
+    placeholder="เช่น TTB / ACME Group",
     disabled=bool(page_default_org),
 )
 if page_default_org:
-    st.caption(f"Default organization from admin page setting: {page_default_org}")
+    st.caption(f"ใช้องค์กรเริ่มต้นจากหน้าผู้ดูแลระบบ: {page_default_org}")
 user_name = st.text_input(
-    "User Name (Email Address)",
+    "อีเมลผู้ใช้งาน",
     value="",
     placeholder="name@example.com",
     help="ใช้เป็นชื่อโฟลเดอร์งาน และเป็นอีเมลสำหรับส่งผลลัพธ์",
 )
-st.caption("กรุณาตรวจสอบการพิมพ์ e-mail ให้ถูกต้องก่อนกด Run Analysis (Please double-check your e-mail).")
+st.caption("กรุณาตรวจสอบการพิมพ์ e-mail ให้ถูกต้องก่อนกดเริ่มวิเคราะห์")
 notify_email = (user_name or "").strip()
 if notify_email:
     if not is_valid_email_format(notify_email):
@@ -745,26 +749,45 @@ if notify_email:
     elif is_blocked_typo_domain(notify_email):
         st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
 employee_id = st.text_input(
-    "User (ชื่อที่ใช้ในการรายงานผล)",
+    "ชื่อที่ใช้ในการรายงานผล",
     value="",
     placeholder="e.g., คุณสมชาย / Somchai",
 )
 employee_password = st.text_input(
-    "Password",
+    "รหัสผ่าน",
     value="",
     type="password",
-    placeholder="Enter employee password",
+    placeholder="กรอกรหัสผ่านผู้ใช้งาน",
 )
 
 org_settings = get_org_settings(enterprise_folder)
 
 uploaded = st.file_uploader(
-    "Video (MP4/MOV/M4V/WEBM)",
+    "วิดีโอ (MP4/MOV/M4V/WEBM)",
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
 )
 
-run = st.button("🎬 Run Analysis", type="primary", width="stretch")
+run = st.button("🎬 เริ่มวิเคราะห์", type="primary", width="stretch")
+
+st.markdown("## ข้อแนะนำในการอัดวีดีโอ")
+st.markdown(
+    """
+1. วิดีโอควรเป็นแนวตั้ง เห็นเต็มตัวหัวจรดเท้า
+2. กรุณาถ่ายวิดีโอเป็น **Full HD (1080 x 1920)**, format **MP4 or MOV**
+3. กรุณาอย่าใส่สีขาว ดำ หรือสีเดียวกับผนัง
+4. กรุณาเลือกยืนหน้าผนังสีอ่อน หรือในกรณีที่ผนังสีเข้ม คุณควรใส่เสื้อผ้าสีอ่อน
+5. กรุณาเคลื่อนไหวและใช้ภาษามือเป็นธรรมชาติ
+6. โปรดตรวจสอบให้แน่ใจว่าวิดีโอของคุณมีความยาวอย่างน้อย 2 นาที
+"""
+)
+
+st.markdown("### วิดีโอตัวอย่าง")
+for training_key in TRAINING_VIDEO_KEYS:
+    if s3_key_exists(training_key):
+        st.video(presigned_get_url(training_key, expires=3600))
+    else:
+        st.warning(f"ไม่พบวิดีโอตัวอย่างใน S3: {training_key}")
 
 active_group_id = url_group_id or st.session_state.get("last_group_id", "")
 if active_group_id:
@@ -778,19 +801,19 @@ note = st.empty()
 # -------------------------
 if run:
     if not uploaded:
-        note.error("Please upload a video first.")
+        note.error("กรุณาอัปโหลดวิดีโอก่อน")
         st.stop()
     if not notify_email:
-        note.error("Please enter User Name (Email Address).")
+        note.error("กรุณากรอกอีเมลผู้ใช้งาน")
         st.stop()
     if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
         note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
         st.stop()
     if not employee_id.strip():
-        note.error("Please enter User (ชื่อที่ใช้ในการรายงานผล).")
+        note.error("กรุณากรอกชื่อที่ใช้ในการรายงานผล")
         st.stop()
     if not employee_password.strip():
-        note.error("Please enter Password.")
+        note.error("กรุณากรอกรหัสผ่าน")
         st.stop()
 
     effective_report_style = org_settings.get("report_style") if org_settings else "full"
@@ -807,7 +830,7 @@ if run:
             content_type=guess_content_type(uploaded.name or "input.mp4"),
         )
     except Exception as e:
-        note.error(f"Upload to S3 failed: {e}")
+        note.error(f"อัปโหลดไป S3 ไม่สำเร็จ: {e}")
         st.stop()
 
     outputs = build_output_keys(group_id)
@@ -873,7 +896,7 @@ if run:
         k2 = enqueue_legacy_job(job_skel)
         k3 = enqueue_legacy_job(job_report)
     except Exception as e:
-        note.error(f"Enqueue job failed: {e}")
+        note.error(f"ส่งงานเข้าคิวไม่สำเร็จ: {e}")
         st.stop()
 
     st.session_state["last_group_id"] = group_id
@@ -891,16 +914,16 @@ if run:
     }
 
     note.success(
-        f"Submitted! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}"
+        f"ส่งงานเรียบร้อย! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}"
     )
-    st.info("Processing started. You can stay on this page and wait for status/progress updates.")
+    st.info("เริ่มประมวลผลแล้ว สามารถอยู่หน้านี้เพื่อรอติดตามสถานะได้")
 
 
 # -------------------------
 # Download section
 # -------------------------
 st.divider()
-st.subheader("Downloads (ผลลัพธ์สำหรับดาวน์โหลด)")
+st.subheader("ผลลัพธ์สำหรับดาวน์โหลด")
 
 group_id = active_group_id
 if group_id:
@@ -913,24 +936,24 @@ if group_id:
     if report_outputs.get("report_th_docx"):
         outputs["report_th_docx"] = report_outputs["report_th_docx"]
 else:
-    st.caption("No group_id yet. Upload a video and click **Run Analysis**.")
+    st.caption("ยังไม่มี group_id กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
     st.stop()
 
-st.caption(f"Group: `{group_id}`")
+st.caption(f"กลุ่มงาน: `{group_id}`")
 
 
 def download_block(title: str, key: str, filename: str) -> None:
     if not key:
-        st.write(f"- {title}: (missing key)")
+        st.write(f"- {title}: (ยังไม่มี key)")
         return
     ready = s3_key_exists(key)
     if ready:
         url = presigned_get_url(key, expires=3600, filename=filename)
-        st.success(f"✅ {title} ready")
-        st.link_button(f"Download {title}", url, width="stretch")
+        st.success(f"✅ {title} พร้อมดาวน์โหลด")
+        st.link_button(f"ดาวน์โหลด {title}", url, width="stretch")
         st.code(key, language="text")
     else:
-        st.warning(f"⏳ {title} not ready yet")
+        st.warning(f"⏳ {title} ยังไม่พร้อม")
         st.code(key, language="text")
 
 
@@ -938,23 +961,23 @@ def download_block(title: str, key: str, filename: str) -> None:
 c1, c2 = st.columns(2)
 
 with c1:
-    st.markdown("### Videos")
-    download_block("Dots video", outputs.get("dots_video", ""), "dots.mp4")
-    download_block("Skeleton video", outputs.get("skeleton_video", ""), "skeleton.mp4")
+    st.markdown("### วิดีโอ")
+    download_block("วิดีโอ Dots", outputs.get("dots_video", ""), "dots.mp4")
+    download_block("วิดีโอ Skeleton", outputs.get("skeleton_video", ""), "skeleton.mp4")
 
 with c2:
-    st.markdown("### Reports")
+    st.markdown("### รายงาน")
     selected_pdf = (get_report_format_for_group(group_id) == "pdf")
     en_key = outputs.get("report_en_pdf", "") if selected_pdf else outputs.get("report_en_docx", "")
     th_key = outputs.get("report_th_pdf", "") if selected_pdf else outputs.get("report_th_docx", "")
     en_name = "report_en.pdf" if selected_pdf else "report_en.docx"
     th_name = "report_th.pdf" if selected_pdf else "report_th.docx"
     report_label = "PDF" if selected_pdf else "DOCX"
-    st.markdown("**English**")
-    download_block(f"Report EN ({report_label})", en_key, en_name)
+    st.markdown("**ภาษาอังกฤษ**")
+    download_block(f"รายงาน EN ({report_label})", en_key, en_name)
 
-    st.markdown("**Thai**")
-    download_block(f"Report TH ({report_label})", th_key, th_name)
+    st.markdown("**ภาษาไทย**")
+    download_block(f"รายงาน TH ({report_label})", th_key, th_name)
 
 reports_ready = bool(en_key) and bool(th_key) and s3_key_exists(en_key) and s3_key_exists(th_key)
 videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("dots_video", "")) and s3_key_exists(outputs.get("skeleton_video", ""))
@@ -965,42 +988,42 @@ th_report_ready = bool(th_key) and s3_key_exists(th_key)
 primary_done = th_report_ready
 
 st.divider()
-st.subheader("Processing Status")
+st.subheader("สถานะการประมวลผล")
 status_items = [
-    ("Report TH (primary)", th_report_ready),
-    ("Report EN (follow-up)", en_report_ready),
-    ("Dots Video (follow-up)", dots_ready),
-    ("Skeleton Video", skeleton_ready),
+    ("รายงาน TH (หลัก)", th_report_ready),
+    ("รายงาน EN (ตามหลัง)", en_report_ready),
+    ("วิดีโอ Dots (ตามหลัง)", dots_ready),
+    ("วิดีโอ Skeleton", skeleton_ready),
 ]
 if primary_done:
     overall_pct = 100
 else:
     overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
-st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
+st.progress(overall_pct, text=f"ความคืบหน้าโดยรวม: {overall_pct}%")
 for label, ready in status_items:
     item_pct = 100 if ready else 0
-    st.progress(item_pct, text=f"{label}: {'ready' if ready else 'processing'} ({item_pct}%)")
+    st.progress(item_pct, text=f"{label}: {'พร้อมแล้ว' if ready else 'กำลังประมวลผล'} ({item_pct}%)")
 
 # Clear step guidance for users while waiting.
 if th_report_ready and dots_ready and skeleton_ready and en_report_ready:
-    current_step = "All outputs are ready."
-    next_step = "Download videos/reports below. Email delivery should complete shortly."
+    current_step = "ผลลัพธ์ทั้งหมดพร้อมแล้ว"
+    next_step = "ดาวน์โหลดวิดีโอ/รายงานด้านล่างได้เลย ระบบจะส่งอีเมลครบในไม่ช้า"
 elif th_report_ready:
-    current_step = "Primary result is ready: Report TH."
-    next_step = "Job is complete. Report EN and dots can arrive later by email."
+    current_step = "ผลลัพธ์หลักพร้อมแล้ว: รายงานภาษาไทย"
+    next_step = "งานเสร็จแล้ว รายงาน EN และ dots จะส่งตามทางอีเมลภายหลัง"
 else:
-    current_step = "Generating Report TH."
-    next_step = "Please wait for Thai report completion (primary milestone)."
+    current_step = "กำลังสร้างรายงานภาษาไทย"
+    next_step = "กรุณารอให้รายงานภาษาไทยเสร็จ (หลัก)"
 
-st.info(f"Current step: {current_step}")
-st.caption(f"Next step: {next_step}")
+st.info(f"ขั้นตอนปัจจุบัน: {current_step}")
+st.caption(f"ขั้นตอนถัดไป: {next_step}")
 if th_report_ready:
     st.success("ขอบคุณที่ใช้ AI People Reader การวิเคราะห์ทั้งหมดจะถูกส่งไปในเมล์ของคุณหลังจากนี้")
 
 if videos_ready and not th_report_ready:
     st.divider()
-    st.warning("Thai report is still not ready. You can re-run report generation for this group. (รายงานภาษาไทยยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
-    if st.button("Re-run report generation", width="content"):
+    st.warning("รายงานภาษาไทยยังไม่พร้อม คุณสามารถสั่งสร้างรายงานใหม่สำหรับกลุ่มนี้ได้")
+    if st.button("สั่งสร้างรายงานใหม่", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
             rerun_style = get_report_style_for_group(group_id)
@@ -1014,7 +1037,7 @@ if videos_ready and not th_report_ready:
                 prev_notif = get_report_notification_status(group_id)
                 rerun_email = str(prev_notif.get("notify_email") or "").strip()
             if rerun_email and ((not is_valid_email_format(rerun_email)) or is_blocked_typo_domain(rerun_email)):
-                st.error("Cannot re-queue report job: invalid e-mail format. Please check e-mail again.")
+                st.error("ไม่สามารถส่งงานสร้างรายงานใหม่ได้: รูปแบบ e-mail ไม่ถูกต้อง")
                 st.stop()
             new_report_key = enqueue_report_only_job(
                 group_id=group_id,
@@ -1024,27 +1047,27 @@ if videos_ready and not th_report_ready:
                 enterprise_folder=(enterprise_folder or "").strip(),
                 notify_email=rerun_email,
             )
-            st.success(f"Queued report job again ({rerun_style}, {rerun_format}): {new_report_key}")
+            st.success(f"ส่งงานสร้างรายงานใหม่เข้าคิวแล้ว ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:
-            st.error(f"Cannot re-queue report job: {e}")
+            st.error(f"ไม่สามารถส่งงานสร้างรายงานใหม่เข้าคิวได้: {e}")
 
 notification = get_report_notification_status(group_id)
 if notification:
     st.divider()
-    st.subheader("Email Status")
+    st.subheader("สถานะอีเมล")
     email_to = notification.get("notify_email", "")
     status = notification.get("status", "")
     if notification.get("sent"):
-        st.success(f"Email sent to: {email_to}")
+        st.success(f"ส่งอีเมลแล้วไปที่: {email_to}")
     elif status == "waiting_for_all_outputs":
-        st.info(f"Email queued: waiting for all outputs to complete (to: {email_to})")
+        st.info(f"อีเมลอยู่ในคิว: รอผลลัพธ์ครบทั้งหมด (ปลายทาง: {email_to})")
     elif status in ("sending", "queued"):
-        st.info(f"Email is being sent... (to: {email_to})")
+        st.info(f"กำลังส่งอีเมล... (ปลายทาง: {email_to})")
     elif status == "skipped_no_notify_email":
-        st.caption("No notification email provided for this job.")
+        st.caption("งานนี้ไม่ได้ระบุอีเมลสำหรับแจ้งผล")
     elif status == "disabled_by_config":
-        st.caption("Email sending is disabled by config.")
+        st.caption("ระบบปิดการส่งอีเมลไว้ตามการตั้งค่า")
     elif status:
-        st.warning(f"Email status: {status} (to: {email_to})")
+        st.warning(f"สถานะอีเมล: {status} (ปลายทาง: {email_to})")
 
-st.caption("Status updates are automatic. Keep this page open to follow progress.")
+st.caption("สถานะจะอัปเดตอัตโนมัติ แนะนำให้เปิดหน้านี้ไว้เพื่อติดตามความคืบหน้า")
