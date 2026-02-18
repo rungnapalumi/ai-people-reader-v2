@@ -86,6 +86,8 @@ EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800
 MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
 ENABLE_EMAIL_NOTIFICATIONS = str(os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "true")).strip().lower() in ("1", "true", "yes", "on")
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
+MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
+EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 
 # Defaults (can be overridden per-job)
 DEFAULT_ANALYSIS_MODE = os.getenv("ANALYSIS_MODE", "real").strip().lower()  # "real" or "fallback"
@@ -657,6 +659,21 @@ def queue_email_pending(payload: Dict[str, Any]) -> str:
     s3_put_json(key, payload)
     return key
 
+
+def move_email_pending_to_suspend(key: str, payload: Dict[str, Any], reason: str) -> str:
+    """
+    Archive stuck/invalid email-pending payloads for manual audit and remove from active queue.
+    """
+    base = os.path.basename(str(key or "").strip()) or f"{str(payload.get('job_id') or 'unknown')}.json"
+    suspend_key = f"{EMAIL_SUSPEND_PREFIX}/{base}"
+    archived_payload = dict(payload or {})
+    archived_payload["suspend_reason"] = str(reason or "").strip()
+    archived_payload["suspended_at"] = utc_now_iso()
+    archived_payload["source_queue_key"] = key
+    s3_put_json(suspend_key, archived_payload)
+    s3.delete_object(Bucket=AWS_BUCKET, Key=key)
+    return suspend_key
+
 def update_finished_job_notification(
     job_id: str,
     sent: bool,
@@ -711,6 +728,24 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             report_en_sent = bool(payload.get("report_en_email_sent"))
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
             dots_sent = bool(payload.get("dots_email_sent"))
+            attempts = int(payload.get("attempts") or 0)
+            if attempts >= MAX_EMAIL_RETRY_ATTEMPTS:
+                update_finished_job_notification(
+                    job_id,
+                    bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
+                    f"stopped_max_email_retries_{MAX_EMAIL_RETRY_ATTEMPTS}",
+                    report_th_sent=report_th_sent,
+                    report_en_sent=report_en_sent,
+                    skeleton_sent=skeleton_sent,
+                    dots_sent=dots_sent,
+                )
+                suspended_key = move_email_pending_to_suspend(
+                    key,
+                    payload,
+                    reason=f"max_email_retries_{MAX_EMAIL_RETRY_ATTEMPTS}",
+                )
+                logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
+                continue
             if not notify_email:
                 update_finished_job_notification(
                     job_id,
@@ -721,7 +756,21 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     skeleton_sent=skeleton_sent,
                     dots_sent=dots_sent,
                 )
-                s3.delete_object(Bucket=AWS_BUCKET, Key=key)
+                suspended_key = move_email_pending_to_suspend(key, payload, reason="missing_notify_email")
+                logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
+                continue
+            if not is_valid_email(notify_email):
+                update_finished_job_notification(
+                    job_id,
+                    False,
+                    "skipped_invalid_notify_email",
+                    report_th_sent=report_th_sent,
+                    report_en_sent=report_en_sent,
+                    skeleton_sent=skeleton_sent,
+                    dots_sent=dots_sent,
+                )
+                suspended_key = move_email_pending_to_suspend(key, payload, reason="invalid_notify_email")
+                logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
                 continue
 
             statuses: List[str] = []
@@ -834,8 +883,8 @@ def list_pending_json_keys() -> Iterable[str]:
 
 def find_one_pending_job_key() -> Optional[str]:
     picked_key: Optional[str] = None
-    picked_priority = -1
     picked_created_at = ""
+    picked_priority = -1
 
     for k in list_pending_json_keys():
         try:
@@ -850,12 +899,12 @@ def find_one_pending_job_key() -> Optional[str]:
             priority = int(job.get("priority") or 0)
             created_at = str(job.get("created_at") or "")
             if (
-                priority > picked_priority
-                or (priority == picked_priority and created_at > picked_created_at)
+                created_at > picked_created_at
+                or (created_at == picked_created_at and priority > picked_priority)
             ):
                 picked_key = k
-                picked_priority = priority
                 picked_created_at = created_at
+                picked_priority = priority
 
         logger.info("[find_one_pending_job_key] ignore non-report key=%s mode=%s", k, mode)
     if picked_key:
@@ -1146,7 +1195,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         # - EN report and dots are follow-up deliveries
         if ENABLE_EMAIL_NOTIFICATIONS:
             payload = build_email_payload(job, outputs)
-            if str(payload.get("notify_email") or "").strip():
+            notify_email_value = str(payload.get("notify_email") or "").strip()
+            if notify_email_value and is_valid_email(notify_email_value):
                 statuses: List[str] = []
                 report_th_sent = False
                 report_en_sent = False
@@ -1208,6 +1258,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 email_sent = bool(primary_done or report_en_sent or dots_sent)
                 email_status = " | ".join(statuses) if statuses else "queued"
+            elif notify_email_value:
+                # Invalid address should not be queued/retried forever.
+                email_sent, email_status = False, "skipped_invalid_notify_email"
+                report_th_sent, report_en_sent, skeleton_sent, dots_sent = False, False, False, False
             else:
                 email_sent, email_status = False, "skipped_no_notify_email"
                 report_th_sent, report_en_sent, skeleton_sent, dots_sent = False, False, False, False
