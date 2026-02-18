@@ -927,6 +927,8 @@ else:
 
 st.info(f"Current step: {current_step}")
 st.caption(f"Next step: {next_step}")
+if th_report_ready:
+    st.success("ขอบคุณที่ใช้ AI People Reader การวิเคราะห์ทั้งหมดจะถูกส่งไปในเมล์ของคุณหลังจากนี้")
 
 if skeleton_ready and not th_report_ready:
     st.warning("Thai report is still not ready. You can re-run report generation for this group. (รายงานภาษาไทยยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
