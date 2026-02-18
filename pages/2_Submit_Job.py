@@ -21,6 +21,7 @@
 import os
 import json
 import uuid
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -160,6 +161,10 @@ EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
 # -------------------------
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_valid_email_format(value: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (value or "").strip()))
 
 
 def render_top_banner() -> None:
@@ -698,6 +703,8 @@ user_name = st.text_input(
     help="ใช้เป็นชื่อโฟลเดอร์งาน และเป็นอีเมลสำหรับส่งผลลัพธ์",
 )
 notify_email = (user_name or "").strip()
+if notify_email and not is_valid_email_format(notify_email):
+    st.warning("กรุณาตรวจสอบ e-mail ให้ถูกต้องอีกครั้ง (Please check your e-mail format).")
 employee_id = st.text_input(
     "Employee ID",
     value="",
@@ -736,6 +743,9 @@ if run:
         st.stop()
     if not notify_email:
         note.error("Please enter User Name (Email Address).")
+        st.stop()
+    if not is_valid_email_format(notify_email):
+        note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
         st.stop()
     if not employee_id.strip():
         note.error("Please enter Employee ID.")
@@ -964,6 +974,9 @@ if videos_ready and not th_report_ready:
             if not rerun_email:
                 prev_notif = get_report_notification_status(group_id)
                 rerun_email = str(prev_notif.get("notify_email") or "").strip()
+            if rerun_email and not is_valid_email_format(rerun_email):
+                st.error("Cannot re-queue report job: invalid e-mail format. Please check e-mail again.")
+                st.stop()
             new_report_key = enqueue_report_only_job(
                 group_id=group_id,
                 client_name=guessed_name,
