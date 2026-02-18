@@ -34,6 +34,15 @@ THEME_CSS = """
   border-right: 1px solid var(--border);
 }
 
+[data-testid="stSidebarNav"] a,
+[data-testid="stSidebarNav"] button,
+[data-testid="stSidebarNav"] a p,
+[data-testid="stSidebarNav"] a span,
+[data-testid="stSidebarNav"] button p,
+[data-testid="stSidebarNav"] button span {
+  color: #ffffff !important;
+}
+
 h1, h2, h3, h4, h5, h6 {
   color: #f0e4d4 !important;
 }
@@ -101,7 +110,7 @@ def _apply_theme() -> None:
 
 # Sidebar page names can be customized here.
 HOME_PAGE_TITLE = "Admin"
-SUBMIT_PAGE_TITLE = "AI People Reader"
+SUBMIT_PAGE_TITLE = "SkillLane"
 TTB_PAGE_TITLE = "TTB"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "0108"
@@ -1066,7 +1075,7 @@ def _render_home() -> None:
     _apply_theme()
     _render_top_banner()
     st.title("AI People Reader V2")
-    st.caption("Go to left menu -> AI People Reader")
+    st.caption("Go to left menu -> SkillLane")
     _render_admin_panel()
 
 

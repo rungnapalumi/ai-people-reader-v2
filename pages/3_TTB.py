@@ -59,6 +59,15 @@ THEME_CSS = """
   border-right: 1px solid var(--border);
 }
 
+[data-testid="stSidebarNav"] a,
+[data-testid="stSidebarNav"] button,
+[data-testid="stSidebarNav"] a p,
+[data-testid="stSidebarNav"] a span,
+[data-testid="stSidebarNav"] button p,
+[data-testid="stSidebarNav"] button span {
+  color: #ffffff !important;
+}
+
 h1, h2, h3, h4, h5, h6 {
   color: #f0e4d4 !important;
 }
