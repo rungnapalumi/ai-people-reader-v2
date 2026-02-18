@@ -95,6 +95,15 @@ p, label, span, div {
   border: 1px dashed var(--border) !important;
 }
 
+[data-testid="stFileUploader"] section button {
+  font-size: 0 !important;
+}
+
+[data-testid="stFileUploader"] section button::after {
+  content: "Browse File";
+  font-size: 1.1rem;
+}
+
 .stButton > button,
 .stDownloadButton > button,
 .stLinkButton > a {

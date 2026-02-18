@@ -95,6 +95,15 @@ p, label, span, div {
   border: 1px dashed var(--border) !important;
 }
 
+[data-testid="stFileUploader"] section button {
+  font-size: 0 !important;
+}
+
+[data-testid="stFileUploader"] section button::after {
+  content: "Browse File";
+  font-size: 1.1rem;
+}
+
 .stButton > button,
 .stDownloadButton > button,
 .stLinkButton > a {
@@ -736,9 +745,9 @@ if notify_email:
     elif is_blocked_typo_domain(notify_email):
         st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
 employee_id = st.text_input(
-    "Employee ID",
+    "User (ชื่อที่ใช้ในการรายงานผล)",
     value="",
-    placeholder="e.g., EMP001",
+    placeholder="e.g., คุณสมชาย / Somchai",
 )
 employee_password = st.text_input(
     "Password",
@@ -778,7 +787,7 @@ if run:
         note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
         st.stop()
     if not employee_id.strip():
-        note.error("Please enter Employee ID.")
+        note.error("Please enter User (ชื่อที่ใช้ในการรายงานผล).")
         st.stop()
     if not employee_password.strip():
         note.error("Please enter Password.")
