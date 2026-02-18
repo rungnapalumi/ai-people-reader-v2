@@ -172,9 +172,15 @@ JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
 ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
 EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
-TRAINING_VIDEO_KEYS = [
-    "Training/คลิปแนะนำการใช้ AI People Reader.mp4",
-    "Training/คลิปแนะนำผู้สอนและการคิดค้น AI People Reader.mp4",
+TRAINING_VIDEOS = [
+    {
+        "title": "คลิปแนะนำการใช้ AI People Reader",
+        "key": "Training/คลิปแนะนำการใช้ AI People Reader.mp4",
+    },
+    {
+        "title": "คลิปแนะนำผู้สอนและการคิดค้น AI People Reader",
+        "key": "Training/คลิปแนะนำผู้สอนและการคิดค้น AI People Reader.mp4",
+    },
 ]
 
 
@@ -782,12 +788,15 @@ st.markdown(
 """
 )
 
-st.markdown("### วิดีโอตัวอย่าง")
-for training_key in TRAINING_VIDEO_KEYS:
-    if s3_key_exists(training_key):
+for training_video in TRAINING_VIDEOS:
+    title = str(training_video.get("title") or "").strip()
+    training_key = str(training_video.get("key") or "").strip()
+    if title:
+        st.markdown(f"### {title}")
+    if training_key and s3_key_exists(training_key):
         st.video(presigned_get_url(training_key, expires=3600))
     else:
-        st.warning(f"ไม่พบวิดีโอตัวอย่างใน S3: {training_key}")
+        st.warning(f"ไม่พบวิดีโอใน S3: {training_key}")
 
 active_group_id = url_group_id or st.session_state.get("last_group_id", "")
 if active_group_id:
