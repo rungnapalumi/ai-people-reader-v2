@@ -329,6 +329,15 @@ def save_employee_registry(
     key = employee_registry_key(employee_id)
     if not key:
         return
+    existing = s3_read_json(key) or {}
+    if existing:
+        existing_email = str(existing.get("employee_email") or "").strip().lower()
+        existing_password = str(existing.get("employee_password") or "").strip()
+        incoming_email = str(employee_email or "").strip().lower()
+        incoming_password = str(employee_password or "").strip()
+        # Prevent account takeover by overwriting an existing employee_id with new credentials.
+        if existing_email and existing_password and (existing_email != incoming_email or existing_password != incoming_password):
+            raise ValueError("Employee credentials do not match existing account")
     payload = {
         "employee_id": (employee_id or "").strip(),
         "employee_email": (employee_email or "").strip(),
@@ -337,6 +346,60 @@ def save_employee_registry(
         "updated_at": utc_now_iso(),
     }
     s3_put_json(key, payload)
+
+
+def normalize_email(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def get_employee_registry(employee_id: str) -> Dict[str, str]:
+    key = employee_registry_key(employee_id)
+    if not key:
+        return {}
+    payload = s3_read_json(key) or {}
+    return {
+        "employee_id": str(payload.get("employee_id") or "").strip(),
+        "employee_email": normalize_email(payload.get("employee_email")),
+        "employee_password": str(payload.get("employee_password") or "").strip(),
+    }
+
+
+def is_employee_identity_verified(employee_id: str, employee_email: str, employee_password: str) -> bool:
+    reg = get_employee_registry(employee_id)
+    if not reg:
+        return False
+    return (
+        normalize_email(employee_email) == reg.get("employee_email", "")
+        and str(employee_password or "").strip() == reg.get("employee_password", "")
+    )
+
+
+def is_group_owned_by_employee(group_id: str, employee_id: str, employee_email: str) -> bool:
+    gid = str(group_id or "").strip()
+    eid = str(employee_id or "").strip().lower()
+    eml = normalize_email(employee_email)
+    if not gid or not eid or not eml:
+        return False
+
+    prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
+    try:
+        for prefix in prefixes:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = str(item.get("Key") or "")
+                    if not key.endswith(".json"):
+                        continue
+                    job_data = s3_read_json(key) or {}
+                    if str(job_data.get("group_id") or "").strip() != gid:
+                        continue
+                    job_eid = str(job_data.get("employee_id") or "").strip().lower()
+                    job_eml = normalize_email(job_data.get("employee_email") or job_data.get("notify_email"))
+                    if job_eid == eid and job_eml == eml:
+                        return True
+    except Exception:
+        return False
+    return False
 
 
 def normalize_org_name(name: str) -> str:
@@ -767,12 +830,26 @@ uploaded = st.file_uploader(
 
 run = st.button("🎬 Run Analysis", type="primary", width="stretch")
 
-active_group_id = url_group_id or st.session_state.get("last_group_id", "")
-if active_group_id:
+has_identity_input = bool(employee_id.strip() and notify_email and employee_password.strip())
+identity_verified = False
+if has_identity_input:
+    identity_verified = is_employee_identity_verified(employee_id, notify_email, employee_password)
+
+candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id
+active_group_id = ""
+blocked_group_id = ""
+if candidate_group_id and identity_verified and is_group_owned_by_employee(candidate_group_id, employee_id, notify_email):
+    active_group_id = candidate_group_id
     st.session_state["last_group_id"] = active_group_id
     _persist_group_id_to_url(active_group_id)
+elif candidate_group_id:
+    blocked_group_id = candidate_group_id
+    st.session_state["last_group_id"] = ""
+    _persist_group_id_to_url("")
 
 note = st.empty()
+if blocked_group_id:
+    note.warning("This group_id is not accessible by the current account. Enter your own credentials to view your jobs only.")
 
 # -------------------------
 # Submit jobs
@@ -866,6 +943,7 @@ if run:
 
     st.session_state["last_group_id"] = group_id
     _persist_group_id_to_url(group_id)
+    active_group_id = group_id
     st.session_state["last_outputs"] = outputs
     st.session_state["last_jobs"] = {
         "skeleton": job_skel["job_id"],
@@ -879,7 +957,43 @@ if run:
     note.success(
         f"Submitted! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}"
     )
-    st.info("Processing started. You can stay on this page and wait for status/progress updates.")
+    st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
+
+group_id = active_group_id
+if group_id:
+    notification = get_report_notification_status(group_id)
+    if notification:
+        st.divider()
+        st.subheader("Email Status")
+        email_to = notification.get("notify_email", "")
+        status = notification.get("status", "")
+        report_th_sent = bool(notification.get("report_th_sent"))
+        report_en_sent = bool(notification.get("report_en_sent"))
+        skeleton_sent = bool(notification.get("skeleton_sent"))
+        dots_sent = bool(notification.get("dots_sent"))
+        st.caption(
+            f"Report TH: {'yes' if report_th_sent else 'no'} | "
+            f"Report EN: {'yes' if report_en_sent else 'no'} | "
+            f"Skeleton: {'yes' if skeleton_sent else 'no'} | "
+            f"Dots: {'yes' if dots_sent else 'no'}"
+        )
+        if report_th_sent and report_en_sent and skeleton_sent:
+            st.success(f"All emails sent to: {email_to}")
+        elif report_th_sent and not (report_en_sent and skeleton_sent):
+            st.info(f"Thai report email sent to: {email_to} | English report and skeleton will send via mail soon.")
+        elif report_en_sent or skeleton_sent or dots_sent:
+            st.info(f"Partial email sent to: {email_to} | remaining files will send via mail soon.")
+        elif status.startswith("waiting_for_"):
+            st.info(f"Email queued: {status} (to: {email_to})")
+        elif status in ("sending", "queued"):
+            st.info(f"Email is being sent... (to: {email_to})")
+        elif status == "skipped_no_notify_email":
+            st.caption("No notification email provided for this job.")
+        elif status == "disabled_by_config":
+            st.caption("Email sending is disabled by config.")
+        elif status:
+            st.warning(f"Email status: {status} (to: {email_to})")
+        st.caption("Status updates are automatic. Keep this page open to follow progress.")
 
 
 # -------------------------
@@ -899,7 +1013,10 @@ if group_id:
     if report_outputs.get("report_th_docx"):
         outputs["report_th_docx"] = report_outputs["report_th_docx"]
 else:
-    st.caption("No group_id yet. Upload a video and click **Run Analysis**.")
+    if has_identity_input and not identity_verified:
+        st.caption("Please enter the correct Employee ID / Email / Password to view only your own jobs.")
+    else:
+        st.caption("No accessible group_id for this account yet. Upload a video and click **Run Analysis**.")
     st.stop()
 
 st.caption(f"Group: `{group_id}`")
@@ -1004,38 +1121,3 @@ if skeleton_ready and not th_report_ready:
             st.success(f"Queued report job again ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:
             st.error(f"Cannot re-queue report job: {e}")
-
-notification = get_report_notification_status(group_id)
-if notification:
-    st.divider()
-    st.subheader("Email Status")
-    email_to = notification.get("notify_email", "")
-    status = notification.get("status", "")
-    report_th_sent = bool(notification.get("report_th_sent"))
-    report_en_sent = bool(notification.get("report_en_sent"))
-    skeleton_sent = bool(notification.get("skeleton_sent"))
-    dots_sent = bool(notification.get("dots_sent"))
-    st.caption(
-        f"Report TH: {'yes' if report_th_sent else 'no'} | "
-        f"Report EN: {'yes' if report_en_sent else 'no'} | "
-        f"Skeleton: {'yes' if skeleton_sent else 'no'} | "
-        f"Dots: {'yes' if dots_sent else 'no'}"
-    )
-    if report_th_sent and report_en_sent and skeleton_sent:
-        st.success(f"All emails sent to: {email_to}")
-    elif report_th_sent and not (report_en_sent and skeleton_sent):
-        st.info(f"Thai report email sent to: {email_to} | English report and skeleton will send via mail soon.")
-    elif report_en_sent or skeleton_sent or dots_sent:
-        st.info(f"Partial email sent to: {email_to} | remaining files will send via mail soon.")
-    elif status.startswith("waiting_for_"):
-        st.info(f"Email queued: {status} (to: {email_to})")
-    elif status in ("sending", "queued"):
-        st.info(f"Email is being sent... (to: {email_to})")
-    elif status == "skipped_no_notify_email":
-        st.caption("No notification email provided for this job.")
-    elif status == "disabled_by_config":
-        st.caption("Email sending is disabled by config.")
-    elif status:
-        st.warning(f"Email status: {status} (to: {email_to})")
-
-st.caption("Status updates are automatic. Keep this page open to follow progress.")
