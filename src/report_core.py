@@ -250,45 +250,31 @@ def generate_eye_contact_text(pct: float) -> list:
         ]
     elif pct >= 50:  # Good
         return [
-            "• Your eye contact is good, though you occasionally look away more frequently than ideal.",
-            "• You maintain direct gaze during many important points, which helps build adequate trust.",
-            "• Some gaze shifts could be reduced to maintain stronger and more consistent audience connection.",
-            "• Your eye contact is acceptable overall and supports reasonable engagement with the audience."
+            "• Your eye contact shows a good foundation, with several effective moments of direct audience connection.",
+            "• You maintain direct gaze during many important points, which helps build trust.",
+            "• With slightly longer eye contact in key moments, your delivery will feel even more confident.",
+            "• Overall, your audience engagement is positive and can be strengthened further."
         ]
     elif pct >= 40:  # Above Average
         return [
-            "• Your eye contact is above average but shows room for improvement in consistency.",
-            "• You make direct eye contact regularly, but it could be more sustained during crucial points.",
-            "• Gaze shifts happen somewhat frequently, which can slightly reduce audience connection.",
-            "• Increasing eye contact duration will noticeably improve your trust-building and credibility."
+            "• Your eye contact is developing well, with regular moments of direct audience connection.",
+            "• You make direct eye contact consistently, and sustaining it slightly longer will increase impact.",
+            "• Some gaze shifts occur more frequently than ideal, but this is very trainable.",
+            "• Improving consistency will noticeably enhance trust and credibility."
         ]
     elif pct >= 30:  # Average
         return [
-            "• Your eye contact is average, with noticeable inconsistency throughout the presentation.",
-            "• You make some direct eye contact, but it lacks the duration needed during key moments.",
-            "• Frequent gaze shifts away from the audience reduce connection and engagement.",
-            "• Your eye contact needs strengthening to build more effective trust and credibility."
+            "• Your eye contact is in a developing stage, with clear opportunities to become more consistent.",
+            "• You already connect directly with the audience at times, especially in selected moments.",
+            "• Extending direct gaze a bit longer will strengthen audience connection and engagement.",
+            "• With focused practice, trust and credibility cues will improve clearly."
         ]
-    elif pct >= 20:  # Below Average
+    else:
         return [
-            "• Your eye contact is below average, with significant inconsistency and frequent avoidance.",
-            "• Limited direct eye contact reduces audience trust and makes it harder to connect with listeners.",
-            "• You look away quite often, which can signal discomfort or lack of confidence.",
-            "• Improving eye contact should be a priority to enhance your presence and credibility."
-        ]
-    elif pct >= 10:  # Weak
-        return [
-            "• Your eye contact is weak, with very limited direct audience engagement throughout.",
-            "• Minimal direct eye contact significantly reduces trust and connection with the audience.",
-            "• You frequently avoid or wander away from audience gaze, which impacts perceived confidence.",
-            "• Developing stronger eye contact is critical and will dramatically improve your communication effectiveness."
-        ]
-    else:  # Critical - Needs Major Work
-        return [
-            "• Your eye contact needs major improvement — there is very little direct audience engagement.",
-            "• Lack of eye contact severely reduces audience trust, connection, and overall message impact.",
-            "• You avoid direct gaze almost entirely, which significantly undermines your credibility and presence.",
-            "• Building eye contact skills is essential and should be your top priority for presentation improvement."
+            "• Your eye contact is developing and currently inconsistent in several parts of the presentation.",
+            "• You connect with the audience at times, and extending direct gaze during key moments will improve trust.",
+            "• Some gaze shifts are more frequent than ideal, but this can be improved with focused practice.",
+            "• With steadier eye contact, your confidence and credibility will become more apparent."
         ]
 
 def generate_eye_contact_text_th(pct: float) -> list:
@@ -323,45 +309,31 @@ def generate_eye_contact_text_th(pct: float) -> list:
         ]
     elif pct >= 50:
         return [
-            "• การสบตาอยู่ในระดับใช้ได้ แต่ยังมีบางช่วงที่หลุดโฟกัสผู้ฟัง",
-            "• ในประเด็นสำคัญยังสบตาได้พอสมควร",
-            "• หากลดการละสายตาจะช่วยเพิ่มพลังการสื่อสารได้มากขึ้น",
-            "• ภาพรวมอยู่ในเกณฑ์ดีและพัฒนาได้อีก",
+            "• การสบตามีพื้นฐานที่ดี และมีหลายช่วงที่เชื่อมโยงผู้ฟังได้ชัดเจน",
+            "• ในประเด็นสำคัญสามารถสบตาได้พอสมควรและสร้างความไว้วางใจได้",
+            "• หากเพิ่มระยะเวลาการสบตาอีกเล็กน้อย พลังการสื่อสารจะดีขึ้นชัดเจน",
+            "• ภาพรวมเป็นบวกและต่อยอดได้อีกมาก",
         ]
     elif pct >= 40:
         return [
-            "• การสบตาปานกลางค่อนข้างดี แต่ความสม่ำเสมอยังไม่มากพอ",
-            "• มีการสบตาเป็นช่วง ๆ มากกว่าต่อเนื่อง",
-            "• การละสายตาเกิดค่อนข้างบ่อยในบางจังหวะ",
-            "• หากเพิ่มระยะเวลาการสบตาจะช่วยเพิ่มความน่าเชื่อถือ",
+            "• การสบตากำลังพัฒนาไปได้ดี และมีช่วงที่เชื่อมโยงผู้ฟังได้ต่อเนื่อง",
+            "• มีการสบตาสม่ำเสมอในหลายจังหวะ และสามารถต่อยอดให้คงที่ขึ้นได้",
+            "• การละสายตายังมีอยู่บ้าง แต่สามารถปรับได้ด้วยการฝึก",
+            "• หากเพิ่มความต่อเนื่องของการสบตา จะช่วยเสริมความน่าเชื่อถือมากขึ้น",
         ]
     elif pct >= 30:
         return [
-            "• การสบตาอยู่ระดับกลาง ยังมีความไม่สม่ำเสมอชัดเจน",
-            "• การเชื่อมโยงกับผู้ฟังเกิดได้บางช่วงเท่านั้น",
-            "• มีการละสายตาบ่อย ทำให้พลังการสื่อสารลดลง",
-            "• ควรฝึกการสบตาในช่วงเน้นประเด็นสำคัญ",
-        ]
-    elif pct >= 20:
-        return [
-            "• การสบตาต่ำกว่ามาตรฐาน ยังหลีกเลี่ยงสายตาผู้ฟังค่อนข้างมาก",
-            "• ส่งผลให้ความไว้วางใจและการเชื่อมโยงลดลง",
-            "• การละสายตาบ่อยทำให้ภาพลักษณ์ดูไม่มั่นใจ",
-            "• ควรพัฒนาเรื่องนี้เป็นลำดับต้น ๆ",
-        ]
-    elif pct >= 10:
-        return [
-            "• การสบตาอ่อน ยังเชื่อมโยงผู้ฟังได้จำกัดมาก",
-            "• การไม่สบตาโดยตรงเกิดบ่อยและกระทบความน่าเชื่อถือ",
-            "• ภาพรวมทำให้ความมั่นใจที่ผู้ฟังรับรู้ลดลง",
-            "• ควรฝึกการสบตาแบบสั้น-สม่ำเสมอในทุกช่วงสำคัญ",
+            "• การสบตาอยู่ในช่วงพัฒนา และยังมีโอกาสเพิ่มความสม่ำเสมอได้อีก",
+            "• มีหลายช่วงที่เชื่อมโยงผู้ฟังได้ดี โดยเฉพาะบางประเด็นสำคัญ",
+            "• หากคุมการละสายตาให้น้อยลง จะทำให้การสื่อสารไหลลื่นขึ้น",
+            "• แนะนำฝึกการสบตาแบบสั้นแต่ต่อเนื่องในจังหวะสำคัญ",
         ]
     else:
         return [
-            "• การสบตาต้องปรับปรุงอย่างมาก เนื่องจากแทบไม่มีการเชื่อมสายตากับผู้ฟัง",
-            "• ส่งผลโดยตรงต่อความไว้วางใจและการรับสาร",
-            "• ภาพลักษณ์อาจถูกมองว่าหลีกเลี่ยงหรือไม่มั่นใจ",
-            "• การฝึกการสบตาเป็นสิ่งจำเป็นเร่งด่วน",
+            "• การสบตายังอยู่ในช่วงพัฒนา และยังไม่สม่ำเสมอในหลายช่วงของการนำเสนอ",
+            "• มีช่วงที่เชื่อมโยงผู้ฟังได้ดี หากเพิ่มระยะเวลาการสบตาในประเด็นสำคัญจะดีขึ้นมาก",
+            "• การละสายตายังเกิดบ่อยกว่าที่ควร แต่สามารถปรับได้ด้วยการฝึกอย่างต่อเนื่อง",
+            "• เมื่อคุมการสบตาได้คงที่ขึ้น ภาพลักษณ์ความมั่นใจและความน่าเชื่อถือจะชัดเจนขึ้น",
         ]
 
 def generate_uprightness_text(pct: float) -> list:
@@ -396,45 +368,31 @@ def generate_uprightness_text(pct: float) -> list:
         ]
     elif pct >= 50:  # Good
         return [
-            "• You maintain good upright posture most of the time with some occasional lapses.",
-            "• Your chest and shoulder alignment is generally acceptable, though sometimes less consistent than ideal.",
-            "• When you gesture, your vertical alignment usually remains reasonably stable.",
-            "• Overall posture is good with room for improvement in maintaining greater consistency."
+            "• Your posture has a good foundation, with many moments of stable upright alignment.",
+            "• Chest and shoulder alignment are generally positive, with room to make consistency even better.",
+            "• During gestures, vertical alignment is mostly stable and supports clear communication.",
+            "• Overall posture is strong and can be elevated further with small refinements."
         ]
     elif pct >= 40:  # Above Average
         return [
-            "• You maintain above-average posture, though there are noticeable periods of less-than-optimal alignment.",
-            "• Your chest and shoulders show acceptable positioning most of the time, with occasional forward rounding.",
-            "• Vertical alignment fluctuates somewhat during gestures, suggesting moderate core control.",
-            "• Some slouching is visible, indicating that improved consistency would enhance your professional image."
+            "• Your posture is developing well, with a number of solid upright moments throughout the presentation.",
+            "• Chest and shoulder positioning are often acceptable, and greater consistency will add polish.",
+            "• Vertical alignment varies in some gesture phases, which is common and trainable.",
+            "• With steadier posture, your professional image will look even more confident."
         ]
     elif pct >= 30:  # Average
         return [
-            "• Your posture is average, fluctuating between upright and noticeably slouched positions.",
-            "• There are regular moments where shoulders round forward or head tilts down from ideal alignment.",
-            "• Your vertical alignment could be considerably more consistent to project stronger confidence.",
-            "• Improving posture consistency will meaningfully enhance your professional presence and perceived authority."
+            "• Your posture is in a developing stage, alternating between upright moments and less stable alignment.",
+            "• There are several points where shoulder and head position can be brought closer to ideal alignment.",
+            "• Improving vertical consistency will make your presence feel stronger and more composed.",
+            "• With ongoing practice, professional presence and authority will improve clearly."
         ]
-    elif pct >= 20:  # Below Average
+    else:
         return [
-            "• Your posture is below average, with frequent slouching or compromised alignment throughout.",
-            "• Shoulders are often rounded forward and head alignment is inconsistent, reducing your presence.",
-            "• Vertical alignment breaks down regularly, suggesting limited core engagement.",
-            "• This notably affects your perceived confidence and professional appearance — improvement is needed."
-        ]
-    elif pct >= 10:  # Weak
-        return [
-            "• Your posture is weak, tending to slouch or collapse frequently during the presentation.",
-            "• Shoulders are regularly hunched and head alignment is poor throughout much of the presentation.",
-            "• This significantly undermines your perceived confidence, authority, and professional appearance.",
-            "• Focusing on core strength and postural awareness should be a high priority for improvement."
-        ]
-    else:  # Critical - Needs Major Work
-        return [
-            "• Your posture needs major improvement, with consistent slouching or collapsing throughout.",
-            "• Shoulders are chronically hunched and head alignment is severely compromised, greatly reducing presence.",
-            "• This critically impacts your perceived confidence, authority, and overall professional credibility.",
-            "• Developing better posture through core strengthening and awareness training is essential and should be your top priority."
+            "• Your posture is still developing and varies between upright and less stable alignment.",
+            "• There are several moments where shoulder and head alignment drift from ideal posture.",
+            "• Improving core control and maintaining a taller stance will enhance your professional presence.",
+            "• With consistent practice, your posture can become more stable and confident."
         ]
 
 def generate_uprightness_text_th(pct: float) -> list:
@@ -469,45 +427,31 @@ def generate_uprightness_text_th(pct: float) -> list:
         ]
     elif pct >= 50:
         return [
-            "• ท่าทางตั้งตรงอยู่ในระดับใช้ได้ แต่ยังมีช่วงที่หลุดแนว",
-            "• ความต่อเนื่องของแนวลำตัวยังไม่สม่ำเสมอทั้งหมด",
-            "• หากคุมแกนลำตัวให้คงที่ขึ้นจะดีขึ้นมาก",
-            "• ภาพรวมดีและยังพัฒนาได้อีก",
+            "• ท่าทางตั้งตรงมีพื้นฐานที่ดี และมีหลายช่วงที่คงแนวลำตัวได้ดี",
+            "• ความต่อเนื่องโดยรวมเป็นบวก และยังมีโอกาสทำให้คงที่ขึ้นอีก",
+            "• หากคุมแกนลำตัวให้ต่อเนื่องขึ้นเล็กน้อย ภาพรวมจะดีขึ้นชัดเจน",
+            "• โดยรวมอยู่ในทิศทางที่ดีและพัฒนาได้อีกมาก",
         ]
     elif pct >= 40:
         return [
-            "• ท่าทางอยู่ระดับปานกลางค่อนข้างดี มีช่วงเอนตัวที่สังเกตได้",
-            "• แนวไหล่/ศีรษะยังไม่คงที่พอในบางช่วง",
-            "• การควบคุมแกนกลางยังมีโอกาสปรับปรุง",
-            "• ควรเน้นความสม่ำเสมอของ posture เพิ่มขึ้น",
+            "• ท่าทางกำลังพัฒนาได้ดี และมีหลายช่วงที่รักษาแนวได้เหมาะสม",
+            "• แนวไหล่/ศีรษะยังมีบางจังหวะที่แกว่งเล็กน้อย ซึ่งปรับได้ไม่ยาก",
+            "• การคุมแกนกลางมีแนวโน้มดีและสามารถเสริมให้มั่นคงขึ้นได้",
+            "• หากเพิ่มความสม่ำเสมออีกเล็กน้อย บุคลิกจะดูมืออาชีพขึ้นมาก",
         ]
     elif pct >= 30:
         return [
-            "• ท่าทางอยู่ระดับกลาง มีทั้งช่วงตั้งตรงและช่วงคล้อยลำตัว",
-            "• แนวไหล่และศีรษะหลุดจากแนวเหมาะสมค่อนข้างบ่อย",
-            "• ส่งผลให้ภาพลักษณ์ความมั่นใจลดลงบางส่วน",
-            "• ควรฝึกการคุมแกนลำตัวอย่างต่อเนื่อง",
-        ]
-    elif pct >= 20:
-        return [
-            "• ท่าทางต่ำกว่ามาตรฐาน มีการก้มหรือคล้อยตัวบ่อย",
-            "• แนวไหล่และคอไม่คงที่ ทำให้บุคลิกดูไม่มั่นคง",
-            "• กระทบความน่าเชื่อถือในการสื่อสารอย่างเห็นได้ชัด",
-            "• ควรพัฒนาเรื่องท่ายืนและการจัดแนวลำตัวเป็นลำดับแรก",
-        ]
-    elif pct >= 10:
-        return [
-            "• ท่าทางค่อนข้างอ่อน มีการยุบตัว/ก้มตัวเป็นส่วนใหญ่",
-            "• แนวลำตัวไม่มั่นคงต่อเนื่อง ทำให้พลังการสื่อสารลดลง",
-            "• ภาพรวมอาจถูกมองว่าขาดความมั่นใจ",
-            "• ควรฝึกการยืนตรงและเสริมการรับรู้ posture อย่างจริงจัง",
+            "• ท่าทางอยู่ในช่วงพัฒนา มีทั้งช่วงที่ตั้งตรงได้ดีและช่วงที่ยังไม่นิ่ง",
+            "• แนวไหล่และศีรษะยังมีบางจังหวะที่หลุดจากแนวเหมาะสม",
+            "• หากคุมแนวลำตัวให้คงที่ขึ้น จะช่วยเสริมความมั่นใจได้ชัดเจน",
+            "• แนะนำฝึกการคุมแกนลำตัวอย่างต่อเนื่องเพื่อเพิ่มความนิ่ง",
         ]
     else:
         return [
-            "• ท่าทางต้องปรับปรุงอย่างมาก เนื่องจากการจัดแนวลำตัวยังไม่เหมาะสมเกือบทั้งหมด",
-            "• การยุบตัว/ก้มตัวต่อเนื่องกระทบภาพลักษณ์มืออาชีพมาก",
-            "• ลดการรับรู้ความมั่นใจและภาวะผู้นำ",
-            "• แนะนำให้ฝึกพื้นฐาน posture อย่างเร่งด่วน",
+            "• ท่าทางยังอยู่ในช่วงพัฒนา และมีหลายช่วงที่แนวลำตัวยังไม่นิ่ง",
+            "• แนวไหล่และศีรษะหลุดจากแนวที่เหมาะสมเป็นระยะ",
+            "• หากเพิ่มการคุมแกนกลางและรักษาท่ายืนให้ต่อเนื่อง จะช่วยเสริมบุคลิกได้มาก",
+            "• ฝึกอย่างสม่ำเสมอจะทำให้ภาพรวมดูมั่นใจและมืออาชีพขึ้นอย่างชัดเจน",
         ]
 
 def generate_stance_text(stability: float) -> list:
@@ -542,45 +486,31 @@ def generate_stance_text(stability: float) -> list:
         ]
     elif stability >= 50:  # Good
         return [
-            "• Your stance is good overall, with generally stable positioning and occasional minor weight shifts.",
-            "• Feet placement is appropriate, maintaining reasonable balance throughout most of the presentation.",
-            "• Weight distribution is mostly balanced, with some small adjustments visible but not particularly distracting.",
-            "• Overall stance supports good stability and adequate professional presence with room for refinement."
+            "• Your stance has a good base, with generally stable positioning and only occasional weight shifts.",
+            "• Feet placement is mostly appropriate, supporting balanced delivery through much of the presentation.",
+            "• Weight distribution is mostly steady, with minor adjustments that are common and manageable.",
+            "• Overall stance supports a positive professional presence and can be refined further."
         ]
     elif stability >= 40:  # Above Average
         return [
-            "• Your stance is above average but shows some noticeable weight shifts that could be reduced.",
-            "• Feet placement is acceptable though it could be more consistent for better balance and grounding.",
-            "• Some visible swaying or shifting occurs, which may occasionally draw minor audience attention.",
-            "• Improving stance stability will noticeably enhance your grounded presence and perceived authority."
+            "• Your stance is developing well, with many steady moments across the presentation.",
+            "• Feet placement is generally acceptable, and greater consistency will improve grounding.",
+            "• Some visible shifts occur in parts of the clip, which is normal and can be reduced with practice.",
+            "• Better stability will further strengthen your grounded presence and authority."
         ]
     elif stability >= 30:  # Average
         return [
-            "• Your stance is average, with regular weight shifts that reduce your grounded appearance.",
-            "• Feet placement varies somewhat, affecting balance and overall stability during the presentation.",
-            "• Visible swaying or shifting happens frequently enough to be somewhat distracting to attentive observers.",
-            "• Enhancing stance stability will meaningfully improve your authority and professional presence."
+            "• Your stance is in a developing stage, with opportunities to become steadier throughout delivery.",
+            "• Feet placement varies at times, and improving consistency will support better balance.",
+            "• Some swaying or shifting appears in parts of the presentation, and this can be improved with focused drills.",
+            "• Enhancing stance stability will clearly strengthen your professional presence."
         ]
-    elif stability >= 20:  # Below Average
+    else:
         return [
-            "• Your stance is below average, showing frequent weight shifts or noticeable instability throughout.",
-            "• Feet placement varies considerably and inconsistently, negatively affecting your balance and grounded appearance.",
-            "• Visible swaying or shifting is quite apparent and can distract the audience from your message.",
-            "• Improving stance stability should be a priority, as it will significantly enhance your authority and presence."
-        ]
-    elif stability >= 10:  # Weak
-        return [
-            "• Your stance is weak, with very frequent weight shifts or substantial instability throughout the presentation.",
-            "• Feet placement is inconsistent and often suboptimal, severely affecting your balance and grounded appearance.",
-            "• Visible swaying, shifting, or fidgeting is quite distracting and notably reduces perceived confidence.",
-            "• Developing stance stability is critical and will dramatically improve your grounded authority and professional image."
-        ]
-    else:  # Critical - Needs Major Work
-        return [
-            "• Your stance needs major improvement, with constant instability or severe balance issues throughout.",
-            "• Feet placement is highly inconsistent or problematic, critically compromising your grounded appearance and balance.",
-            "• Continuous swaying, shifting, or movement is very distracting and significantly undermines audience confidence.",
-            "• Building fundamental stance stability is essential and should be your absolute top priority for presentation improvement."
+            "• Your stance is still developing, with noticeable movement and balance variation in several moments.",
+            "• Feet placement and weight distribution are not yet fully consistent throughout the presentation.",
+            "• Reducing unnecessary shifts will help you appear more grounded and authoritative.",
+            "• With regular practice, your stance can become steadier and more professional."
         ]
 
 def generate_stance_text_th(stability: float) -> list:
@@ -615,45 +545,31 @@ def generate_stance_text_th(stability: float) -> list:
         ]
     elif stability >= 50:
         return [
-            "• ท่ายืนอยู่ในระดับใช้ได้ แต่ยังมีการขยับน้ำหนักให้เห็นเป็นช่วง ๆ",
-            "• ความสมดุลโดยรวมพอใช้ แต่ยังไม่คงที่ตลอด",
-            "• ฐานยืนบางช่วงยังไม่แน่นพอ",
-            "• พัฒนาได้ชัดเจนหากเพิ่มความนิ่งในการยืน",
+            "• ท่ายืนมีพื้นฐานที่ดี และมีหลายช่วงที่ค่อนข้างมั่นคง",
+            "• ความสมดุลโดยรวมเป็นบวก และยังปรับให้คงที่ขึ้นได้อีก",
+            "• มีการขยับน้ำหนักเป็นระยะ ซึ่งสามารถลดลงได้ด้วยการฝึก",
+            "• หากเพิ่มความนิ่งอีกเล็กน้อย ภาพรวมจะดูมืออาชีพขึ้นมาก",
         ]
     elif stability >= 40:
         return [
-            "• ท่ายืนปานกลางค่อนข้างดี แต่มีการโยก/ถ่ายน้ำหนักบ่อยขึ้น",
-            "• ความต่อเนื่องของฐานยืนยังไม่สม่ำเสมอ",
-            "• อาจดึงความสนใจผู้ฟังออกจากเนื้อหาในบางช่วง",
-            "• ควรฝึกการยืน grounded มากขึ้น",
+            "• ท่ายืนกำลังพัฒนาได้ดี และมีหลายช่วงที่รักษาฐานยืนได้เหมาะสม",
+            "• ความต่อเนื่องของฐานยืนยังมีโอกาสทำให้คงที่ขึ้นอีก",
+            "• มีการโยก/ถ่ายน้ำหนักในบางจังหวะ ซึ่งสามารถปรับได้ด้วยการฝึก",
+            "• หากยืน grounded มากขึ้น จะช่วยเสริมภาพลักษณ์ให้มั่นคงขึ้นชัดเจน",
         ]
     elif stability >= 30:
         return [
-            "• ท่ายืนอยู่ระดับกลาง มีการถ่ายน้ำหนักค่อนข้างสม่ำเสมอ",
-            "• ความนิ่งของฐานยืนยังไม่พอในจังหวะสำคัญ",
-            "• ส่งผลให้ภาพลักษณ์ความมั่นใจลดลงบางส่วน",
-            "• แนะนำฝึกคุมแกนล่างและการวางเท้าให้คงที่",
-        ]
-    elif stability >= 20:
-        return [
-            "• ท่ายืนต่ำกว่ามาตรฐาน มีอาการโยกหรือเปลี่ยนฐานยืนบ่อย",
-            "• ความมั่นคงของช่วงล่างยังไม่ดี ทำให้บุคลิกดูไม่นิ่ง",
-            "• กระทบความน่าเชื่อถือของการนำเสนอ",
-            "• ควรปรับเรื่องการวางเท้าและถ่ายน้ำหนักโดยตรง",
-        ]
-    elif stability >= 10:
-        return [
-            "• ท่ายืนค่อนข้างอ่อน มีการขยับฐานยืนและถ่ายน้ำหนักบ่อยมาก",
-            "• ความนิ่งของช่วงล่างไม่เพียงพอสำหรับการสื่อสารที่มั่นใจ",
-            "• ผู้ฟังอาจรับรู้ถึงความกังวลหรือไม่มั่นคง",
-            "• ควรฝึกท่ายืนพื้นฐานอย่างจริงจัง",
+            "• ท่ายืนอยู่ในช่วงพัฒนา และยังเพิ่มความนิ่งได้อีกในหลายช่วง",
+            "• การวางเท้าและการถ่ายน้ำหนักมีบางจังหวะที่ยังไม่คงที่",
+            "• หากคุมฐานยืนให้ต่อเนื่องขึ้น จะช่วยเสริมความมั่นใจของภาพรวม",
+            "• แนะนำฝึกคุมแกนล่างและจังหวะการถ่ายน้ำหนักแบบสม่ำเสมอ",
         ]
     else:
         return [
-            "• ท่ายืนต้องปรับปรุงอย่างมาก เนื่องจากขาดความมั่นคงต่อเนื่อง",
-            "• ฐานยืนไม่คงที่และรบกวนภาพรวมการสื่อสารชัดเจน",
-            "• ลดความน่าเชื่อถือและพลังการนำเสนออย่างมาก",
-            "• แนะนำฝึกการยืนให้มั่นคงเป็นลำดับเร่งด่วน",
+            "• ท่ายืนยังอยู่ในช่วงพัฒนา และมีการเคลื่อนไหว/ถ่ายน้ำหนักที่เห็นได้ในหลายช่วง",
+            "• ฐานยืนและการกระจายน้ำหนักยังไม่คงที่ตลอดการนำเสนอ",
+            "• หากลดการโยกหรือขยับที่ไม่จำเป็น จะช่วยให้ภาพลักษณ์ดูมั่นคงขึ้น",
+            "• ฝึกการยืนอย่างสม่ำเสมอจะช่วยเสริมความน่าเชื่อถือและความเป็นมืออาชีพได้ชัดเจน",
         ]
 
 # Analysis functions

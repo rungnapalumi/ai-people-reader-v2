@@ -1,7 +1,7 @@
 import os
 import json
 import base64
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import boto3
@@ -34,15 +34,6 @@ THEME_CSS = """
   border-right: 1px solid var(--border);
 }
 
-[data-testid="stSidebarNav"] a,
-[data-testid="stSidebarNav"] button,
-[data-testid="stSidebarNav"] a p,
-[data-testid="stSidebarNav"] a span,
-[data-testid="stSidebarNav"] button p,
-[data-testid="stSidebarNav"] button span {
-  color: #ffffff !important;
-}
-
 h1, h2, h3, h4, h5, h6 {
   color: #f0e4d4 !important;
 }
@@ -72,15 +63,6 @@ p, label, span, div {
 [data-testid="stFileUploader"] section {
   background: var(--bg-soft) !important;
   border: 1px dashed var(--border) !important;
-}
-
-[data-testid="stFileUploader"] section button {
-  font-size: 0 !important;
-}
-
-[data-testid="stFileUploader"] section button::after {
-  content: "Browse File";
-  font-size: 1.1rem;
 }
 
 .stButton > button,
@@ -119,7 +101,7 @@ def _apply_theme() -> None:
 
 # Sidebar page names can be customized here.
 HOME_PAGE_TITLE = "Admin"
-SUBMIT_PAGE_TITLE = "SkillLane"
+SUBMIT_PAGE_TITLE = "AI People Reader"
 TTB_PAGE_TITLE = "TTB"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "0108"
@@ -401,37 +383,14 @@ def _list_pending_jobs() -> List[Dict[str, str]]:
     return rows
 
 
-def _clear_pending_jobs(older_than_minutes: int = 0) -> int:
-    """
-    Delete pending JSON jobs and return deleted count.
-    If older_than_minutes > 0, delete only jobs older than that threshold.
-    """
-    if not AWS_BUCKET:
+def _clear_pending_jobs() -> int:
+    """Delete all pending JSON jobs and return deleted count."""
+    pending_rows = _list_pending_jobs()
+    if not pending_rows or not AWS_BUCKET:
         return 0
 
     s3 = _get_s3_client()
-    cutoff: datetime | None = None
-    if int(older_than_minutes or 0) > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=int(older_than_minutes))
-
-    keys: List[str] = []
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_PENDING_PREFIX):
-        for obj in page.get("Contents", []):
-            key = str(obj.get("Key") or "")
-            if not key.endswith(".json"):
-                continue
-            if cutoff is not None:
-                last_modified = obj.get("LastModified")
-                if isinstance(last_modified, datetime):
-                    lm = last_modified if last_modified.tzinfo else last_modified.replace(tzinfo=timezone.utc)
-                    if lm > cutoff:
-                        continue
-            keys.append(key)
-
-    if not keys:
-        return 0
-
+    keys = [row["key"] for row in pending_rows]
     deleted = 0
     for i in range(0, len(keys), 1000):
         batch = keys[i : i + 1000]
@@ -936,50 +895,6 @@ def _render_admin_panel() -> None:
         return
 
     st.markdown("---")
-    st.markdown("### Clear Pending Jobs")
-    delete_scope = st.radio(
-        "Delete scope",
-        options=["All pending jobs", "Only jobs older than (minutes)"],
-        index=1,
-        horizontal=True,
-    )
-    delete_only_older = delete_scope == "Only jobs older than (minutes)"
-    older_than_minutes = st.number_input(
-        "Older than (minutes)",
-        min_value=1,
-        max_value=10080,
-        value=30,
-        step=5,
-        disabled=not delete_only_older,
-    )
-    if delete_only_older:
-        st.warning(
-            f'Danger zone: this will permanently delete pending job JSON files older than {int(older_than_minutes)} minutes.'
-        )
-    else:
-        st.warning("Danger zone: this will permanently delete all pending job JSON files.")
-    confirm_checked = st.checkbox("I understand this action cannot be undone.")
-    confirm_text = st.text_input('Type "CLEAR" to confirm')
-    can_clear = confirm_checked and (confirm_text.strip().upper() == "CLEAR")
-
-    if st.button(
-        "Clear Pending Jobs",
-        type="primary",
-        width="stretch",
-        disabled=not can_clear,
-    ):
-        try:
-            cutoff_minutes = int(older_than_minutes) if delete_only_older else 0
-            deleted = _clear_pending_jobs(older_than_minutes=cutoff_minutes)
-            if cutoff_minutes > 0:
-                st.success(f"Cleared pending jobs older than {cutoff_minutes} minutes: {deleted}")
-            else:
-                st.success(f"Cleared pending jobs: {deleted}")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Failed to clear pending jobs: {e}")
-
-    st.markdown("---")
     st.markdown("### Organization Settings")
     st.caption("Create or update per-organization report defaults (used by AI People Reader submit page).")
 
@@ -1126,11 +1041,32 @@ def _render_admin_panel() -> None:
     else:
         st.info("No failed jobs found.")
 
+    st.markdown("---")
+    st.markdown("### Clear Pending Jobs")
+    st.warning("Danger zone: this will permanently delete all pending job JSON files.")
+    confirm_checked = st.checkbox("I understand this action cannot be undone.")
+    confirm_text = st.text_input('Type "CLEAR" to confirm')
+    can_clear = confirm_checked and (confirm_text.strip().upper() == "CLEAR")
+
+    if st.button(
+        "Clear Pending Jobs",
+        type="primary",
+        width="stretch",
+        disabled=not can_clear,
+    ):
+        try:
+            deleted = _clear_pending_jobs()
+            st.success(f"Cleared pending jobs: {deleted}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to clear pending jobs: {e}")
+
+
 def _render_home() -> None:
     _apply_theme()
     _render_top_banner()
     st.title("AI People Reader V2")
-    st.caption("Go to left menu -> SkillLane")
+    st.caption("Go to left menu -> AI People Reader")
     _render_admin_panel()
 
 
@@ -1138,7 +1074,7 @@ if hasattr(st, "Page") and hasattr(st, "navigation"):
     nav = st.navigation(
         [
             st.Page(_render_home, title=HOME_PAGE_TITLE),
-            st.Page("pages/2_SkillLane.py", title=SUBMIT_PAGE_TITLE),
+            st.Page("pages/2_Submit_Job.py", title=SUBMIT_PAGE_TITLE),
             st.Page("pages/3_TTB.py", title=TTB_PAGE_TITLE),
         ]
     )
