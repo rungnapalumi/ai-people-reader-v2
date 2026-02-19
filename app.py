@@ -1074,7 +1074,7 @@ if hasattr(st, "Page") and hasattr(st, "navigation"):
     nav = st.navigation(
         [
             st.Page(_render_home, title=HOME_PAGE_TITLE),
-            st.Page("pages/2_Submit_Job.py", title=SUBMIT_PAGE_TITLE),
+            st.Page("pages/2_SkillLane.py", title=SUBMIT_PAGE_TITLE),
             st.Page("pages/3_TTB.py", title=TTB_PAGE_TITLE),
         ]
     )
