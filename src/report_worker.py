@@ -605,9 +605,17 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     report_format = str(job.get("report_format") or "docx").strip().lower()
     ext = "pdf" if report_format == "pdf" else "docx"
-    if output_prefix and not th_key:
+    raw_languages = job.get("languages") or ["th", "en"]
+    if isinstance(raw_languages, str):
+        raw_languages = [raw_languages]
+    langs = [str(x).strip().lower() for x in raw_languages if str(x).strip()]
+    wants_th = any(l.startswith("th") for l in langs)
+    wants_en = any(l.startswith("en") for l in langs)
+    if not langs:
+        wants_th, wants_en = True, True
+    if output_prefix and wants_th and not th_key:
         th_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_TH.{ext}"
-    if output_prefix and not en_key:
+    if output_prefix and wants_en and not en_key:
         en_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_EN.{ext}"
     return {
         "job_id": job_id,
@@ -741,6 +749,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             report_en_sent = bool(payload.get("report_en_email_sent"))
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
             dots_sent = bool(payload.get("dots_email_sent"))
+            expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
             attempts = int(payload.get("attempts") or 0)
             job_created_at = parse_job_id_datetime_utc(job_id)
             if MAX_EMAIL_PENDING_JOB_AGE_HOURS > 0 and job_created_at is not None:
@@ -862,7 +871,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 waiting = []
                 if not report_th_sent:
                     waiting.append("report_th")
-                if not report_en_sent:
+                if expect_report_en and not report_en_sent:
                     waiting.append("report_en")
                 if bool(payload.get("expect_dots", True)) and not dots_sent:
                     waiting.append("dots")
@@ -896,7 +905,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 dots_sent=dots_sent,
             )
 
-            all_done = report_th_sent and report_en_sent and (dots_sent or (not bool(payload.get("expect_dots", True))))
+            report_en_done = report_en_sent or (not expect_report_en)
+            all_done = report_th_sent and report_en_done and (dots_sent or (not bool(payload.get("expect_dots", True))))
             if all_done:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
             else:
@@ -1235,6 +1245,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 report_en_sent = False
                 skeleton_sent = False
                 dots_sent = False
+                expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
 
                 if email_payload_report_th_ready(payload):
                     sent, status = send_result_email(
@@ -1277,13 +1288,14 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 # Primary completion milestone: TH report delivered.
                 primary_done = report_th_sent
-                followups_done = report_en_sent and (dots_sent or (not bool(payload.get("expect_dots", True))))
+                report_en_done = report_en_sent or (not expect_report_en)
+                followups_done = report_en_done and (dots_sent or (not bool(payload.get("expect_dots", True))))
                 if (not primary_done) or (not followups_done):
                     queue_email_pending(payload)
                     waiting = []
                     if not report_th_sent:
                         waiting.append("report_th")
-                    if not report_en_sent:
+                    if expect_report_en and not report_en_sent:
                         waiting.append("report_en")
                     if bool(payload.get("expect_dots", True)) and not dots_sent:
                         waiting.append("dots")
