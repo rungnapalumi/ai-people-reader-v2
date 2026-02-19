@@ -323,25 +323,14 @@ def employee_registry_key(employee_id: str) -> str:
 def save_employee_registry(
     employee_id: str,
     employee_email: str,
-    employee_password: str,
     organization_name: str,
 ) -> None:
     key = employee_registry_key(employee_id)
     if not key:
         return
-    existing = s3_read_json(key) or {}
-    if existing:
-        existing_email = str(existing.get("employee_email") or "").strip().lower()
-        existing_password = str(existing.get("employee_password") or "").strip()
-        incoming_email = str(employee_email or "").strip().lower()
-        incoming_password = str(employee_password or "").strip()
-        # Prevent account takeover by overwriting an existing employee_id with new credentials.
-        if existing_email and existing_password and (existing_email != incoming_email or existing_password != incoming_password):
-            raise ValueError("Employee credentials do not match existing account")
     payload = {
         "employee_id": (employee_id or "").strip(),
         "employee_email": (employee_email or "").strip(),
-        "employee_password": (employee_password or "").strip(),
         "organization_name": (organization_name or "").strip(),
         "updated_at": utc_now_iso(),
     }
@@ -360,18 +349,14 @@ def get_employee_registry(employee_id: str) -> Dict[str, str]:
     return {
         "employee_id": str(payload.get("employee_id") or "").strip(),
         "employee_email": normalize_email(payload.get("employee_email")),
-        "employee_password": str(payload.get("employee_password") or "").strip(),
     }
 
 
-def is_employee_identity_verified(employee_id: str, employee_email: str, employee_password: str) -> bool:
+def is_employee_identity_verified(employee_id: str, employee_email: str) -> bool:
     reg = get_employee_registry(employee_id)
     if not reg:
         return False
-    return (
-        normalize_email(employee_email) == reg.get("employee_email", "")
-        and str(employee_password or "").strip() == reg.get("employee_password", "")
-    )
+    return normalize_email(employee_email) == reg.get("employee_email", "")
 
 
 def is_group_owned_by_employee(group_id: str, employee_id: str, employee_email: str) -> bool:
@@ -814,12 +799,6 @@ employee_id = st.text_input(
     value="",
     placeholder="e.g., EMP001",
 )
-employee_password = st.text_input(
-    "Password",
-    value="",
-    type="password",
-    placeholder="Enter employee password",
-)
 org_settings = get_org_settings(enterprise_folder)
 
 uploaded = st.file_uploader(
@@ -830,10 +809,10 @@ uploaded = st.file_uploader(
 
 run = st.button("🎬 Run Analysis", type="primary", width="stretch")
 
-has_identity_input = bool(employee_id.strip() and notify_email and employee_password.strip())
+has_identity_input = bool(employee_id.strip() and notify_email)
 identity_verified = False
 if has_identity_input:
-    identity_verified = is_employee_identity_verified(employee_id, notify_email, employee_password)
+    identity_verified = is_employee_identity_verified(employee_id, notify_email)
 
 candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id
 active_group_id = ""
@@ -867,10 +846,6 @@ if run:
     if not employee_id.strip():
         note.error("Please enter Employee ID.")
         st.stop()
-    if not employee_password.strip():
-        note.error("Please enter Password.")
-        st.stop()
-
     effective_report_style = org_settings.get("report_style") if org_settings else "full"
     effective_report_format = org_settings.get("report_format") if org_settings else "docx"
 
@@ -932,7 +907,6 @@ if run:
         save_employee_registry(
             employee_id=employee_id,
             employee_email=notify_email,
-            employee_password=employee_password,
             organization_name=enterprise_folder,
         )
         k2 = enqueue_legacy_job(job_skel)
