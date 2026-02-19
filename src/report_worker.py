@@ -88,6 +88,7 @@ ENABLE_EMAIL_NOTIFICATIONS = str(os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "true")
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
+MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
 
 # Defaults (can be overridden per-job)
 DEFAULT_ANALYSIS_MODE = os.getenv("ANALYSIS_MODE", "real").strip().lower()  # "real" or "fallback"
@@ -183,6 +184,18 @@ def log_smtp_runtime_context() -> None:
 # -----------------------------------------
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def parse_job_id_datetime_utc(job_id: str) -> Optional[datetime]:
+    text = str(job_id or "").strip()
+    m = re.match(r"^(\d{8})_(\d{6})", text)
+    if not m:
+        return None
+    ts = f"{m.group(1)}{m.group(2)}"
+    try:
+        return datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
 
 
 def s3_get_json(key: str, log_key: bool = True) -> Dict[str, Any]:
@@ -729,6 +742,26 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
             dots_sent = bool(payload.get("dots_email_sent"))
             attempts = int(payload.get("attempts") or 0)
+            job_created_at = parse_job_id_datetime_utc(job_id)
+            if MAX_EMAIL_PENDING_JOB_AGE_HOURS > 0 and job_created_at is not None:
+                age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
+                if age_hours >= float(MAX_EMAIL_PENDING_JOB_AGE_HOURS):
+                    update_finished_job_notification(
+                        job_id,
+                        bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
+                        f"stopped_stale_email_job_{MAX_EMAIL_PENDING_JOB_AGE_HOURS}h",
+                        report_th_sent=report_th_sent,
+                        report_en_sent=report_en_sent,
+                        skeleton_sent=skeleton_sent,
+                        dots_sent=dots_sent,
+                    )
+                    suspended_key = move_email_pending_to_suspend(
+                        key,
+                        payload,
+                        reason=f"stale_email_job_age_{MAX_EMAIL_PENDING_JOB_AGE_HOURS}h",
+                    )
+                    logger.warning("[email_queue] moved stale payload key=%s suspended_key=%s age_hours=%.1f", key, suspended_key, age_hours)
+                    continue
             if attempts >= MAX_EMAIL_RETRY_ATTEMPTS:
                 update_finished_job_notification(
                     job_id,
@@ -883,8 +916,8 @@ def list_pending_json_keys() -> Iterable[str]:
 
 def find_one_pending_job_key() -> Optional[str]:
     picked_key: Optional[str] = None
-    picked_created_at = ""
     picked_priority = -1
+    picked_created_at = ""
 
     for k in list_pending_json_keys():
         try:
@@ -899,12 +932,12 @@ def find_one_pending_job_key() -> Optional[str]:
             priority = int(job.get("priority") or 0)
             created_at = str(job.get("created_at") or "")
             if (
-                created_at > picked_created_at
-                or (created_at == picked_created_at and priority > picked_priority)
+                priority > picked_priority
+                or (priority == picked_priority and created_at > picked_created_at)
             ):
                 picked_key = k
-                picked_created_at = created_at
                 picked_priority = priority
+                picked_created_at = created_at
 
         logger.info("[find_one_pending_job_key] ignore non-report key=%s mode=%s", k, mode)
     if picked_key:
