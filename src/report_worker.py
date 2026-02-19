@@ -908,7 +908,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             )
 
             report_en_done = report_en_sent or (not expect_report_en)
-            all_done = report_th_sent and report_en_done and (dots_sent or (not bool(payload.get("expect_dots", True))))
+            # TH report is the primary delivery milestone. Once sent, stop keeping this job in email_pending.
+            all_done = report_th_sent
             if all_done:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
             else:
@@ -1290,17 +1291,11 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 # Primary completion milestone: TH report delivered.
                 primary_done = report_th_sent
-                report_en_done = report_en_sent or (not expect_report_en)
-                followups_done = report_en_done and (dots_sent or (not bool(payload.get("expect_dots", True))))
-                if (not primary_done) or (not followups_done):
+                if not primary_done:
                     queue_email_pending(payload)
                     waiting = []
                     if not report_th_sent:
                         waiting.append("report_th")
-                    if expect_report_en and not report_en_sent:
-                        waiting.append("report_en")
-                    if bool(payload.get("expect_dots", True)) and not dots_sent:
-                        waiting.append("dots")
                     statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
 
                 email_sent = bool(primary_done or report_en_sent or dots_sent)
