@@ -89,6 +89,8 @@ POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
+EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY", "50"))
+EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE", "200"))
 
 # Defaults (can be overridden per-job)
 DEFAULT_ANALYSIS_MODE = os.getenv("ANALYSIS_MODE", "real").strip().lower()  # "real" or "fallback"
@@ -1399,16 +1401,19 @@ def main() -> None:
 
     while True:
         try:
+            # Always drain some email queue first so pending emails are delivered ASAP.
+            if ENABLE_EMAIL_NOTIFICATIONS:
+                process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY)
+
             job_key = find_one_pending_job_key()
             if job_key:
                 process_job(job_key)
-                # Prevent starvation: keep draining email queue even when
-                # report jobs keep arriving continuously.
+                # Keep draining email queue even when report jobs keep arriving continuously.
                 if ENABLE_EMAIL_NOTIFICATIONS:
-                    process_pending_email_queue(max_items=5)
+                    process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY)
             else:
                 if ENABLE_EMAIL_NOTIFICATIONS:
-                    process_pending_email_queue(max_items=10)
+                    process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE)
                 time.sleep(POLL_INTERVAL)
         except Exception as exc:
             logger.exception("[main] Unexpected error: %s", exc)
