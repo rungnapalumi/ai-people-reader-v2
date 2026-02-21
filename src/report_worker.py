@@ -1267,8 +1267,15 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
     return analyze_video_placeholder(video_path=video_path, seed=42)
 
 
-def _first_impression_level(value: float) -> str:
+def _first_impression_level(value: float, metric: str = "") -> str:
     score = float(value or 0.0)
+    name = str(metric or "").strip().lower()
+    if name in ("stance", "uprightness"):
+        if score >= 80.0:
+            return "high"
+        if score >= 50.0:
+            return "moderate"
+        return "low"
     if score >= 70.0:
         return "high"
     if score >= 40.0:
@@ -1362,15 +1369,15 @@ def generate_reports_for_lang(
     first_impression_summary = {
         "eye_contact": {
             "value": round(float(first_impression.eye_contact_pct), 1),
-            "level": _first_impression_level(first_impression.eye_contact_pct),
+            "level": _first_impression_level(first_impression.eye_contact_pct, metric="eye_contact"),
         },
         "uprightness": {
             "value": round(float(first_impression.upright_pct), 1),
-            "level": _first_impression_level(first_impression.upright_pct),
+            "level": _first_impression_level(first_impression.upright_pct, metric="uprightness"),
         },
         "stance": {
             "value": round(float(first_impression.stance_stability), 1),
-            "level": _first_impression_level(first_impression.stance_stability),
+            "level": _first_impression_level(first_impression.stance_stability, metric="stance"),
         },
     }
     return docx_bytes, pdf_bytes, key_map, first_impression_summary

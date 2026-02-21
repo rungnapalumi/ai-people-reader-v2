@@ -204,8 +204,8 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
             ratios = np.array(stance_width_ratios)
             ratio_mean = float(np.mean(ratios))
             ratio_std = float(np.std(ratios))
-            # Preferred stance is around shoulder width to slightly wider.
-            width_pref = max(0.0, 1.0 - (abs(ratio_mean - 1.10) / 0.90))
+            # Preferred stance is around 1.2x shoulder width.
+            width_pref = max(0.0, 1.0 - (abs(ratio_mean - 1.20) / 0.90))
             width_stability = max(0.0, 1.0 - (ratio_std / 0.35))
             width_score = 100.0 * (0.65 * width_pref + 0.35 * width_stability)
 
@@ -1553,8 +1553,15 @@ def build_pdf_report(
     write_line(f"{'ระยะเวลา' if is_thai else 'Duration'}: {report.video_length_str}", gap=22)
     write_line(detailed_analysis_label, size=13, bold=True, gap=20)
 
-    def _first_impression_level(value: float) -> str:
+    def _first_impression_level(value: float, metric: str = "") -> str:
         v = float(value or 0.0)
+        name = str(metric or "").strip().lower()
+        if name in ("stance", "uprightness"):
+            if v >= 80.0:
+                return "High"
+            if v >= 50.0:
+                return "Moderate"
+            return "Low"
         if v >= 70.0:
             return "High"
         if v >= 40.0:
@@ -1566,9 +1573,9 @@ def build_pdf_report(
     if report.first_impression:
         fi = report.first_impression
         if is_operation_test:
-            write_line(f"{eye_label}: {_first_impression_level(fi.eye_contact_pct)}", bold=True, gap=16)
-            write_line(f"{upright_label}: {_first_impression_level(fi.upright_pct)}", bold=True, gap=16)
-            write_line(f"{stance_label}: {_first_impression_level(fi.stance_stability)}", bold=True, gap=16)
+            write_line(f"{eye_label}: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", bold=True, gap=16)
+            write_line(f"{upright_label}: {_first_impression_level(fi.upright_pct, metric='uprightness')}", bold=True, gap=16)
+            write_line(f"{stance_label}: {_first_impression_level(fi.stance_stability, metric='stance')}", bold=True, gap=16)
         else:
             eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
             up_lines = generate_uprightness_text_th(fi.upright_pct) if is_thai else generate_uprightness_text(fi.upright_pct)
