@@ -605,18 +605,19 @@ def send_result_email(
     group_id = str(job.get("group_id") or "").strip()
     subject = f"AI People Reader - Results Ready ({group_id or job_id})"
     has_video_links = any(bool(v) for v in video_keys.values())
-    has_report_links = any(bool(v) for v in report_docx_keys.values())
+    report_labels = [str(label) for label, key in report_docx_keys.items() if key]
+    has_report_links = bool(report_labels)
     lines = [
         f"Job ID: {job_id}",
         f"Your analysis results are ready for group: {group_id}",
         "",
     ]
     if has_report_links:
+        attached_lines = [f"- {label}" for label in report_labels]
         lines.extend(
             [
                 "Attached files:",
-                "- Report EN",
-                "- Report TH",
+                *attached_lines,
                 "",
             ]
         )
@@ -677,7 +678,9 @@ def send_result_email(
             url = presigned_get_url(key, filename=rname)
             html_report_rows.append(f"<li><a href=\"{escape(url)}\">{escape(label)}</a></li>")
 
-    attached_html = "<p>Attached files:<br/>- Report EN<br/>- Report TH</p>" if has_report_links else ""
+    attached_html = ""
+    if has_report_links:
+        attached_html = "<p>Attached files:<br/>" + "<br/>".join([f"- {escape(label)}" for label in report_labels]) + "</p>"
     videos_html = f"<p><b>Video links</b></p><ul>{''.join(html_video_rows) if html_video_rows else '<li>Not available</li>'}</ul>" if has_video_links else ""
     reports_html = f"<p><b>Backup report links</b></p><ul>{''.join(html_report_rows) if html_report_rows else '<li>Not available</li>'}</ul>" if has_report_links else ""
     body_html = f"""
@@ -817,6 +820,11 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     wants_en = any(l.startswith("en") for l in langs)
     if not langs:
         wants_th, wants_en = True, True
+    report_style = str(job.get("report_style") or "").strip().lower()
+    if is_operation_test_style(report_style):
+        wants_th = True
+        wants_en = False
+        en_key = ""
     if output_prefix and wants_th and not th_key:
         th_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_TH.{ext}"
     if output_prefix and wants_en and not en_key:
@@ -826,7 +834,7 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "group_id": group_id,
         "enterprise_folder": str(job.get("enterprise_folder") or "").strip(),
         "notify_email": str(job.get("notify_email") or "").strip(),
-        "report_style": str(job.get("report_style") or "").strip().lower(),
+        "report_style": report_style,
         "input_video_key": str(job.get("input_key") or "").strip(),
         "expect_dots": bool(job.get("expect_dots", True)),
         "dots_key": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
@@ -834,7 +842,7 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "report_en_key": en_key,
         "report_th_key": th_key,
         "report_th_email_sent": False,
-        "report_en_email_sent": False,
+        "report_en_email_sent": is_operation_test_style(report_style),
         "skeleton_email_sent": False,
         "dots_email_sent": False,
         "attempts": 0,
@@ -957,6 +965,11 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             report_en_sent = bool(payload.get("report_en_email_sent"))
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
             dots_sent = bool(payload.get("dots_email_sent"))
+            if is_operation_test:
+                # Operation Test sends TH report only.
+                payload["report_en_key"] = ""
+                payload["report_en_email_sent"] = True
+                report_en_sent = True
             expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
             attempts = int(payload.get("attempts") or 0)
             job_created_at = parse_job_id_datetime_utc(job_id)
