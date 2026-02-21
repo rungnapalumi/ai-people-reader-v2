@@ -1416,6 +1416,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if not input_key:
         raise ValueError("Job JSON missing 'input_key'")
 
+    report_style = str(job.get("report_style") or "").strip().lower()
+
     # languages: default TH only for fastest first delivery.
     languages = job.get("languages") or ["th"]
     if isinstance(languages, str):
@@ -1426,6 +1428,14 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     report_format = str(job.get("report_format") or "docx").strip().lower()
     if report_format not in ("docx", "pdf"):
         report_format = "docx"
+
+    # Operation Test must always produce Thai PDF-only output.
+    if is_operation_test_style(report_style):
+        languages = ["th"]
+        report_format = "pdf"
+        job["languages"] = ["th"]
+        job["report_format"] = "pdf"
+        logger.info("[report] operation_test override: force languages=%s report_format=%s", languages, report_format)
 
     # output prefix
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
