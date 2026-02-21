@@ -37,6 +37,10 @@ JOBS_PROCESSING_PREFIX = "jobs/processing/"
 JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_FAILED_PREFIX = "jobs/failed/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
+OPERATION_TEST_RECIPIENTS = [
+    "rungnapa@imagematters.at",
+    "alisa@imagematters.at",
+]
 
 BANNER_PATHS = [
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "top_banner.png"),
@@ -190,9 +194,9 @@ def get_latest_operation_test_job(group_id: str) -> Dict[str, Any]:
 
 def get_pdf_key_from_job(job: Dict[str, Any]) -> str:
     reports = (job.get("outputs") or {}).get("reports") or {}
-    en_pdf = ((reports.get("EN") or {}).get("pdf_key") or "").strip()
     th_pdf = ((reports.get("TH") or {}).get("pdf_key") or "").strip()
-    return en_pdf or th_pdf
+    en_pdf = ((reports.get("EN") or {}).get("pdf_key") or "").strip()
+    return th_pdf or en_pdf
 
 
 def prettify_level(level: str) -> str:
@@ -205,6 +209,8 @@ def prettify_level(level: str) -> str:
 def ensure_session_defaults() -> None:
     if "operation_test_group_id" not in st.session_state:
         st.session_state["operation_test_group_id"] = ""
+    if "operation_test_upload_nonce" not in st.session_state:
+        st.session_state["operation_test_upload_nonce"] = 0
 
 
 def read_group_id_from_url() -> str:
@@ -236,14 +242,23 @@ st.caption("Upload one video to analyze First Impression only: Eye Contact, Upri
 st.caption("Result format: PDF only.")
 
 name = st.text_input("Name (optional)", value="", placeholder="e.g., John Doe")
-notify_email = st.text_input("Notification Email (optional)", value="", placeholder="name@example.com")
-if notify_email and not is_valid_email_format(notify_email):
-    st.warning("Please enter a valid email format.")
+st.markdown("### Email Recipients")
+send_rungnapa = st.checkbox(OPERATION_TEST_RECIPIENTS[0], value=True)
+send_alisa = st.checkbox(OPERATION_TEST_RECIPIENTS[1], value=True)
+selected_recipients = []
+if send_rungnapa:
+    selected_recipients.append(OPERATION_TEST_RECIPIENTS[0])
+if send_alisa:
+    selected_recipients.append(OPERATION_TEST_RECIPIENTS[1])
+if not selected_recipients:
+    st.warning("Please select at least one recipient email.")
+notify_email = ",".join(selected_recipients)
 
 uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
+    key=f"operation_test_uploader_{st.session_state['operation_test_upload_nonce']}",
 )
 
 run = st.button("Analyze First Impression", type="primary", width="stretch")
@@ -253,11 +268,11 @@ if run:
     if not uploaded:
         notice.error("Please upload a video first.")
         st.stop()
-    if notify_email and not is_valid_email_format(notify_email):
-        notice.error("Invalid email format.")
+    if not selected_recipients:
+        notice.error("Please select at least one recipient email.")
         st.stop()
 
-    base_user = safe_slug(name or notify_email or "user", fallback="user")
+    base_user = safe_slug(name or selected_recipients[0] or "user", fallback="user")
     group_id = f"{new_group_id()}__{base_user}"
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
 
@@ -280,7 +295,7 @@ if run:
         "input_key": input_key,
         "client_name": (name or "Anonymous").strip() or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["en"],
+        "languages": ["th"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",
         "sample_fps": 5,
@@ -299,9 +314,12 @@ if run:
         st.stop()
 
     st.session_state["operation_test_group_id"] = group_id
+    st.session_state["operation_test_upload_nonce"] = int(st.session_state.get("operation_test_upload_nonce") or 0) + 1
     persist_group_id_to_url(group_id)
-    notice.success(f"Submitted. group_id = {group_id}")
+    notice.success("Submit to the worker. Load for the next vdo.")
+    st.caption(f"group_id = {group_id}")
     st.caption(f"Queued job key: {enqueue_key}")
+    st.rerun()
 
 active_group_id = st.session_state.get("operation_test_group_id") or read_group_id_from_url()
 if active_group_id:
