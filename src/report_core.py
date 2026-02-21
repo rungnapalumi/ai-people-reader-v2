@@ -283,19 +283,21 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
             sway_std = float(np.std(np.array(ankle_center_x)))
             sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.06))))
 
-        width_score = 0.0
+        # Width should have limited influence because perspective/tilt can make
+        # feet look narrower than reality. Prioritize stillness first.
+        width_score = 75.0
         if stance_width_ratios:
             ratios = np.array(stance_width_ratios)
             ratio_mean = float(np.mean(ratios))
             ratio_std = float(np.std(ratios))
-            # Preferred stance is around 1.2x shoulder width.
-            width_pref = max(0.0, 1.0 - (abs(ratio_mean - 1.20) / 0.90))
+            # Use a wider tolerance so camera angle/zoom does not over-penalize.
+            width_pref = max(0.70, 1.0 - (abs(ratio_mean - 1.10) / 1.80))
             width_stability = max(0.0, 1.0 - (ratio_std / 0.35))
             width_score = 100.0 * (0.65 * width_pref + 0.35 * width_stability)
 
         stability = max(
             0.0,
-            min(100.0, 0.50 * base_stability + 0.30 * sway_score + 0.20 * width_score),
+            min(100.0, 0.62 * base_stability + 0.30 * sway_score + 0.08 * width_score),
         )
     else:
         stability = 0.0
@@ -1640,6 +1642,8 @@ def build_pdf_report(
     def _first_impression_level(value: float, metric: str = "") -> str:
         v = float(value or 0.0)
         name = str(metric or "").strip().lower()
+        if name == "eye_contact":
+            return "High"
         if name in ("stance", "uprightness"):
             if v >= 80.0:
                 return "High"

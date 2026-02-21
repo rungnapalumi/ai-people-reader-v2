@@ -1286,6 +1286,8 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
 def _first_impression_level(value: float, metric: str = "") -> str:
     score = float(value or 0.0)
     name = str(metric or "").strip().lower()
+    if name == "eye_contact":
+        return "high"
     if name in ("stance", "uprightness"):
         if score >= 80.0:
             return "high"
