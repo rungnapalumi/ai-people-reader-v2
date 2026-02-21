@@ -87,14 +87,18 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
     if not cap.isOpened():
         return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
 
-    total = 0
-    eye_frame_scores = []
-    upright_frame_scores = []
-    ankle_dist = []
-    ankle_center_x = []
-    stance_width_ratios = []
-    prev_nose_offset_ratio = None
-    prev_torso_angle = None
+    frame_samples = []
+
+    def _normalize_horizontal_angle(deg: float) -> float:
+        while deg > 180.0:
+            deg -= 360.0
+        while deg <= -180.0:
+            deg += 360.0
+        if deg > 90.0:
+            deg -= 180.0
+        if deg < -90.0:
+            deg += 180.0
+        return deg
 
     with Pose(static_image_mode=False, model_complexity=1) as pose:
         i = 0
@@ -125,62 +129,142 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
             if min(nose.visibility, leye.visibility, reye.visibility, lsh.visibility, rsh.visibility, lhip.visibility, rhip.visibility) < 0.5:
                 continue
 
-            total += 1
-
-            # Eye contact (continuous): frontal face symmetry + gaze jitter penalty.
-            eye_dist = abs(leye.x - reye.x)
-            if eye_dist > 1e-4:
-                mid_eye_x = (leye.x + reye.x) / 2.0
-                nose_offset_ratio = abs(nose.x - mid_eye_x) / eye_dist
-                symmetry_score = max(0.0, 1.0 - (nose_offset_ratio / 0.75))
-                stability_bonus = 1.0
-                if prev_nose_offset_ratio is not None:
-                    jitter = abs(nose_offset_ratio - prev_nose_offset_ratio)
-                    stability_bonus = max(0.70, 1.0 - (jitter / 0.35))
-                prev_nose_offset_ratio = nose_offset_ratio
-                eye_frame_scores.append(100.0 * symmetry_score * stability_bonus)
-
-            # Uprightness (continuous): torso vertical angle + shoulder level + abrupt tilt penalty.
-            mid_sh = np.array([(lsh.x + rsh.x) / 2.0, (lsh.y + rsh.y) / 2.0])
-            mid_hip = np.array([(lhip.x + rhip.x) / 2.0, (lhip.y + rhip.y) / 2.0])
-            v = mid_sh - mid_hip
-            vert = np.array([0.0, -1.0])
-            v_norm = np.linalg.norm(v) + 1e-9
-            cosang = float(np.dot(v / v_norm, vert))
-            ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
-            shoulder_tilt = abs(lsh.y - rsh.y)
-            shoulder_tilt_ratio = shoulder_tilt / v_norm
-
-            angle_score = max(0.0, 1.0 - (ang / 28.0))
-            shoulder_score = max(0.0, 1.0 - (shoulder_tilt_ratio / 0.20))
-            temporal_bonus = 1.0
-            if prev_torso_angle is not None:
-                angle_jump = abs(ang - prev_torso_angle)
-                temporal_bonus = max(0.75, 1.0 - (angle_jump / 45.0))
-            prev_torso_angle = ang
-
-            upright_frame_scores.append(
-                100.0 * (0.75 * angle_score + 0.25 * shoulder_score) * temporal_bonus
+            frame_samples.append(
+                {
+                    "nose": (float(nose.x), float(nose.y)),
+                    "leye": (float(leye.x), float(leye.y)),
+                    "reye": (float(reye.x), float(reye.y)),
+                    "lsh": (float(lsh.x), float(lsh.y)),
+                    "rsh": (float(rsh.x), float(rsh.y)),
+                    "lhip": (float(lhip.x), float(lhip.y)),
+                    "rhip": (float(rhip.x), float(rhip.y)),
+                    "lank": (float(lank.x), float(lank.y)),
+                    "rank": (float(rank.x), float(rank.y)),
+                    "leye_vis": float(leye.visibility),
+                    "reye_vis": float(reye.visibility),
+                    "lank_vis": float(lank.visibility),
+                    "rank_vis": float(rank.visibility),
+                }
             )
-
-            # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
-            if min(lank.visibility, rank.visibility) >= 0.5:
-                dx = (lank.x - rank.x)
-                dy = (lank.y - rank.y)
-                dist = math.sqrt(dx * dx + dy * dy)
-                ankle_dist.append(dist)
-                ankle_center_x.append((lank.x + rank.x) / 2.0)
-                shoulder_width = abs(lsh.x - rsh.x)
-                if shoulder_width > 1e-4:
-                    stance_width_ratios.append(dist / shoulder_width)
-
-            if total >= max_frames:
+            if len(frame_samples) >= max_frames:
                 break
 
     cap.release()
 
+    total = len(frame_samples)
     if total == 0:
         return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
+
+    # Auto-calibrate camera roll (tilted camera) using median shoulder/hip line angles.
+    roll_candidates = []
+    for s in frame_samples:
+        lsh = s["lsh"]
+        rsh = s["rsh"]
+        lhip = s["lhip"]
+        rhip = s["rhip"]
+        sh_ang = math.degrees(math.atan2(rsh[1] - lsh[1], rsh[0] - lsh[0]))
+        hip_ang = math.degrees(math.atan2(rhip[1] - lhip[1], rhip[0] - lhip[0]))
+        roll_candidates.append(_normalize_horizontal_angle(sh_ang))
+        roll_candidates.append(_normalize_horizontal_angle(hip_ang))
+    camera_roll_deg = float(np.median(np.array(roll_candidates))) if roll_candidates else 0.0
+    camera_roll_deg = max(-20.0, min(20.0, camera_roll_deg))
+    theta = -math.radians(camera_roll_deg)
+
+    def _rotate_point(pt: tuple, cx: float = 0.5, cy: float = 0.5) -> tuple:
+        x, y = pt
+        dx = x - cx
+        dy = y - cy
+        xr = dx * math.cos(theta) - dy * math.sin(theta) + cx
+        yr = dx * math.sin(theta) + dy * math.cos(theta) + cy
+        return (xr, yr)
+
+    eye_frame_scores = []
+    upright_frame_scores = []
+    ankle_dist = []
+    ankle_center_x = []
+    stance_width_ratios = []
+    prev_nose_offset_ratio = None
+    prev_torso_angle = None
+
+    for s in frame_samples:
+        nose = _rotate_point(s["nose"])
+        leye = _rotate_point(s["leye"])
+        reye = _rotate_point(s["reye"])
+        lsh = _rotate_point(s["lsh"])
+        rsh = _rotate_point(s["rsh"])
+        lhip = _rotate_point(s["lhip"])
+        rhip = _rotate_point(s["rhip"])
+        lank = _rotate_point(s["lank"])
+        rank = _rotate_point(s["rank"])
+
+        # Eye contact (continuous): frontal face symmetry + gaze stability
+        # with extra penalties for looking down, closing/occluding eyes, and head-down posture.
+        eye_dist = abs(leye[0] - reye[0])
+        if eye_dist > 1e-4:
+            mid_eye_x = (leye[0] + reye[0]) / 2.0
+            mid_eye_y = (leye[1] + reye[1]) / 2.0
+            nose_offset_ratio = abs(nose[0] - mid_eye_x) / eye_dist
+            symmetry_score = max(0.0, 1.0 - (nose_offset_ratio / 0.75))
+            stability_bonus = 1.0
+            if prev_nose_offset_ratio is not None:
+                jitter = abs(nose_offset_ratio - prev_nose_offset_ratio)
+                stability_bonus = max(0.70, 1.0 - (jitter / 0.35))
+            prev_nose_offset_ratio = nose_offset_ratio
+            base_eye_score = 100.0 * symmetry_score * stability_bonus
+
+            nose_eye_ratio = (nose[1] - mid_eye_y) / eye_dist
+            look_down_penalty = max(0.0, min(1.0, (nose_eye_ratio - 0.55) / 0.50))
+
+            mid_sh_y = (lsh[1] + rsh[1]) / 2.0
+            mid_sh_xy = np.array([(lsh[0] + rsh[0]) / 2.0, (lsh[1] + rsh[1]) / 2.0])
+            mid_hip_xy = np.array([(lhip[0] + rhip[0]) / 2.0, (lhip[1] + rhip[1]) / 2.0])
+            torso_len = float(np.linalg.norm(mid_sh_xy - mid_hip_xy)) + 1e-9
+            head_raise_ratio = (mid_sh_y - nose[1]) / torso_len
+            head_down_penalty = max(0.0, min(1.0, (0.28 - head_raise_ratio) / 0.18))
+
+            eye_visibility = min(float(s["leye_vis"]), float(s["reye_vis"]))
+            eye_closed_penalty = max(0.0, min(1.0, (0.85 - eye_visibility) / 0.35))
+
+            attention_penalty = (
+                0.28 * look_down_penalty
+                + 0.22 * head_down_penalty
+                + 0.18 * eye_closed_penalty
+            )
+            attention_factor = max(0.55, 1.0 - attention_penalty)
+            eye_frame_scores.append(base_eye_score * attention_factor)
+
+        # Uprightness (continuous): torso vertical angle + shoulder level + abrupt tilt penalty.
+        mid_sh = np.array([(lsh[0] + rsh[0]) / 2.0, (lsh[1] + rsh[1]) / 2.0])
+        mid_hip = np.array([(lhip[0] + rhip[0]) / 2.0, (lhip[1] + rhip[1]) / 2.0])
+        v = mid_sh - mid_hip
+        vert = np.array([0.0, -1.0])
+        v_norm = np.linalg.norm(v) + 1e-9
+        cosang = float(np.dot(v / v_norm, vert))
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+        shoulder_tilt = abs(lsh[1] - rsh[1])
+        shoulder_tilt_ratio = shoulder_tilt / v_norm
+
+        angle_score = max(0.0, 1.0 - (ang / 28.0))
+        shoulder_score = max(0.0, 1.0 - (shoulder_tilt_ratio / 0.20))
+        temporal_bonus = 1.0
+        if prev_torso_angle is not None:
+            angle_jump = abs(ang - prev_torso_angle)
+            temporal_bonus = max(0.75, 1.0 - (angle_jump / 45.0))
+        prev_torso_angle = ang
+        upright_frame_scores.append(
+            100.0 * (0.75 * angle_score + 0.25 * shoulder_score) * temporal_bonus
+        )
+
+        # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
+        if min(float(s["lank_vis"]), float(s["rank_vis"])) >= 0.5:
+            dx = (lank[0] - rank[0])
+            dy = (lank[1] - rank[1])
+            dist = math.sqrt(dx * dx + dy * dy)
+            ankle_dist.append(dist)
+            ankle_center_x.append((lank[0] + rank[0]) / 2.0)
+            shoulder_width = abs(lsh[0] - rsh[0])
+            if shoulder_width > 1e-4:
+                stance_width_ratios.append(dist / shoulder_width)
 
     eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
     upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
