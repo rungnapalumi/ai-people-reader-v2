@@ -28,6 +28,7 @@ import time
 import logging
 import tempfile
 import re
+import subprocess
 import smtplib
 import ssl
 from datetime import datetime, timezone
@@ -232,6 +233,121 @@ def download_to_temp(key: str, suffix: str = ".mp4") -> str:
     with open(path, "wb") as f:
         s3.download_fileobj(AWS_BUCKET, key, f)
     return path
+
+
+def _normalized_rotation_degrees(value: Any) -> int:
+    try:
+        deg = int(round(float(value)))
+    except Exception:
+        return 0
+    deg = deg % 360
+    if deg in (90, 180, 270):
+        return deg
+    return 0
+
+
+def get_video_rotation_degrees(video_path: str) -> int:
+    """Read rotation metadata using ffprobe. Returns one of 0/90/180/270."""
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream_tags=rotate:stream_side_data=rotation",
+        "-of",
+        "json",
+        video_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except Exception as e:
+        logger.warning("[orientation] ffprobe unavailable path=%s err=%s", video_path, e)
+        return 0
+    if proc.returncode != 0:
+        logger.warning("[orientation] ffprobe failed path=%s rc=%s", video_path, proc.returncode)
+        return 0
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception:
+        return 0
+    streams = payload.get("streams") or []
+    if not streams:
+        return 0
+    stream0 = streams[0] or {}
+    side_data = stream0.get("side_data_list") or []
+    for item in side_data:
+        deg = _normalized_rotation_degrees((item or {}).get("rotation"))
+        if deg:
+            return deg
+    tags = stream0.get("tags") or {}
+    return _normalized_rotation_degrees(tags.get("rotate"))
+
+
+def auto_fix_video_orientation(video_path: str) -> str:
+    """
+    Normalize orientation before analysis when rotation metadata is present.
+    Returns the new upright path, or the original path if no change/failure.
+    """
+    rotation = get_video_rotation_degrees(video_path)
+    if rotation == 0:
+        return video_path
+
+    vf = {
+        90: "transpose=1",
+        180: "transpose=1,transpose=1",
+        270: "transpose=2",
+    }.get(rotation, "")
+    if not vf:
+        return video_path
+
+    fd, out_path = tempfile.mkstemp(suffix="_upright.mp4")
+    os.close(fd)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        video_path,
+        "-vf",
+        vf,
+        "-metadata:s:v:0",
+        "rotate=0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "copy",
+        "-movflags",
+        "+faststart",
+        out_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            logger.warning(
+                "[orientation] ffmpeg rotate failed rc=%s rotate=%s path=%s",
+                proc.returncode,
+                rotation,
+                video_path,
+            )
+            try:
+                os.remove(out_path)
+            except Exception:
+                pass
+            return video_path
+        logger.info("[orientation] normalized rotate=%s source=%s output=%s", rotation, video_path, out_path)
+        return out_path
+    except Exception as e:
+        logger.warning("[orientation] ffmpeg unavailable path=%s err=%s", video_path, e)
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+        return video_path
 
 
 def upload_bytes(key: str, data: bytes, content_type: str) -> None:
@@ -1289,18 +1405,23 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     # Download video
     video_suffix = os.path.splitext(input_key)[1] or ".mp4"
     video_path = download_to_temp(input_key, suffix=video_suffix)
+    analysis_video_path = auto_fix_video_orientation(video_path)
+    if analysis_video_path != video_path:
+        job["input_video_normalized"] = True
+    else:
+        job["input_video_normalized"] = False
 
     out_dir = tempfile.mkdtemp(prefix=f"report_{job_id}_")
     try:
         # Analyze once (shared for both languages)
-        result = run_analysis(video_path, job)
+        result = run_analysis(analysis_video_path, job)
 
         outputs: Dict[str, Any] = {"reports": {}, "graphs": {}}
 
         for lang_code in languages:
             lang_code = "th" if lang_code.startswith("th") else "en"
             docx_bytes, pdf_bytes, local_paths, first_impression_summary = generate_reports_for_lang(
-                job, result, video_path, lang_code, out_dir
+                job, result, analysis_video_path, lang_code, out_dir
             )
             if not isinstance(job.get("first_impression_summary"), dict):
                 job["first_impression_summary"] = first_impression_summary
@@ -1492,6 +1613,11 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             os.remove(video_path)
         except Exception:
             pass
+        if analysis_video_path != video_path:
+            try:
+                os.remove(analysis_video_path)
+            except Exception:
+                pass
 
 
 # -----------------------------------------
