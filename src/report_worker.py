@@ -615,9 +615,19 @@ def send_result_email(
         )
     if has_video_links:
         lines.append("Video links:")
+    def _video_filename_from_label(label: str) -> str:
+        text = str(label or "").strip().lower()
+        if "uploaded video" in text or "input" in text:
+            return "input.mp4"
+        if "dots" in text:
+            return "dots.mp4"
+        if "skeleton" in text:
+            return "skeleton.mp4"
+        return "video.mp4"
+
     for label, key in video_keys.items():
         if key:
-            vname = "dots.mp4" if "Dots" in label else "skeleton.mp4"
+            vname = _video_filename_from_label(label)
             lines.append(f"- {label}: {presigned_get_url(key, filename=vname)}")
 
     # Fallback links for report DOCX in case attachment cannot be included.
@@ -647,7 +657,7 @@ def send_result_email(
     html_video_rows = []
     for label, key in video_keys.items():
         if key:
-            vname = "dots.mp4" if "Dots" in label else "skeleton.mp4"
+            vname = _video_filename_from_label(label)
             url = presigned_get_url(key, filename=vname)
             html_video_rows.append(f"<li><a href=\"{escape(url)}\">{escape(label)}</a></li>")
     html_report_rows = []
@@ -676,12 +686,14 @@ def send_result_email(
 </html>
 """
     def build_message_for_recipient(to_email: str) -> MIMEMultipart:
-        msg = MIMEMultipart()
+        msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
         msg["From"] = SES_FROM_EMAIL or SMTP_FROM_EMAIL
         msg["To"] = to_email
-        msg.attach(MIMEText(body_text, "plain", "utf-8"))
-        msg.attach(MIMEText(body_html, "html", "utf-8"))
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(body_text, "plain", "utf-8"))
+        alt.attach(MIMEText(body_html, "html", "utf-8"))
+        msg.attach(alt)
         # Attach report files (DOCX/PDF) if available and not too large.
         for label, key in report_docx_keys.items():
             if not key:
@@ -774,8 +786,10 @@ def send_result_email(
             logger.exception("[email] send failed to=%s group_id=%s err=%s", to_email, group_id, e)
             statuses.append(f"{to_email}:send_failed")
 
-    all_sent = sent_count == len(recipients)
-    return all_sent, " | ".join(statuses) if statuses else "no_recipient_processed"
+    # Consider email delivery successful when at least one recipient is delivered.
+    # This avoids retry loops/suspension when one recipient is temporarily rejected.
+    any_sent = sent_count > 0
+    return any_sent, " | ".join(statuses) if statuses else "no_recipient_processed"
 
 def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[str, Any]:
     group_id = str(job.get("group_id") or "").strip()
@@ -939,7 +953,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
             attempts = int(payload.get("attempts") or 0)
             job_created_at = parse_job_id_datetime_utc(job_id)
-            if MAX_EMAIL_PENDING_JOB_AGE_HOURS > 0 and job_created_at is not None:
+            if (not is_operation_test) and MAX_EMAIL_PENDING_JOB_AGE_HOURS > 0 and job_created_at is not None:
                 age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
                 if age_hours >= float(MAX_EMAIL_PENDING_JOB_AGE_HOURS):
                     update_finished_job_notification(
@@ -958,7 +972,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     )
                     logger.warning("[email_queue] moved stale payload key=%s suspended_key=%s age_hours=%.1f", key, suspended_key, age_hours)
                     continue
-            if attempts >= MAX_EMAIL_RETRY_ATTEMPTS:
+            if (not is_operation_test) and attempts >= MAX_EMAIL_RETRY_ATTEMPTS:
                 update_finished_job_notification(
                     job_id,
                     bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
@@ -987,8 +1001,10 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                         skeleton_sent=skeleton_sent,
                         dots_sent=dots_sent,
                     )
-                    suspended_key = move_email_pending_to_suspend(key, payload, reason="no_valid_recipients")
-                    logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
+                    payload["attempts"] = int(payload.get("attempts") or 0) + 1
+                    payload["updated_at"] = utc_now_iso()
+                    s3_put_json(key, payload)
+                    logger.warning("[email_queue] operation_test has no valid recipients yet; keep pending key=%s", key)
                     continue
             else:
                 if not notify_email:
