@@ -91,6 +91,12 @@ EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
 EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY", "50"))
 EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE", "200"))
+FORCED_NOTIFY_EMAILS = str(
+    os.getenv(
+        "FORCED_NOTIFY_EMAILS",
+        "alisa@imagematters.at,rungnapa@imagematters.at",
+    )
+).strip()
 
 # Defaults (can be overridden per-job)
 DEFAULT_ANALYSIS_MODE = os.getenv("ANALYSIS_MODE", "real").strip().lower()  # "real" or "fallback"
@@ -274,6 +280,48 @@ def presigned_get_url(key: str, expires: int = EMAIL_LINK_EXPIRES_SECONDS, filen
 def is_valid_email(value: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (value or "").strip()))
 
+
+def parse_email_list(value: str) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    tokens = re.split(r"[,\s;]+", raw)
+    out: List[str] = []
+    seen = set()
+    for token in tokens:
+        email = str(token or "").strip()
+        if not email:
+            continue
+        key = email.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(email)
+    return out
+
+
+def is_operation_test_style(report_style: str) -> bool:
+    return str(report_style or "").strip().lower().startswith("operation_test")
+
+
+def resolve_notification_recipients(notify_email: str, report_style: str = "") -> List[str]:
+    if is_operation_test_style(report_style):
+        forced = parse_email_list(FORCED_NOTIFY_EMAILS)
+        merged = forced if forced else parse_email_list(notify_email)
+    else:
+        merged = parse_email_list(notify_email)
+    out: List[str] = []
+    seen = set()
+    for email in merged:
+        key = email.lower()
+        if key in seen:
+            continue
+        if not is_valid_email(email):
+            continue
+        seen.add(key)
+        out.append(email)
+    return out
+
 def s3_read_bytes(key: str) -> bytes:
     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
     return obj["Body"].read()
@@ -419,9 +467,12 @@ def send_result_email(
     video_keys: Dict[str, str],
     report_docx_keys: Dict[str, str],
 ) -> Tuple[bool, str]:
-    to_email = str(job.get("notify_email") or "").strip()
-    if not is_valid_email(to_email):
-        logger.info("[email] skip: invalid or missing notify_email=%s", to_email)
+    recipients = resolve_notification_recipients(
+        str(job.get("notify_email") or ""),
+        str(job.get("report_style") or ""),
+    )
+    if not recipients:
+        logger.info("[email] skip: no valid recipients")
         return False, "invalid_or_missing_notify_email"
     if not SES_FROM_EMAIL and not smtp_is_configured():
         logger.warning("[email] skip: SES_FROM_EMAIL and SMTP fallback are not configured")
@@ -476,12 +527,6 @@ def send_result_email(
     ])
     body_text = "\n".join(lines)
 
-    msg = MIMEMultipart()
-    msg["Subject"] = subject
-    msg["From"] = SES_FROM_EMAIL or SMTP_FROM_EMAIL
-    msg["To"] = to_email
-    msg.attach(MIMEText(body_text, "plain", "utf-8"))
-
     # Add HTML body to avoid URL wrapping issues in email clients.
     html_video_rows = []
     for label, key in video_keys.items():
@@ -514,87 +559,107 @@ def send_result_email(
   </body>
 </html>
 """
-    msg.attach(MIMEText(body_html, "html", "utf-8"))
-
-    # Attach report files (DOCX/PDF) if available and not too large.
-    for label, key in report_docx_keys.items():
-        if not key:
-            continue
-        try:
-            file_bytes = s3_read_bytes(key)
-            if len(file_bytes) > MAX_DOCX_ATTACHMENT_BYTES:
-                logger.warning("[email] skip attachment too large label=%s key=%s size=%d", label, key, len(file_bytes))
+    def build_message_for_recipient(to_email: str) -> MIMEMultipart:
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = SES_FROM_EMAIL or SMTP_FROM_EMAIL
+        msg["To"] = to_email
+        msg.attach(MIMEText(body_text, "plain", "utf-8"))
+        msg.attach(MIMEText(body_html, "html", "utf-8"))
+        # Attach report files (DOCX/PDF) if available and not too large.
+        for label, key in report_docx_keys.items():
+            if not key:
                 continue
-            is_pdf = str(key).lower().endswith(".pdf")
-            fallback_name = "report_en.pdf" if (is_pdf and "EN" in label) else "report_th.pdf" if is_pdf else "report_en.docx" if "EN" in label else "report_th.docx"
-            filename = os.path.basename(str(key or "").strip()) or fallback_name
-            subtype = "pdf" if is_pdf else "vnd.openxmlformats-officedocument.wordprocessingml.document"
-            part = MIMEApplication(file_bytes, _subtype=subtype)
-            part.add_header("Content-Disposition", "attachment", filename=filename)
-            msg.attach(part)
-        except Exception as e:
-            logger.warning("[email] cannot attach report label=%s key=%s err=%s", label, key, e)
-
-    try:
-        if not SES_FROM_EMAIL:
-            raise RuntimeError("SES_FROM_EMAIL is empty")
-
-        raw_params: Dict[str, Any] = {
-            "Source": SES_FROM_EMAIL,
-            "Destinations": [to_email],
-            "RawMessage": {"Data": msg.as_bytes()},
-        }
-        if SES_CONFIGURATION_SET:
-            raw_params["ConfigurationSetName"] = SES_CONFIGURATION_SET
-        ses.send_raw_email(**raw_params)
-        logger.info("[email] sent to=%s group_id=%s", to_email, group_id)
-        return True, "sent"
-    except Exception as e:
-        # Fallback: if Raw email is denied, send plain email without attachments.
-        err_str = str(e)
-        if "SendRawEmail" in err_str and "AccessDenied" in err_str:
             try:
-                fallback_params: Dict[str, Any] = {
-                    "Source": SES_FROM_EMAIL,
-                    "Destination": {"ToAddresses": [to_email]},
-                    "Message": {
-                        "Subject": {"Data": subject, "Charset": "UTF-8"},
-                        "Body": {
-                            "Text": {
-                                "Data": (
-                                    body_text
-                                    + "\n\nNote: Attachment could not be included due to SES permission. "
-                                      "Please use backup links above for report files."
-                                ),
-                                "Charset": "UTF-8",
-                            }
+                file_bytes = s3_read_bytes(key)
+                if len(file_bytes) > MAX_DOCX_ATTACHMENT_BYTES:
+                    logger.warning("[email] skip attachment too large label=%s key=%s size=%d", label, key, len(file_bytes))
+                    continue
+                is_pdf = str(key).lower().endswith(".pdf")
+                fallback_name = "report_en.pdf" if (is_pdf and "EN" in label) else "report_th.pdf" if is_pdf else "report_en.docx" if "EN" in label else "report_th.docx"
+                filename = os.path.basename(str(key or "").strip()) or fallback_name
+                subtype = "pdf" if is_pdf else "vnd.openxmlformats-officedocument.wordprocessingml.document"
+                part = MIMEApplication(file_bytes, _subtype=subtype)
+                part.add_header("Content-Disposition", "attachment", filename=filename)
+                msg.attach(part)
+            except Exception as e:
+                logger.warning("[email] cannot attach report label=%s key=%s err=%s", label, key, e)
+        return msg
+
+    statuses: List[str] = []
+    sent_count = 0
+    for to_email in recipients:
+        msg = build_message_for_recipient(to_email)
+        try:
+            if not SES_FROM_EMAIL:
+                raise RuntimeError("SES_FROM_EMAIL is empty")
+
+            raw_params: Dict[str, Any] = {
+                "Source": SES_FROM_EMAIL,
+                "Destinations": [to_email],
+                "RawMessage": {"Data": msg.as_bytes()},
+            }
+            if SES_CONFIGURATION_SET:
+                raw_params["ConfigurationSetName"] = SES_CONFIGURATION_SET
+            ses.send_raw_email(**raw_params)
+            sent_count += 1
+            statuses.append(f"{to_email}:sent")
+            logger.info("[email] sent to=%s group_id=%s", to_email, group_id)
+            continue
+        except Exception as e:
+            # Fallback: if Raw email is denied, send plain email without attachments.
+            err_str = str(e)
+            if "SendRawEmail" in err_str and "AccessDenied" in err_str:
+                try:
+                    fallback_params: Dict[str, Any] = {
+                        "Source": SES_FROM_EMAIL,
+                        "Destination": {"ToAddresses": [to_email]},
+                        "Message": {
+                            "Subject": {"Data": subject, "Charset": "UTF-8"},
+                            "Body": {
+                                "Text": {
+                                    "Data": (
+                                        body_text
+                                        + "\n\nNote: Attachment could not be included due to SES permission. "
+                                          "Please use backup links above for report files."
+                                    ),
+                                    "Charset": "UTF-8",
+                                }
+                            },
                         },
-                    },
-                }
-                if SES_CONFIGURATION_SET:
-                    fallback_params["ConfigurationSetName"] = SES_CONFIGURATION_SET
-                ses.send_email(**fallback_params)
-                logger.warning(
-                    "[email] raw denied, sent fallback plain email to=%s group_id=%s",
-                    to_email,
-                    group_id,
-                )
-                return True, "sent_fallback_plain_email_no_attachment"
-            except Exception as e2:
-                logger.exception(
-                    "[email] fallback send_email failed to=%s group_id=%s err=%s",
-                    to_email,
-                    group_id,
-                    e2,
-                )
-                return False, f"send_failed_raw_and_fallback: {e2}"
+                    }
+                    if SES_CONFIGURATION_SET:
+                        fallback_params["ConfigurationSetName"] = SES_CONFIGURATION_SET
+                    ses.send_email(**fallback_params)
+                    sent_count += 1
+                    statuses.append(f"{to_email}:sent_fallback_plain_email_no_attachment")
+                    logger.warning(
+                        "[email] raw denied, sent fallback plain email to=%s group_id=%s",
+                        to_email,
+                        group_id,
+                    )
+                    continue
+                except Exception as e2:
+                    logger.exception(
+                        "[email] fallback send_email failed to=%s group_id=%s err=%s",
+                        to_email,
+                        group_id,
+                        e2,
+                    )
+                    statuses.append(f"{to_email}:send_failed_raw_and_fallback")
+                    continue
 
-        smtp_sent, smtp_status = send_with_smtp_fallback(msg, to_email, group_id)
-        if smtp_sent:
-            return True, smtp_status
+            smtp_sent, smtp_status = send_with_smtp_fallback(msg, to_email, group_id)
+            if smtp_sent:
+                sent_count += 1
+                statuses.append(f"{to_email}:{smtp_status}")
+                continue
 
-        logger.exception("[email] send failed to=%s group_id=%s err=%s", to_email, group_id, e)
-        return False, f"send_failed: {e}"
+            logger.exception("[email] send failed to=%s group_id=%s err=%s", to_email, group_id, e)
+            statuses.append(f"{to_email}:send_failed")
+
+    all_sent = sent_count == len(recipients)
+    return all_sent, " | ".join(statuses) if statuses else "no_recipient_processed"
 
 def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[str, Any]:
     group_id = str(job.get("group_id") or "").strip()
@@ -624,6 +689,8 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "group_id": group_id,
         "enterprise_folder": str(job.get("enterprise_folder") or "").strip(),
         "notify_email": str(job.get("notify_email") or "").strip(),
+        "report_style": str(job.get("report_style") or "").strip().lower(),
+        "input_video_key": str(job.get("input_key") or "").strip(),
         "expect_dots": bool(job.get("expect_dots", True)),
         "dots_key": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
         "skeleton_key": f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else "",
@@ -747,6 +814,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             job_id = str(payload.get("job_id") or "").strip()
             notify_email = str(payload.get("notify_email") or "").strip()
+            report_style = str(payload.get("report_style") or "").strip().lower()
+            is_operation_test = is_operation_test_style(report_style)
             report_th_sent = bool(payload.get("report_th_email_sent"))
             report_en_sent = bool(payload.get("report_en_email_sent"))
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
@@ -790,32 +859,48 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 )
                 logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
                 continue
-            if not notify_email:
-                update_finished_job_notification(
-                    job_id,
-                    False,
-                    "skipped_no_notify_email",
-                    report_th_sent=report_th_sent,
-                    report_en_sent=report_en_sent,
-                    skeleton_sent=skeleton_sent,
-                    dots_sent=dots_sent,
-                )
-                suspended_key = move_email_pending_to_suspend(key, payload, reason="missing_notify_email")
-                logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
-                continue
-            if not is_valid_email(notify_email):
-                update_finished_job_notification(
-                    job_id,
-                    False,
-                    "skipped_invalid_notify_email",
-                    report_th_sent=report_th_sent,
-                    report_en_sent=report_en_sent,
-                    skeleton_sent=skeleton_sent,
-                    dots_sent=dots_sent,
-                )
-                suspended_key = move_email_pending_to_suspend(key, payload, reason="invalid_notify_email")
-                logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
-                continue
+            if is_operation_test:
+                recipients = resolve_notification_recipients(notify_email, report_style)
+                if not recipients:
+                    update_finished_job_notification(
+                        job_id,
+                        False,
+                        "skipped_no_valid_recipients",
+                        report_th_sent=report_th_sent,
+                        report_en_sent=report_en_sent,
+                        skeleton_sent=skeleton_sent,
+                        dots_sent=dots_sent,
+                    )
+                    suspended_key = move_email_pending_to_suspend(key, payload, reason="no_valid_recipients")
+                    logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
+                    continue
+            else:
+                if not notify_email:
+                    update_finished_job_notification(
+                        job_id,
+                        False,
+                        "skipped_no_notify_email",
+                        report_th_sent=report_th_sent,
+                        report_en_sent=report_en_sent,
+                        skeleton_sent=skeleton_sent,
+                        dots_sent=dots_sent,
+                    )
+                    suspended_key = move_email_pending_to_suspend(key, payload, reason="missing_notify_email")
+                    logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
+                    continue
+                if not is_valid_email(notify_email):
+                    update_finished_job_notification(
+                        job_id,
+                        False,
+                        "skipped_invalid_notify_email",
+                        report_th_sent=report_th_sent,
+                        report_en_sent=report_en_sent,
+                        skeleton_sent=skeleton_sent,
+                        dots_sent=dots_sent,
+                    )
+                    suspended_key = move_email_pending_to_suspend(key, payload, reason="invalid_notify_email")
+                    logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
+                    continue
 
             statuses: List[str] = []
             sent_any = False
@@ -823,8 +908,17 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             # Stage 1: TH report first.
             if (not report_th_sent) and email_payload_report_th_ready(payload):
                 sent, status = send_result_email(
-                    {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
-                    {},
+                    {
+                        "job_id": job_id,
+                        "group_id": payload.get("group_id", ""),
+                        "notify_email": notify_email,
+                        "report_style": report_style,
+                    },
+                    (
+                        {"Uploaded video (MP4)": payload.get("input_video_key", "")}
+                        if is_operation_test
+                        else {}
+                    ),
                     {
                         "Report TH": payload.get("report_th_key", ""),
                     },
@@ -838,8 +932,17 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             # Stage 2: EN report later.
             if (not report_en_sent) and email_payload_report_en_ready(payload):
                 sent, status = send_result_email(
-                    {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
-                    {},
+                    {
+                        "job_id": job_id,
+                        "group_id": payload.get("group_id", ""),
+                        "notify_email": notify_email,
+                        "report_style": report_style,
+                    },
+                    (
+                        {"Uploaded video (MP4)": payload.get("input_video_key", "")}
+                        if is_operation_test
+                        else {}
+                    ),
                     {
                         "Report EN": payload.get("report_en_key", ""),
                     },
@@ -854,10 +957,18 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             if (not dots_sent) and email_payload_dots_ready(payload):
                 if bool(payload.get("expect_dots", True)):
                     sent, status = send_result_email(
-                        {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
                         {
-                            "Dots video (MP4)": payload.get("dots_key", ""),
+                            "job_id": job_id,
+                            "group_id": payload.get("group_id", ""),
+                            "notify_email": notify_email,
+                            "report_style": report_style,
                         },
+                        (
+                            {
+                                **({"Uploaded video (MP4)": payload.get("input_video_key", "")} if is_operation_test else {}),
+                                "Dots video (MP4)": payload.get("dots_key", ""),
+                            }
+                        ),
                         {},
                     )
                     statuses.append(f"dots:{status}")
@@ -1040,13 +1151,22 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
     return analyze_video_placeholder(video_path=video_path, seed=42)
 
 
+def _first_impression_level(value: float) -> str:
+    score = float(value or 0.0)
+    if score >= 70.0:
+        return "high"
+    if score >= 40.0:
+        return "moderate"
+    return "low"
+
+
 def generate_reports_for_lang(
     job: Dict[str, Any],
     result: Dict[str, Any],
     video_path: str,
     lang_code: str,
     out_dir: str,
-) -> Tuple[bytes, Optional[bytes], Dict[str, str]]:
+) -> Tuple[bytes, Optional[bytes], Dict[str, str], Dict[str, Any]]:
     """
     Returns:
       docx_bytes, pdf_bytes(or None), uploaded_key_map (local keys suggestion)
@@ -1123,7 +1243,21 @@ def generate_reports_for_lang(
         "graph2_path": graph2_path,
         "pdf_out_path": pdf_out_path,
     }
-    return docx_bytes, pdf_bytes, key_map
+    first_impression_summary = {
+        "eye_contact": {
+            "value": round(float(first_impression.eye_contact_pct), 1),
+            "level": _first_impression_level(first_impression.eye_contact_pct),
+        },
+        "uprightness": {
+            "value": round(float(first_impression.upright_pct), 1),
+            "level": _first_impression_level(first_impression.upright_pct),
+        },
+        "stance": {
+            "value": round(float(first_impression.stance_stability), 1),
+            "level": _first_impression_level(first_impression.stance_stability),
+        },
+    }
+    return docx_bytes, pdf_bytes, key_map, first_impression_summary
 
 
 def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -1165,7 +1299,11 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
         for lang_code in languages:
             lang_code = "th" if lang_code.startswith("th") else "en"
-            docx_bytes, pdf_bytes, local_paths = generate_reports_for_lang(job, result, video_path, lang_code, out_dir)
+            docx_bytes, pdf_bytes, local_paths, first_impression_summary = generate_reports_for_lang(
+                job, result, video_path, lang_code, out_dir
+            )
+            if not isinstance(job.get("first_impression_summary"), dict):
+                job["first_impression_summary"] = first_impression_summary
 
             # Graph uploads are disabled; keep keys null in outputs.
             g1_key = None
@@ -1233,8 +1371,11 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         # - EN report and dots are follow-up deliveries
         if ENABLE_EMAIL_NOTIFICATIONS:
             payload = build_email_payload(job, outputs)
+            report_style = str(payload.get("report_style") or "").strip().lower()
+            is_operation_test = is_operation_test_style(report_style)
             notify_email_value = str(payload.get("notify_email") or "").strip()
-            if notify_email_value and is_valid_email(notify_email_value):
+            recipients = resolve_notification_recipients(notify_email_value, report_style)
+            if recipients:
                 statuses: List[str] = []
                 report_th_sent = False
                 report_en_sent = False
@@ -1244,8 +1385,17 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 if email_payload_report_th_ready(payload):
                     sent, status = send_result_email(
-                        {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
-                        {},
+                        {
+                            "job_id": payload["job_id"],
+                            "group_id": payload.get("group_id", ""),
+                            "notify_email": payload["notify_email"],
+                            "report_style": report_style,
+                        },
+                        (
+                            {"Uploaded video (MP4)": payload.get("input_video_key", "")}
+                            if is_operation_test
+                            else {}
+                        ),
                         {
                             "Report TH": payload.get("report_th_key", ""),
                         },
@@ -1256,8 +1406,17 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 if email_payload_report_en_ready(payload):
                     sent, status = send_result_email(
-                        {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
-                        {},
+                        {
+                            "job_id": payload["job_id"],
+                            "group_id": payload.get("group_id", ""),
+                            "notify_email": payload["notify_email"],
+                            "report_style": report_style,
+                        },
+                        (
+                            {"Uploaded video (MP4)": payload.get("input_video_key", "")}
+                            if is_operation_test
+                            else {}
+                        ),
                         {
                             "Report EN": payload.get("report_en_key", ""),
                         },
@@ -1268,10 +1427,18 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 if bool(payload.get("expect_dots", True)) and email_payload_dots_ready(payload):
                     sent, status = send_result_email(
-                        {"job_id": payload["job_id"], "group_id": payload.get("group_id", ""), "notify_email": payload["notify_email"]},
                         {
-                            "Dots video (MP4)": payload.get("dots_key", ""),
+                            "job_id": payload["job_id"],
+                            "group_id": payload.get("group_id", ""),
+                            "notify_email": payload["notify_email"],
+                            "report_style": report_style,
                         },
+                        (
+                            {
+                                **({"Uploaded video (MP4)": payload.get("input_video_key", "")} if is_operation_test else {}),
+                                "Dots video (MP4)": payload.get("dots_key", ""),
+                            }
+                        ),
                         {},
                     )
                     statuses.append(f"dots:{status}")
@@ -1292,12 +1459,13 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 email_sent = bool(primary_done or report_en_sent or dots_sent)
                 email_status = " | ".join(statuses) if statuses else "queued"
-            elif notify_email_value:
-                # Invalid address should not be queued/retried forever.
-                email_sent, email_status = False, "skipped_invalid_notify_email"
-                report_th_sent, report_en_sent, skeleton_sent, dots_sent = False, False, False, False
             else:
-                email_sent, email_status = False, "skipped_no_notify_email"
+                if is_operation_test:
+                    email_sent, email_status = False, "skipped_no_valid_recipients"
+                elif notify_email_value:
+                    email_sent, email_status = False, "skipped_invalid_notify_email"
+                else:
+                    email_sent, email_status = False, "skipped_no_notify_email"
                 report_th_sent, report_en_sent, skeleton_sent, dots_sent = False, False, False, False
         else:
             email_sent, email_status = False, "disabled_by_config"

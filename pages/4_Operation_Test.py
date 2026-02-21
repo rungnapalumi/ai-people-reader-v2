@@ -1,154 +1,23 @@
-# pages/2_Submit_Job.py — Video Analysis (วิเคราะห์วิดีโอ)
-# Upload once (shared key) -> get downloads:
-#   1) Dots video
-#   2) Skeleton video
-#   3) English report (DOCX)
-#   4) Thai report (DOCX)
-#
-# Uses LEGACY queue:
-#   jobs/pending/<job_id>.json
-#
-# Output paths (fixed):
-#   jobs/output/groups/<group_id>/dots.mp4
-#   jobs/output/groups/<group_id>/skeleton.mp4
-#   jobs/output/groups/<group_id>/report_en.docx
-#   jobs/output/groups/<group_id>/report_th.docx
-#
-# Key point:
-# - DOCX only (no PDF)
-# - Can paste any group_id to retrieve outputs (no session loss problem)
-
-import os
 import json
-import uuid
+import os
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-import streamlit as st
 import boto3
+import streamlit as st
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 
 
-# -------------------------
-# Page setup
-# -------------------------
 st.set_page_config(page_title="Operation Test", layout="wide")
 
-THEME_CSS = """
-<style>
-:root {
-  --bg-main: #2c2723;
-  --bg-soft: #3a332d;
-  --bg-card: #473e36;
-  --text-main: #e6d9c8;
-  --text-dim: #ccbda8;
-  --accent: #c9a67a;
-  --accent-strong: #b48d5f;
-  --border: #6d5c4e;
-}
-
-.stApp {
-  background: var(--bg-main);
-  color: var(--text-main);
-}
-
-[data-testid="stSidebar"] {
-  background: #28231f;
-  border-right: 1px solid var(--border);
-}
-
-[data-testid="stSidebarNav"] a,
-[data-testid="stSidebarNav"] button,
-[data-testid="stSidebarNav"] a p,
-[data-testid="stSidebarNav"] a span,
-[data-testid="stSidebarNav"] button p,
-[data-testid="stSidebarNav"] button span {
-  color: #ffffff !important;
-}
-
-h1, h2, h3, h4, h5, h6 {
-  color: #f0e4d4 !important;
-}
-
-p, label, span, div {
-  color: var(--text-main);
-}
-
-[data-testid="stTextInput"] input,
-[data-testid="stNumberInput"] input,
-[data-testid="stTextArea"] textarea {
-  background: var(--bg-soft) !important;
-  color: var(--text-main) !important;
-  border: 1px solid var(--border) !important;
-}
-
-[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-  background: var(--bg-soft) !important;
-  color: var(--text-main) !important;
-  border: 1px solid var(--border) !important;
-}
-
-[data-testid="stFileUploader"] section {
-  background: var(--bg-soft) !important;
-  border: 1px dashed var(--border) !important;
-}
-
-[data-testid="stFileUploader"] section button {
-  font-size: 0 !important;
-}
-
-[data-testid="stFileUploader"] section button::after {
-  content: "Browse File";
-  font-size: 1.1rem;
-}
-
-.stButton > button,
-.stDownloadButton > button,
-.stLinkButton > a {
-  background: linear-gradient(180deg, var(--accent), var(--accent-strong)) !important;
-  color: #231d17 !important;
-  border: 0 !important;
-  font-weight: 600 !important;
-}
-
-[data-testid="stDataFrame"] {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-[data-testid="stAlert"] {
-  background: var(--bg-card) !important;
-  color: var(--text-main) !important;
-  border: 1px solid var(--border) !important;
-}
-
-.stCaption {
-  color: var(--text-dim) !important;
-}
-</style>
-"""
-
-
-def apply_theme() -> None:
-    st.markdown(THEME_CSS, unsafe_allow_html=True)
-
-BANNER_PATH_CANDIDATES = [
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "top_banner.png"),
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "banner.png"),
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png"),
-]
-
-
-# -------------------------
-# Env / S3
-# -------------------------
 AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 
 if not AWS_BUCKET:
-    st.error("Missing AWS_BUCKET (or S3_BUCKET) environment variable in Render.")
+    st.error("Missing AWS_BUCKET (or S3_BUCKET) environment variable.")
     st.stop()
 
 s3 = boto3.client(
@@ -167,62 +36,49 @@ JOBS_PENDING_PREFIX = "jobs/pending/"
 JOBS_PROCESSING_PREFIX = "jobs/processing/"
 JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_FAILED_PREFIX = "jobs/failed/"
-
-JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
-ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
-EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
+
+BANNER_PATHS = [
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "top_banner.png"),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "banner.png"),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png"),
+]
 
 
-# -------------------------
-# Helpers
-# -------------------------
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def is_valid_email_format(value: str) -> bool:
-    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (value or "").strip()))
-
-def is_blocked_typo_domain(value: str) -> bool:
-    email = (value or "").strip().lower()
-    if "@" not in email:
-        return False
-    domain = email.split("@", 1)[1]
-    blocked_domains = {
-        "gmail.co",
-        "gmai.com",
-        "gnail.com",
-        "yahoo.co",
-        "yaho.com",
-        "hotmail.co",
-        "hotmai.com",
-        "outlook.co",
-    }
-    return domain in blocked_domains
-
-
-def render_top_banner() -> None:
-    for path in BANNER_PATH_CANDIDATES:
+def render_banner() -> None:
+    for path in BANNER_PATHS:
         if os.path.exists(path):
             st.image(path, width="stretch")
             return
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def new_job_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    rand = uuid.uuid4().hex[:5]
-    return f"{ts}__{rand}"
+    return f"{ts}__{uuid.uuid4().hex[:5]}"
 
 
 def new_group_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    rand = uuid.uuid4().hex[:6]
-    return f"{ts}_{rand}"
+    return f"{ts}_{uuid.uuid4().hex[:6]}"
+
+
+def safe_slug(text: str, fallback: str = "user") -> str:
+    cleaned = []
+    for ch in str(text or "").strip():
+        if ch.isalnum() or ch in ("_", "-"):
+            cleaned.append(ch)
+        elif ch.isspace():
+            cleaned.append("_")
+    out = "".join(cleaned).strip("_")
+    return out or fallback
 
 
 def guess_content_type(filename: str) -> str:
-    fn = (filename or "").lower()
+    fn = str(filename or "").lower()
     if fn.endswith(".mp4"):
         return "video/mp4"
     if fn.endswith(".mov"):
@@ -231,18 +87,14 @@ def guess_content_type(filename: str) -> str:
         return "video/x-m4v"
     if fn.endswith(".webm"):
         return "video/webm"
-    if fn.endswith(".docx"):
-        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if fn.endswith(".pdf"):
+        return "application/pdf"
     if fn.endswith(".json"):
         return "application/json"
     return "application/octet-stream"
 
 
-def s3_put_bytes(key: str, data: bytes, content_type: str) -> None:
-    s3.put_object(Bucket=AWS_BUCKET, Key=key, Body=data, ContentType=content_type)
-
 def s3_upload_stream(key: str, file_obj: Any, content_type: str) -> None:
-    # Stream multipart upload instead of loading full file bytes into app memory.
     if hasattr(file_obj, "seek"):
         file_obj.seek(0)
     s3.upload_fileobj(
@@ -255,11 +107,10 @@ def s3_upload_stream(key: str, file_obj: Any, content_type: str) -> None:
 
 
 def s3_put_json(key: str, payload: Dict[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     s3.put_object(
         Bucket=AWS_BUCKET,
         Key=key,
-        Body=body,
+        Body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         ContentType="application/json; charset=utf-8",
     )
 
@@ -275,8 +126,7 @@ def s3_key_exists(key: str) -> bool:
 def s3_read_json(key: str) -> Optional[Dict[str, Any]]:
     try:
         obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
-        raw = obj["Body"].read().decode("utf-8")
-        return json.loads(raw)
+        return json.loads(obj["Body"].read().decode("utf-8"))
     except Exception:
         return None
 
@@ -286,86 +136,34 @@ def presigned_get_url(key: str, expires: int = 3600, filename: Optional[str] = N
     if filename:
         params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
         params["ResponseContentType"] = guess_content_type(filename)
-
-    return s3.generate_presigned_url(
-        ClientMethod="get_object",
-        Params=params,
-        ExpiresIn=expires,
-    )
+    return s3.generate_presigned_url("get_object", Params=params, ExpiresIn=expires)
 
 
-def enqueue_legacy_job(job: Dict[str, Any]) -> str:
-    job_id = str(job["job_id"])
-    job_json_key = f"{JOBS_PENDING_PREFIX}{job_id}.json"
-    s3_put_json(job_json_key, job)
-    return job_json_key
+def enqueue_report_job(job: Dict[str, Any]) -> str:
+    key = f"{JOBS_PENDING_PREFIX}{job['job_id']}.json"
+    s3_put_json(key, job)
+    return key
 
 
-def safe_slug(text: str, fallback: str = "user") -> str:
-    t = (text or "").strip()
-    if not t:
-        return fallback
-    out = []
-    for ch in t:
-        if ch.isalnum() or ch in ("_", "-"):
-            out.append(ch)
-        elif ch.isspace():
-            out.append("_")
-    s = "".join(out).strip("_")
-    return s if s else fallback
+def is_valid_email_format(value: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(value or "").strip()))
 
 
-def employee_registry_key(employee_id: str) -> str:
-    emp = safe_slug(employee_id, fallback="")
-    return f"{EMPLOYEE_REGISTRY_PREFIX}{emp}.json" if emp else ""
+def get_job_status_from_key(key: str) -> str:
+    if key.startswith(JOBS_PENDING_PREFIX):
+        return "pending"
+    if key.startswith(JOBS_PROCESSING_PREFIX):
+        return "processing"
+    if key.startswith(JOBS_FINISHED_PREFIX):
+        return "finished"
+    if key.startswith(JOBS_FAILED_PREFIX):
+        return "failed"
+    return "unknown"
 
 
-def save_employee_registry(
-    employee_id: str,
-    employee_email: str,
-    organization_name: str,
-) -> None:
-    key = employee_registry_key(employee_id)
-    if not key:
-        return
-    payload = {
-        "employee_id": (employee_id or "").strip(),
-        "employee_email": (employee_email or "").strip(),
-        "organization_name": (organization_name or "").strip(),
-        "updated_at": utc_now_iso(),
-    }
-    s3_put_json(key, payload)
-
-
-def normalize_email(value: str) -> str:
-    return str(value or "").strip().lower()
-
-
-def get_employee_registry(employee_id: str) -> Dict[str, str]:
-    key = employee_registry_key(employee_id)
-    if not key:
-        return {}
-    payload = s3_read_json(key) or {}
-    return {
-        "employee_id": str(payload.get("employee_id") or "").strip(),
-        "employee_email": normalize_email(payload.get("employee_email")),
-    }
-
-
-def is_employee_identity_verified(employee_id: str, employee_email: str) -> bool:
-    reg = get_employee_registry(employee_id)
-    if not reg:
-        return False
-    return normalize_email(employee_email) == reg.get("employee_email", "")
-
-
-def is_group_owned_by_employee(group_id: str, employee_id: str, employee_email: str) -> bool:
-    gid = str(group_id or "").strip()
-    eid = str(employee_id or "").strip().lower()
-    eml = normalize_email(employee_email)
-    if not gid or not eid or not eml:
-        return False
-
+def get_latest_operation_test_job(group_id: str) -> Dict[str, Any]:
+    latest_key = ""
+    latest_job: Dict[str, Any] = {}
     prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
     try:
         for prefix in prefixes:
@@ -375,345 +173,41 @@ def is_group_owned_by_employee(group_id: str, employee_id: str, employee_email: 
                     key = str(item.get("Key") or "")
                     if not key.endswith(".json"):
                         continue
-                    job_data = s3_read_json(key) or {}
-                    if str(job_data.get("group_id") or "").strip() != gid:
+                    payload = s3_read_json(key) or {}
+                    if str(payload.get("group_id") or "").strip() != group_id:
                         continue
-                    job_eid = str(job_data.get("employee_id") or "").strip().lower()
-                    job_eml = normalize_email(job_data.get("employee_email") or job_data.get("notify_email"))
-                    if job_eid == eid and job_eml == eml:
-                        return True
-    except Exception:
-        return False
-    return False
-
-
-def normalize_org_name(name: str) -> str:
-    text = (name or "").strip().lower()
-    if not text:
-        return ""
-    out = []
-    for ch in text:
-        if ch.isalnum() or ch in ("_", "-"):
-            out.append(ch)
-        elif ch.isspace():
-            out.append("_")
-    normalized = "".join(out).strip("_")
-    return normalized
-
-
-def org_settings_key(org_name: str) -> str:
-    org_id = normalize_org_name(org_name)
-    return f"{ORG_SETTINGS_PREFIX}{org_id}.json"
-
-
-def get_org_settings(org_name: str) -> Dict[str, str]:
-    org_id = normalize_org_name(org_name)
-    if not org_id:
-        return {}
-    payload = s3_read_json(org_settings_key(org_name)) or {}
-    style = str(payload.get("report_style") or "").strip().lower()
-    fmt = str(payload.get("report_format") or "").strip().lower()
-    if style not in ("full", "simple") or fmt not in ("docx", "pdf"):
-        return {}
-    return {
-        "organization_name": str(payload.get("organization_name") or org_name).strip(),
-        "organization_id": org_id,
-        "report_style": style,
-        "report_format": fmt,
-        "default_page": str(payload.get("default_page") or "").strip().lower(),
-        "updated_at": str(payload.get("updated_at") or ""),
-    }
-
-
-def list_org_settings() -> list:
-    rows = []
-    try:
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=ORG_SETTINGS_PREFIX):
-            for item in page.get("Contents", []):
-                key = str(item.get("Key") or "")
-                if not key.endswith(".json"):
-                    continue
-                payload = s3_read_json(key) or {}
-                style = str(payload.get("report_style") or "").strip().lower()
-                fmt = str(payload.get("report_format") or "").strip().lower()
-                if style not in ("full", "simple") or fmt not in ("docx", "pdf"):
-                    continue
-                rows.append(payload)
-    except Exception:
-        return []
-    return rows
-
-
-def get_default_org_for_page(page_key: str) -> str:
-    page_key = str(page_key or "").strip().lower()
-    if not page_key:
-        return ""
-    settings = list_org_settings()
-    settings.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
-    for s in settings:
-        if str(s.get("default_page") or "").strip().lower() == page_key:
-            return str(s.get("organization_name") or "").strip()
-    return ""
-
-
-def build_output_keys(group_id: str) -> Dict[str, str]:
-    base = f"{JOBS_OUTPUT_PREFIX}groups/{group_id}/"
-    return {
-        "dots_video": base + "dots.mp4",
-        "skeleton_video": base + "skeleton.mp4",
-        "report_en_docx": base + "report_en.docx",
-        "report_th_docx": base + "report_th.docx",
-        "report_en_pdf": base + "report_en.pdf",
-        "report_th_pdf": base + "report_th.pdf",
-        "debug_en": base + "debug_en.json",
-        "debug_th": base + "debug_th.json",
-    }
-
-def enqueue_report_only_job(
-    group_id: str,
-    client_name: str,
-    report_style: str = "full",
-    report_format: str = "docx",
-    enterprise_folder: str = "",
-    notify_email: str = "",
-) -> str:
-    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
-    if not s3_key_exists(input_key):
-        raise RuntimeError(f"Input video not found for group_id={group_id}")
-
-    created_at = utc_now_iso()
-    job_report = {
-        "job_id": new_job_id(),
-        "group_id": group_id,
-        "created_at": created_at,
-        "status": "pending",
-        "mode": "report",
-        "input_key": input_key,
-        "client_name": client_name or "Anonymous",
-        "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th"],
-        "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
-        "analysis_mode": "real",
-        "sample_fps": 5,
-        "max_frames": 300,
-        "report_style": report_style,
-        "report_format": report_format,
-        "priority": 1,
-        "enterprise_folder": (enterprise_folder or "").strip(),
-        "notify_email": (notify_email or "").strip(),
-    }
-    return enqueue_legacy_job(job_report)
-
-def get_report_style_for_group(group_id: str) -> str:
-    """Best-effort lookup of previously requested report_style for this group."""
-    try:
-        prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
-        for prefix in prefixes:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
-                for item in page.get("Contents", []):
-                    key = item["Key"]
-                    if not key.endswith(".json"):
+                    if str(payload.get("mode") or "").strip().lower() != "report":
                         continue
-                    job_data = s3_read_json(key) or {}
-                    if (
-                        job_data.get("group_id") == group_id
-                        and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
-                    ):
-                        style = str(job_data.get("report_style") or "").strip().lower()
-                        if style in ("simple", "full"):
-                            return style
-    except Exception:
-        pass
-    return "full"
-
-def get_report_format_for_group(group_id: str) -> str:
-    """Best-effort lookup of previously requested report_format for this group."""
-    try:
-        prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
-        for prefix in prefixes:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
-                for item in page.get("Contents", []):
-                    key = item["Key"]
-                    if not key.endswith(".json"):
-                        continue
-                    job_data = s3_read_json(key) or {}
-                    if (
-                        job_data.get("group_id") == group_id
-                        and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
-                    ):
-                        fmt = str(job_data.get("report_format") or "").strip().lower()
-                        if fmt in ("docx", "pdf"):
-                            return fmt
-    except Exception:
-        pass
-    return "docx"
-
-
-def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
-    """Find the finished report job and extract actual output paths"""
-    found: Dict[str, str] = {}
-    try:
-        # Search in both finished and failed jobs
-        prefixes = [JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
-        
-        for prefix in prefixes:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
-                for item in page.get("Contents", []):
-                    key = item["Key"]
-                    if not key.endswith(".json"):
-                        continue
-                    
-                    # Read job JSON
-                    obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
-                    job_data = json.loads(obj["Body"].read().decode("utf-8"))
-                    
-                    # Check if this job belongs to our group and is a report job
-                    if (job_data.get("group_id") == group_id and 
-                        job_data.get("mode") in ("report", "report_th_en", "report_generator")):
-                        
-                        # Extract output paths from job
-                        outputs = job_data.get("outputs", {})
-                        reports = outputs.get("reports", {})
-                        
-                        # If outputs exist, return them
-                        if reports:
-                            en_key = reports.get("EN", {}).get("docx_key", "")
-                            th_key = reports.get("TH", {}).get("docx_key", "")
-                            en_pdf = reports.get("EN", {}).get("pdf_key", "")
-                            th_pdf = reports.get("TH", {}).get("pdf_key", "")
-                            if en_key:
-                                found["report_en_docx"] = en_key
-                            if th_key:
-                                found["report_th_docx"] = th_key
-                            if en_pdf:
-                                found["report_en_pdf"] = en_pdf
-                            if th_pdf:
-                                found["report_th_pdf"] = th_pdf
-                            if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
-                                return found
-                        
-                        # If no outputs structure, try to construct paths from output_prefix
-                        output_prefix = job_data.get("output_prefix", "")
-                        if output_prefix:
-                            # Try to find the actual files by listing S3
-                            scanned = find_report_files_in_s3(output_prefix)
-                            if scanned.get("report_en_docx"):
-                                found["report_en_docx"] = scanned["report_en_docx"]
-                            if scanned.get("report_th_docx"):
-                                found["report_th_docx"] = scanned["report_th_docx"]
-                            if scanned.get("report_en_pdf"):
-                                found["report_en_pdf"] = scanned["report_en_pdf"]
-                            if scanned.get("report_th_pdf"):
-                                found["report_th_pdf"] = scanned["report_th_pdf"]
-                            if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
-                                return found
-            
-    except Exception as e:
-        # Silent fail - don't show error to customers
-        pass
-
-    # Fallback: scan common prefixes directly, even when job JSON is not found yet.
-    fallback_prefixes = [
-        f"{JOBS_GROUP_PREFIX}{group_id}",
-        f"{JOBS_OUTPUT_PREFIX}groups/{group_id}",
-    ]
-    for pfx in fallback_prefixes:
-        scanned = find_report_files_in_s3(pfx)
-        if scanned.get("report_en_docx") and not found.get("report_en_docx"):
-            found["report_en_docx"] = scanned["report_en_docx"]
-        if scanned.get("report_th_docx") and not found.get("report_th_docx"):
-            found["report_th_docx"] = scanned["report_th_docx"]
-        if scanned.get("report_en_pdf") and not found.get("report_en_pdf"):
-            found["report_en_pdf"] = scanned["report_en_pdf"]
-        if scanned.get("report_th_pdf") and not found.get("report_th_pdf"):
-            found["report_th_pdf"] = scanned["report_th_pdf"]
-        if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
-            break
-
-    return found
-
-
-def get_report_notification_status(group_id: str) -> Dict[str, Any]:
-    """Read latest report job notification status for this group."""
-    latest_key = ""
-    latest_job: Dict[str, Any] = {}
-    try:
-        prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
-        for prefix in prefixes:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
-                for item in page.get("Contents", []):
-                    key = item["Key"]
-                    if not key.endswith(".json"):
-                        continue
-                    job_data = s3_read_json(key) or {}
-                    if (
-                        job_data.get("group_id") == group_id
-                        and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
-                    ):
-                        if key > latest_key:
-                            latest_key = key
-                            latest_job = job_data
+                    if key > latest_key:
+                        latest_key = key
+                        latest_job = payload
+        if latest_job:
+            latest_job["_job_bucket_key"] = latest_key
+        return latest_job
     except Exception:
         return {}
 
-    if not latest_job:
-        return {}
 
-    notif = latest_job.get("notification") or {}
-    return {
-        "job_status": str(latest_job.get("status") or ""),
-        "notify_email": str(notif.get("notify_email") or latest_job.get("notify_email") or ""),
-        "sent": bool(notif.get("sent")),
-        "status": str(notif.get("status") or ""),
-        "report_th_sent": bool(notif.get("report_th_sent") or notif.get("report_sent")),
-        "report_en_sent": bool(notif.get("report_en_sent")),
-        "skeleton_sent": bool(notif.get("skeleton_sent")),
-        "dots_sent": bool(notif.get("dots_sent")),
-        "updated_at": str(notif.get("updated_at") or latest_job.get("updated_at") or ""),
-    }
+def get_pdf_key_from_job(job: Dict[str, Any]) -> str:
+    reports = (job.get("outputs") or {}).get("reports") or {}
+    en_pdf = ((reports.get("EN") or {}).get("pdf_key") or "").strip()
+    th_pdf = ((reports.get("TH") or {}).get("pdf_key") or "").strip()
+    return en_pdf or th_pdf
 
 
-def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
-    """Find report files by scanning S3 with prefix"""
-    try:
-        result = {"report_en_docx": "", "report_th_docx": "", "report_en_pdf": "", "report_th_pdf": ""}
-        paginator = s3.get_paginator("list_objects_v2")
-        
-        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
-            for item in page.get("Contents", []):
-                key = item["Key"]
-                if key.endswith(".docx"):
-                    if "_EN.docx" in key:
-                        result["report_en_docx"] = key
-                    elif "_TH.docx" in key:
-                        result["report_th_docx"] = key
-                elif key.endswith(".pdf"):
-                    if "_EN.pdf" in key:
-                        result["report_en_pdf"] = key
-                    elif "_TH.pdf" in key:
-                        result["report_th_pdf"] = key
-        
-        return result
-    except Exception:
-        return {"report_en_docx": "", "report_th_docx": "", "report_en_pdf": "", "report_th_pdf": ""}
+def prettify_level(level: str) -> str:
+    text = str(level or "").strip().lower()
+    if text in ("low", "moderate", "high"):
+        return text.capitalize()
+    return "-"
 
 
 def ensure_session_defaults() -> None:
-    if "last_group_id" not in st.session_state:
-        st.session_state["last_group_id"] = ""
-    if "last_outputs" not in st.session_state:
-        st.session_state["last_outputs"] = {}
-    if "last_jobs" not in st.session_state:
-        st.session_state["last_jobs"] = {}
-    if "last_job_json_keys" not in st.session_state:
-        st.session_state["last_job_json_keys"] = {}
+    if "operation_test_group_id" not in st.session_state:
+        st.session_state["operation_test_group_id"] = ""
 
-def _read_group_id_from_url() -> str:
+
+def read_group_id_from_url() -> str:
     try:
         val = st.query_params.get("group_id", "")
         if isinstance(val, list):
@@ -722,7 +216,8 @@ def _read_group_id_from_url() -> str:
     except Exception:
         return ""
 
-def _persist_group_id_to_url(group_id: str) -> None:
+
+def persist_group_id_to_url(group_id: str) -> None:
     gid = str(group_id or "").strip()
     try:
         if gid:
@@ -733,73 +228,17 @@ def _persist_group_id_to_url(group_id: str) -> None:
         pass
 
 
-def find_job_json(job_id: str) -> Optional[str]:
-    candidates = [
-        f"{JOBS_PENDING_PREFIX}{job_id}.json",
-        f"{JOBS_PROCESSING_PREFIX}{job_id}.json",
-        f"{JOBS_FINISHED_PREFIX}{job_id}.json",
-        f"{JOBS_FAILED_PREFIX}{job_id}.json",
-    ]
-    for k in candidates:
-        if s3_key_exists(k):
-            return k
-    return None
-
-
-def infer_job_bucket_status(job_key: str) -> str:
-    if job_key.startswith(JOBS_PENDING_PREFIX):
-        return "pending"
-    if job_key.startswith(JOBS_PROCESSING_PREFIX):
-        return "processing"
-    if job_key.startswith(JOBS_FINISHED_PREFIX):
-        return "finished"
-    if job_key.startswith(JOBS_FAILED_PREFIX):
-        return "failed"
-    return "unknown"
-
-
-# -------------------------
-# UI
-# -------------------------
 ensure_session_defaults()
-apply_theme()
-render_top_banner()
-
-url_group_id = _read_group_id_from_url()
-if url_group_id and not st.session_state.get("last_group_id"):
-    st.session_state["last_group_id"] = url_group_id
+render_banner()
 
 st.markdown("# Operation Test")
-st.caption("Upload your video once, then click **Run Analysis** to generate skeleton + reports (EN/TH).")
+st.caption("Upload one video to analyze First Impression only: Eye Contact, Uprightness, and Stance.")
+st.caption("Result format: PDF only.")
 
-page_default_org = get_default_org_for_page("operation_test")
-enterprise_folder = st.text_input(
-    "Organization Name",
-    value=page_default_org,
-    placeholder="e.g., TTB / ACME Group",
-    disabled=bool(page_default_org),
-)
-if page_default_org:
-    st.caption(f"Default organization from admin page setting: {page_default_org}")
-user_name = st.text_input(
-    "User Name (Email Address)",
-    value="",
-    placeholder="name@example.com",
-    help="ใช้เป็นชื่อโฟลเดอร์งาน และเป็นอีเมลสำหรับส่งผลลัพธ์",
-)
-st.caption("กรุณาตรวจสอบการพิมพ์ e-mail ให้ถูกต้องก่อนกด Run Analysis (Please double-check your e-mail).")
-notify_email = (user_name or "").strip()
-if notify_email:
-    if not is_valid_email_format(notify_email):
-        st.warning("กรุณาตรวจสอบ e-mail ให้ถูกต้องอีกครั้ง (Please check your e-mail format).")
-    elif is_blocked_typo_domain(notify_email):
-        st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
-employee_id = st.text_input(
-    "Employee ID",
-    value="",
-    placeholder="e.g., EMP001",
-)
-org_settings = get_org_settings(enterprise_folder)
+name = st.text_input("Name (optional)", value="", placeholder="e.g., John Doe")
+notify_email = st.text_input("Notification Email (optional)", value="", placeholder="name@example.com")
+if notify_email and not is_valid_email_format(notify_email):
+    st.warning("Please enter a valid email format.")
 
 uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
@@ -807,49 +246,18 @@ uploaded = st.file_uploader(
     accept_multiple_files=False,
 )
 
-run = st.button("🎬 Run Analysis", type="primary", width="stretch")
+run = st.button("Analyze First Impression", type="primary", width="stretch")
+notice = st.empty()
 
-has_identity_input = bool(employee_id.strip() and notify_email)
-identity_verified = False
-if has_identity_input:
-    identity_verified = is_employee_identity_verified(employee_id, notify_email)
-
-candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id
-active_group_id = ""
-blocked_group_id = ""
-if candidate_group_id and identity_verified and is_group_owned_by_employee(candidate_group_id, employee_id, notify_email):
-    active_group_id = candidate_group_id
-    st.session_state["last_group_id"] = active_group_id
-    _persist_group_id_to_url(active_group_id)
-elif candidate_group_id:
-    blocked_group_id = candidate_group_id
-    st.session_state["last_group_id"] = ""
-    _persist_group_id_to_url("")
-
-note = st.empty()
-if blocked_group_id:
-    note.warning("This group_id is not accessible by the current account. Enter your own credentials to view your jobs only.")
-
-# -------------------------
-# Submit jobs
-# -------------------------
 if run:
     if not uploaded:
-        note.error("Please upload a video first.")
+        notice.error("Please upload a video first.")
         st.stop()
-    if not notify_email:
-        note.error("Please enter User Name (Email Address).")
+    if notify_email and not is_valid_email_format(notify_email):
+        notice.error("Invalid email format.")
         st.stop()
-    if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
-        note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
-        st.stop()
-    if not employee_id.strip():
-        note.error("Please enter Employee ID.")
-        st.stop()
-    effective_report_style = org_settings.get("report_style") if org_settings else "full"
-    effective_report_format = org_settings.get("report_format") if org_settings else "docx"
 
-    base_user = safe_slug(user_name, fallback="user")
+    base_user = safe_slug(name or notify_email or "user", fallback="user")
     group_id = f"{new_group_id()}__{base_user}"
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
 
@@ -860,238 +268,81 @@ if run:
             content_type=guess_content_type(uploaded.name or "input.mp4"),
         )
     except Exception as e:
-        note.error(f"Upload to S3 failed: {e}")
+        notice.error(f"Upload to S3 failed: {e}")
         st.stop()
 
-    outputs = build_output_keys(group_id)
-    created_at = utc_now_iso()
-
-    job_skel = {
+    report_job = {
         "job_id": new_job_id(),
         "group_id": group_id,
-        "created_at": created_at,
+        "created_at": utc_now_iso(),
         "status": "pending",
-        "mode": "skeleton",
+        "mode": "report",
         "input_key": input_key,
-        "output_key": outputs["skeleton_video"],
-        "user_name": user_name or "",
-        "employee_id": (employee_id or "").strip(),
-        "employee_email": notify_email,
-    }
-
-    # Report job - handled by report_worker.py
-    job_report = {
-        "job_id": new_job_id(),
-        "group_id": group_id,
-        "created_at": created_at,
-        "status": "pending",
-        "mode": "report",  # report_worker.py handles this
-        "input_key": input_key,
-        "client_name": user_name or "Anonymous",
+        "client_name": (name or "Anonymous").strip() or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th"],
+        "languages": ["en"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
-        "analysis_mode": "real",  # Use real MediaPipe analysis
+        "analysis_mode": "real",
         "sample_fps": 5,
         "max_frames": 300,
-        "report_style": effective_report_style,
-        "report_format": effective_report_format,
-        "notify_email": notify_email,
-        "enterprise_folder": (enterprise_folder or "").strip(),
+        "report_style": "operation_test",
+        "report_format": "pdf",
+        "notify_email": notify_email.strip(),
+        "enterprise_folder": "operation_test",
         "expect_dots": False,
-        "employee_id": (employee_id or "").strip(),
-        "employee_email": notify_email,
     }
 
     try:
-        save_employee_registry(
-            employee_id=employee_id,
-            employee_email=notify_email,
-            organization_name=enterprise_folder,
-        )
-        k2 = enqueue_legacy_job(job_skel)
-        k3 = enqueue_legacy_job(job_report)
+        enqueue_key = enqueue_report_job(report_job)
     except Exception as e:
-        note.error(f"Enqueue job failed: {e}")
+        notice.error(f"Enqueue job failed: {e}")
         st.stop()
 
-    st.session_state["last_group_id"] = group_id
-    _persist_group_id_to_url(group_id)
-    active_group_id = group_id
-    st.session_state["last_outputs"] = outputs
-    st.session_state["last_jobs"] = {
-        "skeleton": job_skel["job_id"],
-        "report": job_report["job_id"],
-    }
-    st.session_state["last_job_json_keys"] = {
-        "skeleton": k2,
-        "report": k3,
-    }
+    st.session_state["operation_test_group_id"] = group_id
+    persist_group_id_to_url(group_id)
+    notice.success(f"Submitted. group_id = {group_id}")
+    st.caption(f"Queued job key: {enqueue_key}")
 
-    note.success(
-        f"Submitted! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}"
-    )
-    st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
+active_group_id = st.session_state.get("operation_test_group_id") or read_group_id_from_url()
+if active_group_id:
+    st.divider()
+    st.subheader("Operation Test Result")
+    st.caption(f"Group: `{active_group_id}`")
 
-group_id = active_group_id
-if group_id:
-    notification = get_report_notification_status(group_id)
-    if notification:
-        st.divider()
-        st.subheader("Email Status")
-        email_to = notification.get("notify_email", "")
-        status = notification.get("status", "")
-        report_th_sent = bool(notification.get("report_th_sent"))
-        report_en_sent = bool(notification.get("report_en_sent"))
-        skeleton_sent = bool(notification.get("skeleton_sent"))
-        dots_sent = bool(notification.get("dots_sent"))
-        st.caption(
-            f"Report TH: {'yes' if report_th_sent else 'no'} | "
-            f"Report EN: {'yes' if report_en_sent else 'no'} | "
-            f"Skeleton: {'yes' if skeleton_sent else 'no'} | "
-            f"Dots: {'yes' if dots_sent else 'no'}"
+    latest_job = get_latest_operation_test_job(active_group_id)
+    if not latest_job:
+        st.info("Waiting for job registration. Please refresh in a moment.")
+        st.stop()
+
+    job_key = str(latest_job.get("_job_bucket_key") or "")
+    status = get_job_status_from_key(job_key)
+
+    st.markdown(f"**Job status:** `{status}`")
+
+    summary = latest_job.get("first_impression_summary") or {}
+    if isinstance(summary, dict) and summary:
+        st.markdown("### First Impression (Low / Moderate / High)")
+        c1, c2, c3 = st.columns(3)
+        eye = summary.get("eye_contact") or {}
+        up = summary.get("uprightness") or {}
+        stance = summary.get("stance") or {}
+        c1.metric("Eye Contact", prettify_level(eye.get("level")))
+        c2.metric("Uprightness", prettify_level(up.get("level")))
+        c3.metric("Stance", prettify_level(stance.get("level")))
+
+    pdf_key = get_pdf_key_from_job(latest_job)
+    if pdf_key and s3_key_exists(pdf_key):
+        st.success("PDF is ready.")
+        st.link_button(
+            "Download Operation Test PDF",
+            presigned_get_url(pdf_key, expires=3600, filename="operation_test_report.pdf"),
+            width="stretch",
         )
-        if report_th_sent and report_en_sent and skeleton_sent:
-            st.success(f"All emails sent to: {email_to}")
-        elif report_th_sent and not (report_en_sent and skeleton_sent):
-            st.info(f"Thai report email sent to: {email_to} | English report and skeleton will send via mail soon.")
-        elif report_en_sent or skeleton_sent or dots_sent:
-            st.info(f"Partial email sent to: {email_to} | remaining files will send via mail soon.")
-        elif status.startswith("waiting_for_"):
-            st.info(f"Email queued: {status} (to: {email_to})")
-        elif status in ("sending", "queued"):
-            st.info(f"Email is being sent... (to: {email_to})")
-        elif status == "skipped_no_notify_email":
-            st.caption("No notification email provided for this job.")
-        elif status == "disabled_by_config":
-            st.caption("Email sending is disabled by config.")
-        elif status:
-            st.warning(f"Email status: {status} (to: {email_to})")
-        st.caption("Status updates are automatic. Keep this page open to follow progress.")
-
-
-# -------------------------
-# Download section
-# -------------------------
-st.divider()
-st.subheader("Downloads (ผลลัพธ์สำหรับดาวน์โหลด)")
-
-group_id = active_group_id
-if group_id:
-    outputs = build_output_keys(group_id)
-    # Get actual report paths from finished job JSON
-    report_outputs = get_report_outputs_from_job(group_id)
-    # Only override when a real key is discovered; never blank out defaults.
-    if report_outputs.get("report_en_docx"):
-        outputs["report_en_docx"] = report_outputs["report_en_docx"]
-    if report_outputs.get("report_th_docx"):
-        outputs["report_th_docx"] = report_outputs["report_th_docx"]
-else:
-    if has_identity_input and not identity_verified:
-        st.caption("Please enter the correct Employee ID / Email / Password to view only your own jobs.")
+        st.code(pdf_key, language="text")
+    elif status == "failed":
+        st.error("Analysis failed. Please upload again and retry.")
     else:
-        st.caption("No accessible group_id for this account yet. Upload a video and click **Run Analysis**.")
-    st.stop()
-
-st.caption(f"Group: `{group_id}`")
-
-
-def download_block(title: str, key: str, filename: str) -> None:
-    if not key:
-        st.write(f"- {title}: (missing key)")
-        return
-    ready = s3_key_exists(key)
-    if ready:
-        url = presigned_get_url(key, expires=3600, filename=filename)
-        st.success(f"✅ {title} ready")
-        st.link_button(f"Download {title}", url, width="stretch")
-        st.code(key, language="text")
-    else:
-        st.warning(f"⏳ {title} not ready yet")
-        st.code(key, language="text")
-
-
-# --- Downloads ---
-c1, c2 = st.columns(2)
-
-with c1:
-    st.markdown("### Videos")
-    download_block("Skeleton video", outputs.get("skeleton_video", ""), "skeleton.mp4")
-
-with c2:
-    st.markdown("### Reports")
-    selected_pdf = (get_report_format_for_group(group_id) == "pdf")
-    en_key = outputs.get("report_en_pdf", "") if selected_pdf else outputs.get("report_en_docx", "")
-    th_key = outputs.get("report_th_pdf", "") if selected_pdf else outputs.get("report_th_docx", "")
-    en_name = "report_en.pdf" if selected_pdf else "report_en.docx"
-    th_name = "report_th.pdf" if selected_pdf else "report_th.docx"
-    report_label = "PDF" if selected_pdf else "DOCX"
-    st.markdown("**English**")
-    download_block(f"Report EN ({report_label})", en_key, en_name)
-
-    st.markdown("**Thai**")
-    download_block(f"Report TH ({report_label})", th_key, th_name)
-
-reports_ready = bool(en_key) and bool(th_key) and s3_key_exists(en_key) and s3_key_exists(th_key)
-skeleton_ready = bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("skeleton_video", ""))
-en_report_ready = bool(en_key) and s3_key_exists(en_key)
-th_report_ready = bool(th_key) and s3_key_exists(th_key)
-primary_done = th_report_ready
-
-st.divider()
-st.subheader("Processing Status")
-status_items = [
-    ("Report TH (primary)", th_report_ready),
-    ("Report EN (follow-up)", en_report_ready),
-    ("Skeleton Video (follow-up)", skeleton_ready),
-]
-if primary_done:
-    overall_pct = 100
+        st.info("Processing. PDF is not ready yet. Refresh this page shortly.")
 else:
-    overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
-st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
-for label, ready in status_items:
-    item_pct = 100 if ready else 0
-    st.progress(item_pct, text=f"{label}: {'ready' if ready else 'processing'} ({item_pct}%)")
+    st.caption("Upload a video and click Analyze First Impression to start.")
 
-# Clear step guidance for users while waiting.
-if th_report_ready and en_report_ready and skeleton_ready:
-    current_step = "All outputs are ready."
-    next_step = "Download files below. Email delivery (report/skeleton) should complete shortly."
-elif th_report_ready:
-    current_step = "Primary result is ready: Report TH."
-    next_step = "Job is complete. Report EN and skeleton can arrive later by email."
-else:
-    current_step = "Generating Report TH."
-    next_step = "Please wait for Thai report completion (primary milestone)."
-
-st.info(f"Current step: {current_step}")
-st.caption(f"Next step: {next_step}")
-if th_report_ready:
-    st.success("ขอบคุณที่ใช้ AI People Reader การวิเคราะห์ทั้งหมดจะถูกส่งไปในเมล์ของคุณหลังจากนี้")
-
-if skeleton_ready and not th_report_ready:
-    st.warning("Thai report is still not ready. You can re-run report generation for this group. (รายงานภาษาไทยยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
-    if st.button("Re-run report generation", width="content"):
-        try:
-            guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            rerun_style = get_report_style_for_group(group_id)
-            rerun_format = get_report_format_for_group(group_id)
-            rerun_email = notify_email
-            if not rerun_email:
-                prev_notif = get_report_notification_status(group_id)
-                rerun_email = str(prev_notif.get("notify_email") or "").strip()
-            if rerun_email and ((not is_valid_email_format(rerun_email)) or is_blocked_typo_domain(rerun_email)):
-                st.error("Cannot re-queue report job: invalid e-mail format. Please check e-mail again.")
-                st.stop()
-            new_report_key = enqueue_report_only_job(
-                group_id=group_id,
-                client_name=guessed_name,
-                report_style=rerun_style,
-                report_format=rerun_format,
-                enterprise_folder=(enterprise_folder or "").strip(),
-                notify_email=rerun_email,
-            )
-            st.success(f"Queued report job again ({rerun_style}, {rerun_format}): {new_report_key}")
-        except Exception as e:
-            st.error(f"Cannot re-queue report job: {e}")
