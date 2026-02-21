@@ -386,7 +386,7 @@ if run:
 
 active_group_id = st.session_state.get("operation_test_group_id") or read_group_id_from_url()
 if active_group_id:
-        st.divider()
+    st.divider()
     st.subheader("Operation Test Result")
     st.caption(f"Group: `{active_group_id}`")
 
