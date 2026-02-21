@@ -241,6 +241,32 @@ def get_latest_finished_operation_test_job(group_id: str) -> Dict[str, Any]:
         return {}
 
 
+def get_latest_failed_operation_test_job(group_id: str) -> Dict[str, Any]:
+    latest_job: Dict[str, Any] = {}
+    latest_ts = 0.0
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_FAILED_PREFIX):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                payload = s3_read_json(key) or {}
+                if str(payload.get("group_id") or "").strip() != group_id:
+                    continue
+                if str(payload.get("mode") or "").strip().lower() != "report":
+                    continue
+                last_modified = item.get("LastModified")
+                ts = float(last_modified.timestamp()) if hasattr(last_modified, "timestamp") else 0.0
+                if ts >= latest_ts:
+                    latest_ts = ts
+                    latest_job = payload
+                    latest_job["_job_bucket_key"] = key
+        return latest_job
+    except Exception:
+        return {}
+
+
 def find_latest_group_pdf_key(group_id: str) -> str:
     prefix = f"{JOBS_GROUP_PREFIX}{group_id}/"
     latest_key = ""
@@ -401,6 +427,10 @@ if active_group_id:
     st.markdown(f"**Job status:** `{status}`")
     if st.button("Refresh Result", width="content"):
         st.rerun()
+    notification = latest_job.get("notification") or {}
+    notification_status = str(notification.get("status") or "").strip()
+    if notification_status:
+        st.caption(f"Email status: `{notification_status}`")
 
     summary = latest_job.get("first_impression_summary") or {}
     if isinstance(summary, dict) and summary:
@@ -422,6 +452,10 @@ if active_group_id:
             notif_status = str(notif.get("status") or "").strip()
             if notif_status:
                 st.caption(f"Email status: `{notif_status}`")
+    failed_job = get_latest_failed_operation_test_job(active_group_id)
+    failed_error = str((failed_job or {}).get("error") or "").strip()
+    if failed_error:
+        st.error(f"Latest failed error: {failed_error}")
     if not pdf_key:
         pdf_key = find_latest_group_pdf_key(active_group_id)
 
