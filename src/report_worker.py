@@ -1344,9 +1344,21 @@ def generate_reports_for_lang(
         first_impression=first_impression,
     )
 
-    report_style = str(job.get("report_style") or "full").strip().lower()
+    report_style = str(job.get("report_style") or "").strip().lower()
+    enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
+    if is_operation_test_style(report_style):
+        report_style = "operation_test"
+    if not report_style:
+        report_style = "full"
     report_format = str(job.get("report_format") or "docx").strip().lower()
     wants_pdf = report_format == "pdf"
+    logger.info(
+        "[report] render lang=%s style=%s format=%s enterprise_folder=%s",
+        lang_code,
+        report_style,
+        report_format,
+        enterprise_folder,
+    )
     # Graphs are disabled for all report styles by request.
     graph1_path = ""
     graph2_path = ""
@@ -1417,6 +1429,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("Job JSON missing 'input_key'")
 
     report_style = str(job.get("report_style") or "").strip().lower()
+    enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
+    if is_operation_test_style(report_style):
+        report_style = "operation_test"
+        job["report_style"] = "operation_test"
 
     # languages: default TH only for fastest first delivery.
     languages = job.get("languages") or ["th"]
@@ -1430,7 +1446,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         report_format = "docx"
 
     # Operation Test must always produce Thai PDF-only output.
-    if is_operation_test_style(report_style):
+    if report_style == "operation_test":
         languages = ["th"]
         report_format = "pdf"
         job["languages"] = ["th"]
