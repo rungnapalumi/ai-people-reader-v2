@@ -166,8 +166,14 @@ def get_job_status_from_key(key: str) -> str:
 
 
 def get_latest_operation_test_job(group_id: str) -> Dict[str, Any]:
-    latest_key = ""
     latest_job: Dict[str, Any] = {}
+    latest_sort: Optional[tuple] = None
+    status_rank = {
+        "finished": 3,
+        "processing": 2,
+        "pending": 1,
+        "failed": 0,
+    }
     prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
     try:
         for prefix in prefixes:
@@ -182,11 +188,21 @@ def get_latest_operation_test_job(group_id: str) -> Dict[str, Any]:
                         continue
                     if str(payload.get("mode") or "").strip().lower() != "report":
                         continue
-                    if key > latest_key:
-                        latest_key = key
+                    status = get_job_status_from_key(key)
+                    last_modified = item.get("LastModified")
+                    last_ts = (
+                        float(last_modified.timestamp())
+                        if hasattr(last_modified, "timestamp")
+                        else 0.0
+                    )
+                    created_at = str(payload.get("created_at") or "")
+                    sort_key = (last_ts, created_at, status_rank.get(status, -1), key)
+                    if latest_sort is None or sort_key > latest_sort:
+                        latest_sort = sort_key
                         latest_job = payload
+                        latest_job["_job_bucket_key"] = key
         if latest_job:
-            latest_job["_job_bucket_key"] = latest_key
+            pass
         return latest_job
     except Exception:
         return {}
@@ -197,6 +213,53 @@ def get_pdf_key_from_job(job: Dict[str, Any]) -> str:
     th_pdf = ((reports.get("TH") or {}).get("pdf_key") or "").strip()
     en_pdf = ((reports.get("EN") or {}).get("pdf_key") or "").strip()
     return th_pdf or en_pdf
+
+
+def get_latest_finished_operation_test_job(group_id: str) -> Dict[str, Any]:
+    latest_job: Dict[str, Any] = {}
+    latest_ts = 0.0
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_FINISHED_PREFIX):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                payload = s3_read_json(key) or {}
+                if str(payload.get("group_id") or "").strip() != group_id:
+                    continue
+                if str(payload.get("mode") or "").strip().lower() != "report":
+                        continue
+                last_modified = item.get("LastModified")
+                ts = float(last_modified.timestamp()) if hasattr(last_modified, "timestamp") else 0.0
+                if ts >= latest_ts:
+                    latest_ts = ts
+                    latest_job = payload
+                    latest_job["_job_bucket_key"] = key
+        return latest_job
+    except Exception:
+        return {}
+
+
+def find_latest_group_pdf_key(group_id: str) -> str:
+    prefix = f"{JOBS_GROUP_PREFIX}{group_id}/"
+    latest_key = ""
+    latest_ts = 0.0
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.lower().endswith(".pdf"):
+                    continue
+                last_modified = item.get("LastModified")
+                ts = float(last_modified.timestamp()) if hasattr(last_modified, "timestamp") else 0.0
+                if ts >= latest_ts:
+                    latest_ts = ts
+                    latest_key = key
+    except Exception:
+        return ""
+    return latest_key
 
 
 def prettify_level(level: str) -> str:
@@ -323,7 +386,7 @@ if run:
 
 active_group_id = st.session_state.get("operation_test_group_id") or read_group_id_from_url()
 if active_group_id:
-    st.divider()
+        st.divider()
     st.subheader("Operation Test Result")
     st.caption(f"Group: `{active_group_id}`")
 
@@ -336,6 +399,8 @@ if active_group_id:
     status = get_job_status_from_key(job_key)
 
     st.markdown(f"**Job status:** `{status}`")
+    if st.button("Refresh Result", width="content"):
+        st.rerun()
 
     summary = latest_job.get("first_impression_summary") or {}
     if isinstance(summary, dict) and summary:
@@ -349,6 +414,17 @@ if active_group_id:
         c3.metric("Stance", prettify_level(stance.get("level")))
 
     pdf_key = get_pdf_key_from_job(latest_job)
+    if not pdf_key:
+        finished_job = get_latest_finished_operation_test_job(active_group_id)
+        pdf_key = get_pdf_key_from_job(finished_job)
+        if finished_job:
+            notif = (finished_job.get("notification") or {})
+            notif_status = str(notif.get("status") or "").strip()
+            if notif_status:
+                st.caption(f"Email status: `{notif_status}`")
+    if not pdf_key:
+        pdf_key = find_latest_group_pdf_key(active_group_id)
+
     if pdf_key and s3_key_exists(pdf_key):
         st.success("PDF is ready.")
         st.link_button(
