@@ -1939,6 +1939,16 @@ def build_pdf_report(
             return "Moderate"
         return "Low"
 
+    def _first_impression_level_th(value: float, metric: str = "") -> str:
+        level_en = _first_impression_level(value, metric=metric).strip().lower()
+        if level_en.startswith("high"):
+            return "สูง"
+        if level_en.startswith("moderate"):
+            return "ปานกลาง"
+        if level_en.startswith("low"):
+            return "ต่ำ"
+        return "-"
+
     # First impression sections (same narrative style as DOCX simple).
     if report.first_impression:
         fi = report.first_impression
@@ -1947,19 +1957,19 @@ def build_pdf_report(
                 write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
                 write_paragraph_block(f"□ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    f"ระดับ: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}",
+                    f"ระดับ: {_first_impression_level_th(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
                 write_paragraph_block(f"□ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    f"ระดับ: {_first_impression_level(fi.upright_pct, metric='uprightness')}",
+                    f"ระดับ: {_first_impression_level_th(fi.upright_pct, metric='uprightness')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
                 write_paragraph_block(f"□ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}",
+                    f"ระดับ: {_first_impression_level_th(fi.stance_stability, metric='stance')}",
                     LEVEL_STYLE,
                     extra_gap=10,
                 )

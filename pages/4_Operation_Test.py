@@ -327,8 +327,12 @@ def find_pdf_key_from_finished_jobs(group_id: str) -> str:
 
 def prettify_level(level: str) -> str:
     text = str(level or "").strip().lower()
-    if text in ("low", "moderate", "high"):
-        return text.capitalize()
+    if text.startswith("low"):
+        return "ต่ำ"
+    if text.startswith("moderate"):
+        return "ปานกลาง"
+    if text.startswith("high"):
+        return "สูง"
     return "-"
 
 
@@ -499,7 +503,7 @@ if active_group_id:
 
     summary = latest_job.get("first_impression_summary") or {}
     if isinstance(summary, dict) and summary:
-        st.markdown("### First Impression (Low / Moderate / High)")
+        st.markdown("### First Impression (ต่ำ / ปานกลาง / สูง)")
         c1, c2, c3 = st.columns(3)
         eye = summary.get("eye_contact") or {}
         up = summary.get("uprightness") or {}
