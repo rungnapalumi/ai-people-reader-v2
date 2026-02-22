@@ -95,7 +95,7 @@ OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS = int(
 )
 EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY", "30"))
 EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE", "30"))
-EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB", "5"))
+EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB", "30"))
 EMAIL_PENDING_MAX_ITEMS_PER_ROUND = int(os.getenv("EMAIL_PENDING_MAX_ITEMS_PER_ROUND", "30"))
 EMAIL_RETRY_BACKOFF_SECONDS = int(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1200"))  # 20 minutes
 FORCED_NOTIFY_EMAILS = str(
@@ -985,7 +985,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             dots_sent = bool(payload.get("dots_email_sent"))
             expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
             attempts = int(payload.get("attempts") or 0)
-            if EMAIL_RETRY_BACKOFF_SECONDS > 0 and attempts > 0:
+            # Keep early retries responsive; apply backoff only after repeated failures.
+            if EMAIL_RETRY_BACKOFF_SECONDS > 0 and attempts >= 2:
                 updated_at = parse_iso_datetime_utc(payload.get("updated_at"))
                 if updated_at is not None:
                     elapsed = (datetime.now(timezone.utc) - updated_at).total_seconds()
