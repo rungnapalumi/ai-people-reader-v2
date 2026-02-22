@@ -983,6 +983,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             report_en_sent = bool(payload.get("report_en_email_sent"))
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
             dots_sent = bool(payload.get("dots_email_sent"))
+            expects_report_th = bool(str(payload.get("report_th_key") or "").strip())
             expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
             attempts = int(payload.get("attempts") or 0)
             # Keep early retries responsive; apply backoff only after repeated failures.
@@ -1182,7 +1183,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             if not statuses:
                 waiting = []
-                if not report_th_sent:
+                if expects_report_th and not report_th_sent:
                     waiting.append("report_th")
                 if expect_report_en and not report_en_sent:
                     waiting.append("report_en")
@@ -1218,9 +1219,10 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 dots_sent=dots_sent,
             )
 
+            report_th_done = report_th_sent or (not expects_report_th)
             report_en_done = report_en_sent or (not expect_report_en)
-            # TH report is the primary delivery milestone. Once sent, stop keeping this job in email_pending.
-            all_done = report_th_sent
+            # Finish when all requested report deliveries are done.
+            all_done = report_th_done and report_en_done
             if all_done:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
             else:
@@ -1633,6 +1635,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 report_en_sent = False
                 skeleton_sent = False
                 dots_sent = False
+                expects_report_th = bool(str(payload.get("report_th_key") or "").strip())
                 expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
 
                 if email_payload_report_th_ready(payload):
@@ -1700,13 +1703,16 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     dots_sent = True
                     payload["dots_email_sent"] = True
 
-                # Primary completion milestone: TH report delivered.
-                primary_done = report_th_sent
+                report_th_done = report_th_sent or (not expects_report_th)
+                report_en_done = report_en_sent or (not expect_report_en)
+                primary_done = report_th_done and report_en_done
                 if not primary_done:
                     queue_email_pending(payload)
                     waiting = []
-                    if not report_th_sent:
+                    if expects_report_th and not report_th_sent:
                         waiting.append("report_th")
+                    if expect_report_en and not report_en_sent:
+                        waiting.append("report_en")
                     statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
 
                 email_sent = bool(primary_done or report_en_sent or dots_sent)
