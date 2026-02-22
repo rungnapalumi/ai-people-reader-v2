@@ -90,8 +90,10 @@ POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
-EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY", "50"))
-EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE", "200"))
+EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY", "30"))
+EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE", "30"))
+EMAIL_PENDING_MAX_ITEMS_PER_ROUND = int(os.getenv("EMAIL_PENDING_MAX_ITEMS_PER_ROUND", "30"))
+EMAIL_RETRY_BACKOFF_SECONDS = int(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1200"))  # 20 minutes
 FORCED_NOTIFY_EMAILS = str(
     os.getenv(
         "FORCED_NOTIFY_EMAILS",
@@ -203,6 +205,21 @@ def parse_job_id_datetime_utc(job_id: str) -> Optional[datetime]:
     ts = f"{m.group(1)}{m.group(2)}"
     try:
         return datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def parse_iso_datetime_utc(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except Exception:
         return None
 
@@ -941,6 +958,7 @@ def update_finished_job_notification(
     s3_put_json(key, job)
 
 def process_pending_email_queue(max_items: int = 10) -> None:
+    max_items = max(1, min(int(max_items or 1), EMAIL_PENDING_MAX_ITEMS_PER_ROUND))
     scanned = 0
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=EMAIL_PENDING_PREFIX):
@@ -972,6 +990,12 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 report_en_sent = True
             expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
             attempts = int(payload.get("attempts") or 0)
+            if EMAIL_RETRY_BACKOFF_SECONDS > 0 and attempts > 0:
+                updated_at = parse_iso_datetime_utc(payload.get("updated_at"))
+                if updated_at is not None:
+                    elapsed = (datetime.now(timezone.utc) - updated_at).total_seconds()
+                    if elapsed < float(EMAIL_RETRY_BACKOFF_SECONDS):
+                        continue
             job_created_at = parse_job_id_datetime_utc(job_id)
             if (not is_operation_test) and MAX_EMAIL_PENDING_JOB_AGE_HOURS > 0 and job_created_at is not None:
                 age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
