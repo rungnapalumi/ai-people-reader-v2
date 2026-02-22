@@ -1653,6 +1653,7 @@ def build_pdf_report(
         name="TitleStyle",
         fontName=bold_font,
         fontSize=18,
+        leading=22,
         alignment=1,  # center
         spaceAfter=20,
     )
@@ -1660,6 +1661,7 @@ def build_pdf_report(
         name="SectionStyle",
         fontName=bold_font,
         fontSize=14,
+        leading=18,
         spaceBefore=12,
         spaceAfter=6,
     )
@@ -1667,6 +1669,7 @@ def build_pdf_report(
         name="SubItemStyle",
         fontName=regular_font,
         fontSize=14,
+        leading=18,
         leftIndent=20,
         spaceAfter=2,
     )
@@ -1674,6 +1677,7 @@ def build_pdf_report(
         name="LevelStyle",
         fontName=bold_font,
         fontSize=14,
+        leading=18,
         leftIndent=35,
         spaceAfter=8,
     )
@@ -1681,6 +1685,7 @@ def build_pdf_report(
         name="BulletStyle",
         fontName=regular_font,
         fontSize=14,
+        leading=18,
         leftIndent=40,
         bulletIndent=30,
         spaceAfter=4,
@@ -1840,6 +1845,7 @@ def build_pdf_report(
         )
         safe = escape(_safe_text_for_font(text)).replace("\n", "<br/>")
         para = Paragraph(safe, bullet_style, bulletText=bullet_text)
+        y -= float(getattr(bullet_style, "spaceBefore", 0) or 0)
         _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
         if y - para_h <= bottom_content_y:
             c.showPage()
@@ -1848,13 +1854,14 @@ def build_pdf_report(
             _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
         para.drawOn(c, x, y - para_h)
         y -= para_h
-        y -= float(space_after)
+        y -= float(getattr(bullet_style, "spaceAfter", 0) or 0)
 
     def write_paragraph_block(text: str, style, indent: int = 0, extra_gap: int = 10):
         nonlocal y
         x = x_left + max(0, int(indent))
         local_width = max(80, usable_width - max(0, int(indent)))
         para = P(_safe_text_for_font(text), style)
+        y -= float(getattr(style, "spaceBefore", 0) or 0)
         _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
         if y - para_h <= bottom_content_y:
             c.showPage()
@@ -1863,6 +1870,7 @@ def build_pdf_report(
             _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
         para.drawOn(c, x, y - para_h)
         y -= para_h
+        y -= float(getattr(style, "spaceAfter", 0) or 0)
         y -= float(gap(extra_gap).height)
 
     def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
