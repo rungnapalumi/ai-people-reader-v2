@@ -1835,18 +1835,18 @@ def build_pdf_report(
         fi = report.first_impression
         if is_operation_test:
             if is_thai:
-                write_line(f"▪{eye_label} (Eye Contact)", bold=True, gap=14)
-                write_line(f"ระดับ: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", bold=True, gap=16)
-                write_line(f"▪{upright_label} (Uprightness)", bold=True, gap=14)
-                write_line(f"ระดับ: {_first_impression_level(fi.upright_pct, metric='uprightness')}", bold=True, gap=16)
-                write_line(f"▪{stance_label} (Stance)", bold=True, gap=14)
-                write_line(f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}", bold=True, gap=16)
+                write_line_indented(f"• {eye_label} (Eye Contact)", indent=28, bold=False, gap=14)
+                write_line_indented(f"ระดับ: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", indent=56, bold=True, gap=18)
+                write_line_indented(f"• {upright_label} (Uprightness)", indent=28, bold=False, gap=14)
+                write_line_indented(f"ระดับ: {_first_impression_level(fi.upright_pct, metric='uprightness')}", indent=56, bold=True, gap=18)
+                write_line_indented(f"• {stance_label} (Stance)", indent=28, bold=False, gap=14)
+                write_line_indented(f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}", indent=56, bold=True, gap=18)
             else:
-                write_line_indented("- Eye Contact", indent=28, bold=True, gap=14)
+                write_line_indented("- Eye Contact", indent=28, bold=False, gap=14)
                 write_line_indented(f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", indent=56, bold=True, gap=18)
-                write_line_indented("- Uprightness", indent=28, bold=True, gap=14)
+                write_line_indented("- Uprightness", indent=28, bold=False, gap=14)
                 write_line_indented(f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}", indent=56, bold=True, gap=18)
-                write_line_indented("- Stance (Lower-Body Stability & Grounding)", indent=28, bold=True, gap=14)
+                write_line_indented("- Stance (Lower-Body Stability & Grounding)", indent=28, bold=False, gap=14)
                 write_line_indented(f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}", indent=56, bold=True, gap=18)
         else:
             eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
@@ -1881,7 +1881,7 @@ def build_pdf_report(
                 gap=14,
             )
             write_line("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", size=12, bold=True, gap=18)
-            write_line("• ความเป็นกันเอง", gap=14)
+            write_line_indented("• ความเป็นกันเอง", indent=28, gap=14)
 
             # Match template flow: page break after section 2 intro.
             write_line("", gap=6)
@@ -1893,19 +1893,19 @@ def build_pdf_report(
             confidence_scale = _scale_th(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_th(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line("• ความเข้าถึงได้", gap=14)
-            write_line("• การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", gap=14)
+            write_line_indented("• ความเข้าถึงได้", indent=28, gap=14)
+            write_line_indented("• การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, gap=14)
             write_line(f"ระดับ: {engaging_scale}", bold=True, gap=18)
 
             write_line("3. ความมั่นใจ:", size=12, bold=True, gap=18)
-            write_line("• บุคลิกภาพเชิงบวก", gap=14)
-            write_line("• ความมีสมาธิ", gap=14)
-            write_line("• ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", gap=14)
+            write_line_indented("• บุคลิกภาพเชิงบวก", indent=28, gap=14)
+            write_line_indented("• ความมีสมาธิ", indent=28, gap=14)
+            write_line_indented("• ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, gap=14)
             write_line(f"ระดับ: {confidence_scale}", bold=True, gap=18)
 
             write_line("4. ความเป็นผู้นำและความดูมีอำนาจ:", size=12, bold=True, gap=18)
-            write_line("• แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", gap=14)
-            write_line("• ผลักดันให้เกิดการลงมือทำ", gap=14)
+            write_line_indented("• แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, gap=14)
+            write_line_indented("• ผลักดันให้เกิดการลงมือทำ", indent=28, gap=14)
             write_line(f"ระดับ: {authority_scale}", bold=True, gap=18)
             draw_generated_bottom("จัดทำโดย AI People Reader™", size=10)
         else:
