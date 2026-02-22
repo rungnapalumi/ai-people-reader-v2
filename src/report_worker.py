@@ -95,6 +95,7 @@ OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS = int(
 )
 EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY", "30"))
 EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE", "30"))
+EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB", "5"))
 EMAIL_PENDING_MAX_ITEMS_PER_ROUND = int(os.getenv("EMAIL_PENDING_MAX_ITEMS_PER_ROUND", "30"))
 EMAIL_RETRY_BACKOFF_SECONDS = int(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1200"))  # 20 minutes
 FORCED_NOTIFY_EMAILS = str(
@@ -1820,16 +1821,12 @@ def main() -> None:
 
     while True:
         try:
-            # Always drain some email queue first so pending emails are delivered ASAP.
-            if ENABLE_EMAIL_NOTIFICATIONS:
-                process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY)
-
+            # Prioritize report generation first to avoid email_pending backlog starving new results.
             job_key = find_one_pending_job_key()
             if job_key:
                 process_job(job_key)
-                # Keep draining email queue even when report jobs keep arriving continuously.
-                if ENABLE_EMAIL_NOTIFICATIONS:
-                    process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY)
+                if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB > 0:
+                    process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB)
             else:
                 if ENABLE_EMAIL_NOTIFICATIONS:
                     process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE)
