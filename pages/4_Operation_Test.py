@@ -268,21 +268,51 @@ def get_latest_failed_operation_test_job(group_id: str) -> Dict[str, Any]:
 
 
 def find_latest_group_pdf_key(group_id: str) -> str:
-    prefix = f"{JOBS_GROUP_PREFIX}{group_id}/"
+    prefixes = [
+        f"{JOBS_GROUP_PREFIX}{group_id}/",
+        f"jobs/output/groups/{group_id}/",
+    ]
     latest_key = ""
     latest_ts = 0.0
     try:
         paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+        for prefix in prefixes:
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = str(item.get("Key") or "")
+                    if not key.lower().endswith(".pdf"):
+                        continue
+                    last_modified = item.get("LastModified")
+                    ts = float(last_modified.timestamp()) if hasattr(last_modified, "timestamp") else 0.0
+                    if ts >= latest_ts:
+                        latest_ts = ts
+                        latest_key = key
+    except Exception:
+        return ""
+    return latest_key
+
+
+def find_pdf_key_from_finished_jobs(group_id: str) -> str:
+    latest_key = ""
+    latest_ts = 0.0
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_FINISHED_PREFIX):
             for item in page.get("Contents", []):
                 key = str(item.get("Key") or "")
-                if not key.lower().endswith(".pdf"):
+                if not key.endswith(".json"):
+                    continue
+                payload = s3_read_json(key) or {}
+                if str(payload.get("group_id") or "").strip() != group_id:
+                    continue
+                pdf_key = get_pdf_key_from_job(payload)
+                if not pdf_key:
                     continue
                 last_modified = item.get("LastModified")
                 ts = float(last_modified.timestamp()) if hasattr(last_modified, "timestamp") else 0.0
                 if ts >= latest_ts:
                     latest_ts = ts
-                    latest_key = key
+                    latest_key = pdf_key
     except Exception:
         return ""
     return latest_key
@@ -459,6 +489,8 @@ if active_group_id:
             notif_status = str(notif.get("status") or "").strip()
             if notif_status:
                 st.caption(f"Email status: `{notif_status}`")
+    if not pdf_key:
+        pdf_key = find_pdf_key_from_finished_jobs(active_group_id)
     failed_job = get_latest_failed_operation_test_job(active_group_id)
     failed_error = str((failed_job or {}).get("error") or "").strip()
     if failed_error:
