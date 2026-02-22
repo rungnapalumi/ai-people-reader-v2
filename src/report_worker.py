@@ -1361,6 +1361,7 @@ def generate_reports_for_lang(
     enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
     if is_operation_test_style(report_style):
         report_style = "operation_test"
+        lang_code = "th"
     if not report_style:
         report_style = "full"
     report_format = str(job.get("report_format") or "docx").strip().lower()
