@@ -1410,6 +1410,7 @@ def build_pdf_report(
     is_operation_test = style_name.startswith("operation_test")
     lang_name = str(lang or "").strip().lower()
     is_thai = (lang_name == "th")
+    thai_font_fallback = False
     regular_font = "Helvetica"
     bold_font = "Helvetica-Bold"
     requires_unicode_font = False
@@ -1518,6 +1519,7 @@ def build_pdf_report(
                 "Thai font not found for PDF. Falling back to English labels/content for this PDF."
             )
             is_thai = False
+            thai_font_fallback = True
             regular_font = "Helvetica"
             bold_font = "Helvetica-Bold"
             requires_unicode_font = False
@@ -1614,9 +1616,23 @@ def build_pdf_report(
         for line in lines:
             write_line(line, size=size, bold=bold, gap=gap)
 
-    title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report"
-    detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ" if is_thai else "Detailed Analysis"
-    first_impression_label = "1.ความประทับใจแรกพบ (First Impression)" if is_thai else "1. First impression"
+    if is_operation_test:
+        if is_thai:
+            title = "รายงานการวิเคราะห์การนำเสนอ"
+            detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ"
+            first_impression_label = "1.ความประทับใจแรกพบ (First Impression)"
+        elif lang_name == "th":
+            title = "Presentation Analysis Report"
+            detailed_analysis_label = "Detailed Presentation Analysis"
+            first_impression_label = "1. First Impression"
+        else:
+            title = "Presentation Analysis Report"
+            detailed_analysis_label = "Detailed Analysis"
+            first_impression_label = "First impression"
+    else:
+        title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report"
+        detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ" if is_thai else "Detailed Analysis"
+        first_impression_label = "1.ความประทับใจแรกพบ (First Impression)" if is_thai else "1. First impression"
     eye_label = "การสบตา" if is_thai else "Eye Contact"
     upright_label = "ความตั้งตรงของร่างกาย" if is_thai else "Uprightness"
     stance_label = "การยืนและการวางเท้า" if is_thai else "Stance"
@@ -1638,7 +1654,11 @@ def build_pdf_report(
     write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
     write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {report.analysis_date}")
     duration_label = _duration_th_text(report.video_length_str) if is_thai else report.video_length_str
-    write_line(f"{'ความยาววิดิโอ' if is_thai else 'Duration'}: {duration_label}", gap=22)
+    if is_operation_test and (not is_thai):
+        write_line("Video Information", bold=True, gap=14)
+        write_line(f"Duration: {duration_label}", gap=22)
+    else:
+        write_line(f"{'ความยาววิดิโอ' if is_thai else 'Duration'}: {duration_label}", gap=22)
     write_line(detailed_analysis_label, size=13, bold=True, gap=20)
 
     def _first_impression_level(value: float, metric: str = "") -> str:
@@ -1671,9 +1691,12 @@ def build_pdf_report(
                 write_line(f"▪{stance_label} (Stance)", bold=True, gap=14)
                 write_line(f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}", bold=True, gap=16)
             else:
-                write_line(f"{eye_label}: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", bold=True, gap=16)
-                write_line(f"{upright_label}: {_first_impression_level(fi.upright_pct, metric='uprightness')}", bold=True, gap=16)
-                write_line(f"{stance_label}: {_first_impression_level(fi.stance_stability, metric='stance')}", bold=True, gap=16)
+                write_line("Eye Contact", bold=True, gap=14)
+                write_line(f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", bold=True, gap=16)
+                write_line("Uprightness", bold=True, gap=14)
+                write_line(f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}", bold=True, gap=16)
+                write_line("Stance (Lower-Body Stability & Grounding)", bold=True, gap=14)
+                write_line(f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}", bold=True, gap=16)
         else:
             eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
             up_lines = generate_uprightness_text_th(fi.upright_pct) if is_thai else generate_uprightness_text(fi.upright_pct)
@@ -1734,7 +1757,50 @@ def build_pdf_report(
             write_line(f"ระดับ: {authority_scale}", bold=True, gap=18)
             write_line("จัดทำโดย AI People Reader™", size=10)
         else:
-            write_line("", gap=10)
+            if thai_font_fallback and lang_name == "th":
+                write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
+            def _scale_en(scale: str) -> str:
+                s = str(scale or "").strip().lower()
+                if s.startswith("high"):
+                    return "High"
+                if s.startswith("moderate"):
+                    return "Moderate"
+                if s.startswith("low"):
+                    return "Low"
+                return "-"
+
+            write_line("", gap=8)
+            write_line("Note", bold=True, gap=16)
+            write_line(
+                "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception.",
+                gap=16,
+            )
+            write_line("Engaging & Connecting:", size=12, bold=True, gap=18)
+            write_line("- Approachability", gap=14)
+            write_line("Generated by AI People Reader", size=10)
+
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+
+            engaging_scale = _scale_en(report.categories[0].scale) if len(report.categories) > 0 else "-"
+            confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
+            authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
+
+            write_line("- Relatability", gap=14)
+            write_line("- Engagement, connect and build instant rapport with team", gap=14)
+            write_line(f"Scale: {engaging_scale}", bold=True, gap=18)
+
+            write_line("Confidence:", size=12, bold=True, gap=18)
+            write_line("- Optimistic Presence", gap=14)
+            write_line("- Focus", gap=14)
+            write_line("- Ability to persuade and stand one's ground, in order to convince others.", gap=14)
+            write_line(f"Scale: {confidence_scale}", bold=True, gap=18)
+
+            write_line("Authority:", size=12, bold=True, gap=18)
+            write_line("- Showing sense of importance and urgency in subject matter", gap=14)
+            write_line("- Pressing for action", gap=14)
+            write_line(f"Scale: {authority_scale}", bold=True, gap=18)
             write_line("Generated by AI People Reader", size=10)
         c.save()
         return
