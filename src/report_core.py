@@ -1729,6 +1729,30 @@ def build_pdf_report(
             c.drawString(x_left, y, line)
             y -= gap if idx == len(lines) - 1 else wrapped_gap
 
+    def write_line_indented(text: str, indent: int = 0, size: int = 11, bold: bool = False, gap: int = 18):
+        nonlocal y
+        x = x_left + max(0, int(indent))
+        local_width = max(80, usable_width - max(0, int(indent)))
+        if is_operation_test:
+            font = bold_font if bold else content_style.fontName
+            if size == 11:
+                size = int(content_style.fontSize)
+            if gap == 18:
+                gap = int(content_style.leading)
+        else:
+            font = bold_font if bold else regular_font
+        safe = _safe_text_for_font(text)
+        initial_lines = simpleSplit(safe, font, size, local_width) or [""]
+        wrapped_gap = max(12, int(size * 1.35))
+        for idx, line in enumerate(initial_lines):
+            if y <= bottom_content_y:
+                c.showPage()
+                draw_header_footer()
+                y = top_content_y
+            c.setFont(font, size)
+            c.drawString(x, y, line)
+            y -= gap if idx == len(initial_lines) - 1 else wrapped_gap
+
     def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
         for line in lines:
             write_line(line, size=size, bold=bold, gap=gap)
@@ -1745,7 +1769,7 @@ def build_pdf_report(
         else:
             title = "Presentation Analysis Report"
             detailed_analysis_label = "Detailed Analysis"
-            first_impression_label = "First impression"
+            first_impression_label = "1. First impression"
     else:
         title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report"
         detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ" if is_thai else "Detailed Analysis"
@@ -1818,12 +1842,12 @@ def build_pdf_report(
                 write_line(f"▪{stance_label} (Stance)", bold=True, gap=14)
                 write_line(f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}", bold=True, gap=16)
             else:
-                write_line("Eye Contact", bold=True, gap=14)
-                write_line(f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", bold=True, gap=16)
-                write_line("Uprightness", bold=True, gap=14)
-                write_line(f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}", bold=True, gap=16)
-                write_line("Stance (Lower-Body Stability & Grounding)", bold=True, gap=14)
-                write_line(f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}", bold=True, gap=16)
+                write_line_indented("- Eye Contact", indent=28, bold=True, gap=14)
+                write_line_indented(f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", indent=56, bold=True, gap=18)
+                write_line_indented("- Uprightness", indent=28, bold=True, gap=14)
+                write_line_indented(f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}", indent=56, bold=True, gap=18)
+                write_line_indented("- Stance (Lower-Body Stability & Grounding)", indent=28, bold=True, gap=14)
+                write_line_indented(f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}", indent=56, bold=True, gap=18)
         else:
             eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
             up_lines = generate_uprightness_text_th(fi.upright_pct) if is_thai else generate_uprightness_text(fi.upright_pct)
@@ -1903,8 +1927,8 @@ def build_pdf_report(
                 "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception.",
                 gap=14,
             )
-            write_line("Engaging & Connecting:", size=12, bold=True, gap=18)
-            write_line("- Approachability", gap=14)
+            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=18)
+            write_line_indented("- Approachability.", indent=28, gap=14)
 
             # Match template flow: page break after first bullet of section 2.
             write_line("", gap=6)
@@ -1916,20 +1940,20 @@ def build_pdf_report(
             confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line("- Relatability", gap=14)
-            write_line("- Engagement, connect and build instant rapport with team", gap=14)
-            write_line(f"Scale: {engaging_scale}", bold=True, gap=18)
+            write_line_indented("- Relatability.", indent=28, gap=14)
+            write_line_indented("- Engagement, connect and build instant rapport with team.", indent=28, gap=14)
+            write_line(f"Scale: {engaging_scale}", bold=True, gap=20)
 
-            write_line("Confidence:", size=12, bold=True, gap=18)
-            write_line("- Optimistic Presence", gap=14)
-            write_line("- Focus", gap=14)
-            write_line("- Ability to persuade and stand one's ground, in order to convince others.", gap=14)
-            write_line(f"Scale: {confidence_scale}", bold=True, gap=18)
+            write_line("3. Confidence:", size=12, bold=True, gap=18)
+            write_line_indented("- Optimistic Presence.", indent=28, gap=14)
+            write_line_indented("- Focus.", indent=28, gap=14)
+            write_line_indented("- Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=14)
+            write_line(f"Scale: {confidence_scale}", bold=True, gap=20)
 
-            write_line("Authority:", size=12, bold=True, gap=18)
-            write_line("- Showing sense of importance and urgency in subject matter", gap=14)
-            write_line("- Pressing for action", gap=14)
-            write_line(f"Scale: {authority_scale}", bold=True, gap=18)
+            write_line("4. Authority:", size=12, bold=True, gap=18)
+            write_line_indented("- Showing sense of importance and urgency in subject matter.", indent=28, gap=14)
+            write_line_indented("- Pressing for action.", indent=28, gap=14)
+            write_line(f"Scale: {authority_scale}", bold=True, gap=20)
             draw_generated_bottom("Generated by AI People Reader™", size=10)
         c.save()
         return
