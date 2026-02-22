@@ -90,6 +90,9 @@ POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
+OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS = int(
+    os.getenv("OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS", "24")
+)
 EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY", "30"))
 EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE", "30"))
 EMAIL_PENDING_MAX_ITEMS_PER_ROUND = int(os.getenv("EMAIL_PENDING_MAX_ITEMS_PER_ROUND", "30"))
@@ -997,6 +1000,34 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     if elapsed < float(EMAIL_RETRY_BACKOFF_SECONDS):
                         continue
             job_created_at = parse_job_id_datetime_utc(job_id)
+            if (
+                is_operation_test
+                and OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS > 0
+                and job_created_at is not None
+            ):
+                age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
+                if age_hours >= float(OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS):
+                    update_finished_job_notification(
+                        job_id,
+                        bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
+                        f"cleaned_operation_test_email_pending_{OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS}h",
+                        report_th_sent=report_th_sent,
+                        report_en_sent=report_en_sent,
+                        skeleton_sent=skeleton_sent,
+                        dots_sent=dots_sent,
+                    )
+                    suspended_key = move_email_pending_to_suspend(
+                        key,
+                        payload,
+                        reason=f"operation_test_email_pending_cleanup_{OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS}h",
+                    )
+                    logger.warning(
+                        "[email_queue] cleaned stale operation_test payload key=%s suspended_key=%s age_hours=%.1f",
+                        key,
+                        suspended_key,
+                        age_hours,
+                    )
+                    continue
             if (not is_operation_test) and MAX_EMAIL_PENDING_JOB_AGE_HOURS > 0 and job_created_at is not None:
                 age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
                 if age_hours >= float(MAX_EMAIL_PENDING_JOB_AGE_HOURS):
@@ -1461,6 +1492,7 @@ def generate_reports_for_lang(
 def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     job_id = str(job.get("job_id") or "").strip()
     input_key = str(job.get("input_key") or "").strip()
+    group_id = str(job.get("group_id") or "").strip()
     if not job_id:
         raise ValueError("Job JSON missing 'job_id'")
     if not input_key:
@@ -1493,6 +1525,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
     # output prefix
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
+    if report_style == "operation_test" and group_id:
+        # Keep Operation Test outputs under the same group folder as input for easy S3 lookup.
+        output_prefix = f"jobs/groups/{group_id}"
+        job["output_prefix"] = output_prefix
     # We'll store files under:
     #   <output_prefix>/report_TH.docx, report_EN.docx, report_TH.pdf, report_EN.pdf
     #   <output_prefix>/Graph_1_TH.png, Graph_2_TH.png, ...
@@ -1546,6 +1582,12 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 pdf_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf"
                 pdf_key = f"{output_prefix}/{pdf_name}"
                 upload_bytes(pdf_key, pdf_bytes, "application/pdf")
+                if report_style == "operation_test" and group_id:
+                    # Canonical path for Operation Test so UI/S3 always find report in group folder.
+                    canonical_pdf_key = f"jobs/groups/{group_id}/{pdf_name}"
+                    if canonical_pdf_key != pdf_key:
+                        upload_bytes(canonical_pdf_key, pdf_bytes, "application/pdf")
+                    pdf_key = canonical_pdf_key
 
             outputs["graphs"][lang_code.upper()] = {"graph1_key": g1_key, "graph2_key": g2_key}
             outputs["reports"][lang_code.upper()] = {"docx_key": docx_key, "pdf_key": pdf_key}
