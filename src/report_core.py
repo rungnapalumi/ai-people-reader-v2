@@ -1387,6 +1387,7 @@ def build_pdf_report(
     """Build PDF report aligned with DOCX simple/full text structure (no graph embedding)."""
     try:
         from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.utils import simpleSplit
         from reportlab.pdfgen import canvas
         from reportlab.pdfbase import pdfmetrics
@@ -1437,55 +1438,83 @@ def build_pdf_report(
                 seen.add(p)
         return uniq
 
-    def _try_register_angsana_font() -> bool:
-        angsana_regular_candidates = [
-            os.getenv("PDF_ANGSANA_FONT_PATH", "").strip(),
-            os.getenv("ANGSANA_FONT_PATH", "").strip(),
-            os.getenv("REPORT_ANGSANA_FONT_PATH", "").strip(),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "AngsanaNew.ttf"),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Angsana New.ttf"),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Angsana New.ttf"),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Angsana.ttf"),
-            "/Library/Fonts/Angsana New.ttf",
-            "/Library/Fonts/Angsana.ttf",
-            "C:\\Windows\\Fonts\\ANGSA.TTF",
-            "C:\\Windows\\Fonts\\ANGSANA.TTF",
-            "/usr/share/fonts/truetype/msttcorefonts/Angsana New.ttf",
-            "/usr/share/fonts/truetype/msttcorefonts/angsa.ttf",
+    def register_sarabun_fonts() -> bool:
+        base_dir = os.path.dirname(os.path.abspath(__file__))  # .../src
+        sarabun_regular_candidates = [
+            os.getenv("PDF_SARABUN_FONT_PATH", "").strip(),
+            os.getenv("SARABUN_FONT_PATH", "").strip(),
+            os.getenv("REPORT_SARABUN_FONT_PATH", "").strip(),
+            os.path.join(base_dir, "fonts", "Sarabun-Regular.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Sarabun-Regular.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Sarabun-Regular.ttf"),
+            "/Library/Fonts/Sarabun-Regular.ttf",
+            "/usr/share/fonts/truetype/thai/Sarabun-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
         ]
-        angsana_bold_candidates = [
-            os.getenv("PDF_ANGSANA_FONT_BOLD_PATH", "").strip(),
-            os.getenv("ANGSANA_FONT_BOLD_PATH", "").strip(),
-            os.getenv("REPORT_ANGSANA_FONT_BOLD_PATH", "").strip(),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "AngsanaNew-Bold.ttf"),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Angsana New Bold.ttf"),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Angsana New Bold.ttf"),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Angsana Bold.ttf"),
-            "/Library/Fonts/Angsana New Bold.ttf",
-            "/Library/Fonts/Angsana Bold.ttf",
-            "C:\\Windows\\Fonts\\ANGSAB.TTF",
-            "C:\\Windows\\Fonts\\ANGSANAB.TTF",
-            "/usr/share/fonts/truetype/msttcorefonts/angsab.ttf",
+        sarabun_bold_candidates = [
+            os.getenv("PDF_SARABUN_FONT_BOLD_PATH", "").strip(),
+            os.getenv("SARABUN_FONT_BOLD_PATH", "").strip(),
+            os.getenv("REPORT_SARABUN_FONT_BOLD_PATH", "").strip(),
+            os.path.join(base_dir, "fonts", "Sarabun-Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Sarabun-Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Sarabun-Bold.ttf"),
+            "/Library/Fonts/Sarabun-Bold.ttf",
+            "/usr/share/fonts/truetype/thai/Sarabun-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
         ]
 
-        ok_regular = False
-        for path in angsana_regular_candidates:
-            if _register_ttf("AngsanaPDFRegular", path, require_thai=True):
-                ok_regular = True
-                break
-
-        if not ok_regular:
+        regular_path = _first_existing(sarabun_regular_candidates)
+        if not regular_path:
+            return False
+        if not _register_ttf("Sarabun", regular_path, require_thai=True):
             return False
 
-        ok_bold = False
-        for path in angsana_bold_candidates:
-            if _register_ttf("AngsanaPDFBold", path, require_thai=True):
-                ok_bold = True
-                break
+        bold_path = _first_existing(sarabun_bold_candidates)
+        ok_bold = bool(bold_path) and _register_ttf("Sarabun-Bold", bold_path, require_thai=True)
 
         nonlocal regular_font, bold_font, requires_unicode_font
-        regular_font = "AngsanaPDFRegular"
-        bold_font = "AngsanaPDFBold" if ok_bold else "AngsanaPDFRegular"
+        regular_font = "Sarabun"
+        bold_font = "Sarabun-Bold" if ok_bold else "Sarabun"
+        requires_unicode_font = True
+        return True
+
+    def register_arial_fonts() -> bool:
+        base_dir = os.path.dirname(os.path.abspath(__file__))  # .../src
+        arial_regular_candidates = [
+            os.getenv("PDF_ARIAL_FONT_PATH", "").strip(),
+            os.getenv("ARIAL_FONT_PATH", "").strip(),
+            os.path.join(base_dir, "fonts", "Arial.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Arial.ttf"),
+            "/Library/Fonts/Arial.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/arial.ttf",
+        ]
+        arial_bold_candidates = [
+            os.getenv("PDF_ARIAL_FONT_BOLD_PATH", "").strip(),
+            os.getenv("ARIAL_FONT_BOLD_PATH", "").strip(),
+            os.path.join(base_dir, "fonts", "Arial-Bold.ttf"),
+            os.path.join(base_dir, "fonts", "Arial Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Arial-Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Arial Bold.ttf"),
+            "/Library/Fonts/Arial Bold.ttf",
+            "C:\\Windows\\Fonts\\arialbd.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf",
+        ]
+
+        regular_path = _first_existing(arial_regular_candidates)
+        if not regular_path:
+            return False
+        if not _register_ttf("ArialPDFRegular", regular_path, require_thai=False):
+            return False
+
+        bold_path = _first_existing(arial_bold_candidates)
+        ok_bold = bool(bold_path) and _register_ttf("ArialPDFBold", bold_path, require_thai=False)
+
+        nonlocal regular_font, bold_font, requires_unicode_font
+        regular_font = "ArialPDFRegular"
+        bold_font = "ArialPDFBold" if ok_bold else "ArialPDFRegular"
         requires_unicode_font = True
         return True
 
@@ -1508,9 +1537,12 @@ def build_pdf_report(
         except Exception:
             return False
 
-    # Customer requirement: prefer Angsana New for Operation Test reports when available.
-    # If not found, keep existing font selection/fallback behavior.
-    if is_operation_test and _try_register_angsana_font():
+    # Customer requirement:
+    # - Operation Test TH: prefer Sarabun
+    # - Operation Test EN: prefer Arial
+    if is_operation_test and lang_name == "en" and register_arial_fonts():
+        pass
+    elif is_operation_test and lang_name == "th" and register_sarabun_fonts():
         pass
     elif is_thai:
         thai_glob_candidates = _glob_existing(
@@ -1615,23 +1647,52 @@ def build_pdf_report(
 
     draw_header_footer()
 
+    header_style = ParagraphStyle(
+        name="HeaderStyle",
+        fontName=bold_font,
+        fontSize=(14 if is_operation_test and lang_name == "en" else 16),
+        leading=(16 if is_operation_test and lang_name == "en" else 18),
+    )
+    content_style = ParagraphStyle(
+        name="ContentStyle",
+        fontName=regular_font,
+        fontSize=(12 if is_operation_test and lang_name == "en" else (14 if is_operation_test else 11)),
+        leading=(14 if is_operation_test and lang_name == "en" else (16 if is_operation_test else 14)),
+    )
+
+    def _safe_text_for_font(text: str) -> str:
+        if requires_unicode_font:
+            return str(text or "")
+        normalized = (
+            str(text or "")
+            .replace("•", "- ")
+            .replace("—", "-")
+            .replace("–", "-")
+            .replace("“", '"')
+            .replace("”", '"')
+            .replace("’", "'")
+        )
+        return normalized.encode("latin-1", "replace").decode("latin-1")
+
+    def draw_generated_bottom(text: str, size: int = 10) -> None:
+        font = content_style.fontName
+        safe = _safe_text_for_font(text)
+        c.setFont(font, size)
+        text_w = pdfmetrics.stringWidth(safe, font, size)
+        x = x_left + max(0.0, usable_width - text_w)
+        c.drawString(x, 8, safe)
+
     def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
-        font = bold_font if bold else regular_font
-        if requires_unicode_font:
-            safe = str(text or "")
+        if is_operation_test:
+            font = bold_font if bold else content_style.fontName
+            if size == 11:
+                size = int(content_style.fontSize)
+            if gap == 18:
+                gap = int(content_style.leading)
         else:
-            # Normalize common unicode punctuation for ASCII/Latin fonts.
-            normalized = (
-                str(text or "")
-                .replace("•", "- ")
-                .replace("—", "-")
-                .replace("–", "-")
-                .replace("“", '"')
-                .replace("”", '"')
-                .replace("’", "'")
-            )
-            safe = normalized.encode("latin-1", "replace").decode("latin-1")
+            font = bold_font if bold else regular_font
+        safe = _safe_text_for_font(text)
 
         def _split_by_chars(long_line: str) -> list:
             parts = []
@@ -1676,7 +1737,7 @@ def build_pdf_report(
         if is_thai:
             title = "รายงานการวิเคราะห์การนำเสนอ"
             detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ"
-            first_impression_label = "1.ความประทับใจแรกพบ (First Impression)"
+            first_impression_label = "1. ความประทับใจแรกพบ (First Impression)"
         elif lang_name == "th":
             title = "Presentation Analysis Report"
             detailed_analysis_label = "Detailed Presentation Analysis"
@@ -1688,7 +1749,7 @@ def build_pdf_report(
     else:
         title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report"
         detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ" if is_thai else "Detailed Analysis"
-        first_impression_label = "1.ความประทับใจแรกพบ (First Impression)" if is_thai else "1. First impression"
+        first_impression_label = "1. ความประทับใจแรกพบ (First Impression)" if is_thai else "1. First impression"
     eye_label = "การสบตา" if is_thai else "Eye Contact"
     upright_label = "ความตั้งตรงของร่างกาย" if is_thai else "Uprightness"
     stance_label = "การยืนและการวางเท้า" if is_thai else "Stance"
@@ -1706,7 +1767,17 @@ def build_pdf_report(
             return f"{sec} วินาที ({raw})"
         return raw
 
-    write_line(title, size=16, bold=True, gap=24)
+    title_size = 14 if is_operation_test and lang_name == "en" else 16
+    title_gap = 20 if is_operation_test and lang_name == "en" else 24
+    if is_operation_test and is_thai:
+        title_font = bold_font
+        c.setFont(title_font, title_size)
+        title_w = pdfmetrics.stringWidth(title, title_font, title_size)
+        x_center = x_left + max(0.0, (usable_width - title_w) / 2.0)
+        c.drawString(x_center, y, title)
+        y -= title_gap
+    else:
+        write_line(title, size=title_size, bold=True, gap=title_gap)
     write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
     write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {report.analysis_date}")
     duration_label = _duration_th_text(report.video_length_str) if is_thai else report.video_length_str
@@ -1779,16 +1850,17 @@ def build_pdf_report(
                     return "ต่ำ"
                 return "-"
 
-            write_line("", gap=8)
+            write_line("", gap=6)
             write_line("หมายเหตุ", bold=True, gap=16)
             write_line(
                 "ความรู้สึกที่เกิดจากความประทับใจแรกพบนั้นเป็นสิ่งที่มนุษย์หลีกเลี่ยงไม่ได้ และมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน แต่หลังจากนั้นจะเริ่มวิเคราะห์การเคลื่อนไหวโดยรวมมาประกอบการตัดสินใจ",
-                gap=16,
+                gap=14,
             )
-            write_line("2.การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", size=12, bold=True, gap=18)
+            write_line("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", size=12, bold=True, gap=18)
             write_line("• ความเป็นกันเอง", gap=14)
-            write_line("จัดทำโดย AI People Reader™", size=10)
 
+            # Match template flow: page break after section 2 intro.
+            write_line("", gap=6)
             c.showPage()
             draw_header_footer()
             y = top_content_y
@@ -1801,17 +1873,17 @@ def build_pdf_report(
             write_line("• การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", gap=14)
             write_line(f"ระดับ: {engaging_scale}", bold=True, gap=18)
 
-            write_line("3.ความมั่นใจ:", size=12, bold=True, gap=18)
+            write_line("3. ความมั่นใจ:", size=12, bold=True, gap=18)
             write_line("• บุคลิกภาพเชิงบวก", gap=14)
             write_line("• ความมีสมาธิ", gap=14)
             write_line("• ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", gap=14)
             write_line(f"ระดับ: {confidence_scale}", bold=True, gap=18)
 
-            write_line("4.ความเป็นผู้นำและความดูมีอำนาจ:", size=12, bold=True, gap=18)
+            write_line("4. ความเป็นผู้นำและความดูมีอำนาจ:", size=12, bold=True, gap=18)
             write_line("• แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", gap=14)
             write_line("• ผลักดันให้เกิดการลงมือทำ", gap=14)
             write_line(f"ระดับ: {authority_scale}", bold=True, gap=18)
-            write_line("จัดทำโดย AI People Reader™", size=10)
+            draw_generated_bottom("จัดทำโดย AI People Reader™", size=10)
         else:
             if thai_font_fallback and lang_name == "th":
                 write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
@@ -1829,12 +1901,13 @@ def build_pdf_report(
             write_line("Note", bold=True, gap=16)
             write_line(
                 "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception.",
-                gap=16,
+                gap=14,
             )
             write_line("Engaging & Connecting:", size=12, bold=True, gap=18)
             write_line("- Approachability", gap=14)
-            write_line("Generated by AI People Reader", size=10)
 
+            # Match template flow: page break after first bullet of section 2.
+            write_line("", gap=6)
             c.showPage()
             draw_header_footer()
             y = top_content_y
@@ -1857,7 +1930,7 @@ def build_pdf_report(
             write_line("- Showing sense of importance and urgency in subject matter", gap=14)
             write_line("- Pressing for action", gap=14)
             write_line(f"Scale: {authority_scale}", bold=True, gap=18)
-            write_line("Generated by AI People Reader", size=10)
+            draw_generated_bottom("Generated by AI People Reader™", size=10)
         c.save()
         return
 
