@@ -374,16 +374,37 @@ manual_group_id = st.text_input(
 
 name = st.text_input("Name (optional)", value="", placeholder="e.g., John Doe")
 st.markdown("### Email Recipients")
-send_rungnapa = st.checkbox(OPERATION_TEST_RECIPIENTS[0], value=True)
-send_alisa = st.checkbox(OPERATION_TEST_RECIPIENTS[1], value=True)
-selected_recipients = []
-if send_rungnapa:
-    selected_recipients.append(OPERATION_TEST_RECIPIENTS[0])
-if send_alisa:
-    selected_recipients.append(OPERATION_TEST_RECIPIENTS[1])
-if not selected_recipients:
-    st.warning("Please select at least one recipient email.")
+recipient_mode = st.radio(
+    "Send report to",
+    options=["One recipient", "Both recipients"],
+    horizontal=True,
+    index=1,
+)
+if recipient_mode == "One recipient":
+    selected_recipients = [
+        st.selectbox(
+            "Select recipient",
+            options=OPERATION_TEST_RECIPIENTS,
+            index=0,
+        )
+    ]
+else:
+    selected_recipients = OPERATION_TEST_RECIPIENTS[:]
 notify_email = ",".join(selected_recipients)
+
+st.markdown("### Report Language")
+language_mode = st.radio(
+    "Choose report language",
+    options=["Thai only", "English only", "Thai + English"],
+    horizontal=True,
+    index=2,
+)
+if language_mode == "Thai only":
+    selected_languages = ["th"]
+elif language_mode == "English only":
+    selected_languages = ["en"]
+else:
+    selected_languages = ["th", "en"]
 
 uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
@@ -426,7 +447,7 @@ if run:
         "input_key": input_key,
         "client_name": (name or "Anonymous").strip() or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th", "en"],
+        "languages": selected_languages,
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",
         "sample_fps": 5,

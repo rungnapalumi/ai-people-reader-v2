@@ -1649,36 +1649,45 @@ def build_pdf_report(
 
     draw_header_footer()
 
-    HEADER_STYLE = ParagraphStyle(
-        name="HeaderStyle",
+    TITLE_STYLE = ParagraphStyle(
+        name="TitleStyle",
         fontName=bold_font,
-        fontSize=16,
-        leading=20,
-        spaceAfter=10,
-    )
-    CONTENT_STYLE = ParagraphStyle(
-        name="ContentStyle",
-        fontName=regular_font,
-        fontSize=14,
-        leading=18,
-        spaceAfter=6,
+        fontSize=18,
+        alignment=1,  # center
+        spaceAfter=20,
     )
     SECTION_STYLE = ParagraphStyle(
         name="SectionStyle",
         fontName=bold_font,
         fontSize=14,
-        leading=18,
-        spaceBefore=10,
+        spaceBefore=12,
         spaceAfter=6,
+    )
+    SUBITEM_STYLE = ParagraphStyle(
+        name="SubItemStyle",
+        fontName=regular_font,
+        fontSize=14,
+        leftIndent=20,
+        spaceAfter=2,
+    )
+    LEVEL_STYLE = ParagraphStyle(
+        name="LevelStyle",
+        fontName=bold_font,
+        fontSize=14,
+        leftIndent=35,
+        spaceAfter=8,
     )
     BULLET_STYLE = ParagraphStyle(
         name="BulletStyle",
-        parent=CONTENT_STYLE,
-        leftIndent=18,
-        bulletIndent=6,
+        fontName=regular_font,
+        fontSize=14,
+        leftIndent=40,
+        bulletIndent=30,
         spaceAfter=4,
     )
     # Backward-compatible aliases for existing references.
+    HEADER_STYLE = TITLE_STYLE
+    CONTENT_STYLE = SUBITEM_STYLE
     header_style = HEADER_STYLE
     content_style = CONTENT_STYLE
     section_style = SECTION_STYLE
@@ -1721,8 +1730,6 @@ def build_pdf_report(
         font = bold_font if bold else CONTENT_STYLE.fontName
         if size == 11:
             size = int(CONTENT_STYLE.fontSize)
-        if gap == 18:
-            gap = int(CONTENT_STYLE.leading)
         raw_text = str(text or "")
 
         if "\n" in raw_text:
@@ -1789,8 +1796,6 @@ def build_pdf_report(
         font = bold_font if bold else CONTENT_STYLE.fontName
         if size == 11:
             size = int(CONTENT_STYLE.fontSize)
-        if gap == 18:
-            gap = int(CONTENT_STYLE.leading)
         raw_text = str(text or "")
         if "\n" in raw_text:
             para_style = ParagraphStyle(
@@ -1831,9 +1836,6 @@ def build_pdf_report(
         bullet_style = ParagraphStyle(
             name="BulletRuntime",
             parent=BULLET_STYLE,
-            fontName=CONTENT_STYLE.fontName,
-            fontSize=CONTENT_STYLE.fontSize,
-            leading=CONTENT_STYLE.leading,
             spaceAfter=float(space_after),
         )
         safe = escape(_safe_text_for_font(text)).replace("\n", "<br/>")
@@ -1901,17 +1903,7 @@ def build_pdf_report(
             return f"{sec} วินาที ({raw})"
         return raw
 
-    title_size = 14 if is_operation_test and lang_name == "en" else 16
-    title_gap = 20 if is_operation_test and lang_name == "en" else 24
-    if is_operation_test and is_thai:
-        title_font = bold_font
-        c.setFont(title_font, title_size)
-        title_w = pdfmetrics.stringWidth(title, title_font, title_size)
-        x_center = x_left + max(0.0, (usable_width - title_w) / 2.0)
-        c.drawString(x_center, y, title)
-        y -= title_gap
-    else:
-        write_line(title, size=title_size, bold=True, gap=title_gap)
+    write_paragraph_block(title, TITLE_STYLE, indent=0, extra_gap=0)
     write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
     write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {report.analysis_date}")
     duration_label = _duration_th_text(report.video_length_str) if is_thai else report.video_length_str
@@ -1944,27 +1936,45 @@ def build_pdf_report(
         fi = report.first_impression
         if is_operation_test:
             if is_thai:
-                block = (
-                    "1. ความประทับใจแรกพบ (First Impression)\n"
-                    f"□ {eye_label} (Eye Contact)\n"
-                    f"ระดับ: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}\n"
-                    f"□ {upright_label} (Uprightness)\n"
-                    f"ระดับ: {_first_impression_level(fi.upright_pct, metric='uprightness')}\n"
-                    f"□ {stance_label} (Stance)\n"
-                    f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}\n"
+                write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
+                write_paragraph_block(f"□ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"ระดับ: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}",
+                    LEVEL_STYLE,
+                    extra_gap=0,
                 )
-                write_paragraph_block(block, CONTENT_STYLE, indent=28, extra_gap=10)
+                write_paragraph_block(f"□ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"ระดับ: {_first_impression_level(fi.upright_pct, metric='uprightness')}",
+                    LEVEL_STYLE,
+                    extra_gap=0,
+                )
+                write_paragraph_block(f"□ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}",
+                    LEVEL_STYLE,
+                    extra_gap=10,
+                )
             else:
-                block = (
-                    "1. First impression\n"
-                    "□ Eye Contact\n"
-                    f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}\n"
-                    "□ Uprightness\n"
-                    f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}\n"
-                    "□ Stance (Lower-Body Stability & Grounding)\n"
-                    f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}\n"
+                write_paragraph_block("1. First impression", SECTION_STYLE, extra_gap=0)
+                write_paragraph_block("□ Eye Contact", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}",
+                    LEVEL_STYLE,
+                    extra_gap=0,
                 )
-                write_paragraph_block(block, CONTENT_STYLE, indent=28, extra_gap=10)
+                write_paragraph_block("□ Uprightness", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}",
+                    LEVEL_STYLE,
+                    extra_gap=0,
+                )
+                write_paragraph_block("□ Stance (Lower-Body Stability & Grounding)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}",
+                    LEVEL_STYLE,
+                    extra_gap=10,
+                )
         else:
             write_line(first_impression_label, size=12, bold=True, gap=18)
             eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
