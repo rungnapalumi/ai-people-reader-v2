@@ -842,10 +842,6 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     if not langs:
         wants_th, wants_en = True, True
     report_style = str(job.get("report_style") or "").strip().lower()
-    if is_operation_test_style(report_style):
-        wants_th = True
-        wants_en = False
-        en_key = ""
     if output_prefix and wants_th and not th_key:
         th_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_TH.{ext}"
     if output_prefix and wants_en and not en_key:
@@ -863,7 +859,7 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "report_en_key": en_key,
         "report_th_key": th_key,
         "report_th_email_sent": False,
-        "report_en_email_sent": is_operation_test_style(report_style),
+        "report_en_email_sent": False,
         "skeleton_email_sent": False,
         "dots_email_sent": False,
         "attempts": 0,
@@ -987,11 +983,6 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             report_en_sent = bool(payload.get("report_en_email_sent"))
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
             dots_sent = bool(payload.get("dots_email_sent"))
-            if is_operation_test:
-                # Operation Test sends TH report only.
-                payload["report_en_key"] = ""
-                payload["report_en_email_sent"] = True
-                report_en_sent = True
             expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
             attempts = int(payload.get("attempts") or 0)
             if EMAIL_RETRY_BACKOFF_SECONDS > 0 and attempts > 0:
@@ -1417,7 +1408,6 @@ def generate_reports_for_lang(
     enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
     if is_operation_test_style(report_style):
         report_style = "operation_test"
-        lang_code = "th"
     if not report_style:
         report_style = "full"
     report_format = str(job.get("report_format") or "docx").strip().lower()
@@ -1516,11 +1506,12 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if report_format not in ("docx", "pdf"):
         report_format = "docx"
 
-    # Operation Test must always produce Thai PDF-only output.
+    # Operation Test must always produce PDF output.
     if report_style == "operation_test":
-        languages = ["th"]
+        if not languages:
+            languages = ["th", "en"]
         report_format = "pdf"
-        job["languages"] = ["th"]
+        job["languages"] = languages
         job["report_format"] = "pdf"
         logger.info("[report] operation_test override: force languages=%s report_format=%s", languages, report_format)
 

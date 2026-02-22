@@ -1409,8 +1409,7 @@ def build_pdf_report(
     is_simple = style_name.startswith("simple")
     is_operation_test = style_name.startswith("operation_test")
     lang_name = str(lang or "").strip().lower()
-    # Operation Test is Thai-only by product requirement.
-    is_thai = (lang_name == "th") or is_operation_test
+    is_thai = (lang_name == "th")
     regular_font = "Helvetica"
     bold_font = "Helvetica-Bold"
     requires_unicode_font = False

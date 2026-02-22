@@ -215,6 +215,13 @@ def get_pdf_key_from_job(job: Dict[str, Any]) -> str:
     return th_pdf or en_pdf
 
 
+def get_pdf_keys_from_job(job: Dict[str, Any]) -> Dict[str, str]:
+    reports = (job.get("outputs") or {}).get("reports") or {}
+    th_pdf = ((reports.get("TH") or {}).get("pdf_key") or "").strip()
+    en_pdf = ((reports.get("EN") or {}).get("pdf_key") or "").strip()
+    return {"TH": th_pdf, "EN": en_pdf}
+
+
 def get_latest_finished_operation_test_job(group_id: str) -> Dict[str, Any]:
     latest_job: Dict[str, Any] = {}
     latest_ts = 0.0
@@ -419,7 +426,7 @@ if run:
         "input_key": input_key,
         "client_name": (name or "Anonymous").strip() or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th"],
+        "languages": ["th", "en"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",
         "sample_fps": 5,
@@ -480,10 +487,12 @@ if active_group_id:
         c2.metric("Uprightness", prettify_level(up.get("level")))
         c3.metric("Stance", prettify_level(stance.get("level")))
 
-    pdf_key = get_pdf_key_from_job(latest_job)
+    pdf_keys = get_pdf_keys_from_job(latest_job)
+    pdf_key = pdf_keys.get("TH") or pdf_keys.get("EN") or ""
     if not pdf_key:
         finished_job = get_latest_finished_operation_test_job(active_group_id)
-        pdf_key = get_pdf_key_from_job(finished_job)
+        pdf_keys = get_pdf_keys_from_job(finished_job)
+        pdf_key = pdf_keys.get("TH") or pdf_keys.get("EN") or ""
         if finished_job:
             notif = (finished_job.get("notification") or {})
             notif_status = str(notif.get("status") or "").strip()
@@ -500,12 +509,29 @@ if active_group_id:
 
     if pdf_key and s3_key_exists(pdf_key):
         st.success("PDF is ready.")
-        st.link_button(
-            "Download Operation Test PDF",
-            presigned_get_url(pdf_key, expires=3600, filename="operation_test_report.pdf"),
-            width="stretch",
-        )
-        st.code(pdf_key, language="text")
+        th_key = (pdf_keys.get("TH") or "").strip()
+        en_key = (pdf_keys.get("EN") or "").strip()
+        if th_key and s3_key_exists(th_key):
+            st.link_button(
+                "Download Operation Test PDF (TH)",
+                presigned_get_url(th_key, expires=3600, filename="operation_test_report_th.pdf"),
+                width="stretch",
+            )
+            st.code(th_key, language="text")
+        if en_key and s3_key_exists(en_key):
+            st.link_button(
+                "Download Operation Test PDF (EN)",
+                presigned_get_url(en_key, expires=3600, filename="operation_test_report_en.pdf"),
+                width="stretch",
+            )
+            st.code(en_key, language="text")
+        if (not th_key) and (not en_key):
+            st.link_button(
+                "Download Operation Test PDF",
+                presigned_get_url(pdf_key, expires=3600, filename="operation_test_report.pdf"),
+                width="stretch",
+            )
+            st.code(pdf_key, language="text")
     elif status == "failed":
         st.error("Analysis failed. Please upload again and retry.")
     else:
