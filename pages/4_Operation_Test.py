@@ -329,6 +329,11 @@ render_banner()
 st.markdown("# Operation Test")
 st.caption("Upload one video to analyze First Impression only: Eye Contact, Uprightness, and Stance.")
 st.caption("Result format: PDF only.")
+manual_group_id = st.text_input(
+    "Check result by Group ID (optional)",
+    value=read_group_id_from_url(),
+    placeholder="Paste group_id from email to fetch result on this page",
+).strip()
 
 name = st.text_input("Name (optional)", value="", placeholder="e.g., John Doe")
 st.markdown("### Email Recipients")
@@ -410,8 +415,10 @@ if run:
     st.caption(f"Queued job key: {enqueue_key}")
     st.rerun()
 
-active_group_id = st.session_state.get("operation_test_group_id") or read_group_id_from_url()
+active_group_id = manual_group_id or st.session_state.get("operation_test_group_id") or read_group_id_from_url()
 if active_group_id:
+    persist_group_id_to_url(active_group_id)
+    st.session_state["operation_test_group_id"] = active_group_id
     st.divider()
     st.subheader("Operation Test Result")
     st.caption(f"Group: `{active_group_id}`")
