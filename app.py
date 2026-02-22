@@ -163,7 +163,7 @@ def _inject_ttb_sidebar_logo() -> None:
 [data-testid="stSidebarNav"] button[aria-label="TTB"] p,
 [data-testid="stSidebarNav"] button[aria-label="TTB"] span {{
   font-size: 0 !important;
-  line-height: 0 !important;
+  line-height: 1rem !important;
 }}
 
 [data-testid="stSidebarNav"] a[aria-label="TTB"] p::before,

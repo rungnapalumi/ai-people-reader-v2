@@ -4,6 +4,7 @@ import io
 import math
 import random
 import logging
+from xml.sax.saxutils import escape
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -1388,6 +1389,7 @@ def build_pdf_report(
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Paragraph, Spacer
         from reportlab.lib.utils import simpleSplit
         from reportlab.pdfgen import canvas
         from reportlab.pdfbase import pdfmetrics
@@ -1647,18 +1649,50 @@ def build_pdf_report(
 
     draw_header_footer()
 
-    header_style = ParagraphStyle(
+    HEADER_STYLE = ParagraphStyle(
         name="HeaderStyle",
         fontName=bold_font,
-        fontSize=(14 if is_operation_test and lang_name == "en" else 16),
-        leading=(16 if is_operation_test and lang_name == "en" else 18),
+        fontSize=16,
+        leading=20,
+        spaceAfter=10,
     )
-    content_style = ParagraphStyle(
+    CONTENT_STYLE = ParagraphStyle(
         name="ContentStyle",
         fontName=regular_font,
-        fontSize=(12 if is_operation_test and lang_name == "en" else (14 if is_operation_test else 11)),
-        leading=(14 if is_operation_test and lang_name == "en" else (16 if is_operation_test else 14)),
+        fontSize=14,
+        leading=18,
+        spaceAfter=6,
     )
+    SECTION_STYLE = ParagraphStyle(
+        name="SectionStyle",
+        fontName=bold_font,
+        fontSize=14,
+        leading=18,
+        spaceBefore=10,
+        spaceAfter=6,
+    )
+    BULLET_STYLE = ParagraphStyle(
+        name="BulletStyle",
+        parent=CONTENT_STYLE,
+        leftIndent=18,
+        bulletIndent=6,
+        spaceAfter=4,
+    )
+    # Backward-compatible aliases for existing references.
+    header_style = HEADER_STYLE
+    content_style = CONTENT_STYLE
+    section_style = SECTION_STYLE
+
+    def P(text: str, style):
+        # Preserve explicit newlines in ReportLab paragraphs.
+        safe = escape(str(text or "")).replace("\n", "<br/>")
+        return Paragraph(safe, style)
+
+    def gap(h=8):
+        return Spacer(1, h)
+
+    def spacer_gap(h=8):
+        return gap(h)
 
     def _safe_text_for_font(text: str) -> str:
         if requires_unicode_font:
@@ -1675,7 +1709,7 @@ def build_pdf_report(
         return normalized.encode("latin-1", "replace").decode("latin-1")
 
     def draw_generated_bottom(text: str, size: int = 10) -> None:
-        font = content_style.fontName
+        font = CONTENT_STYLE.fontName
         safe = _safe_text_for_font(text)
         c.setFont(font, size)
         text_w = pdfmetrics.stringWidth(safe, font, size)
@@ -1684,15 +1718,34 @@ def build_pdf_report(
 
     def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
-        if is_operation_test:
-            font = bold_font if bold else content_style.fontName
-            if size == 11:
-                size = int(content_style.fontSize)
-            if gap == 18:
-                gap = int(content_style.leading)
-        else:
-            font = bold_font if bold else regular_font
-        safe = _safe_text_for_font(text)
+        font = bold_font if bold else CONTENT_STYLE.fontName
+        if size == 11:
+            size = int(CONTENT_STYLE.fontSize)
+        if gap == 18:
+            gap = int(CONTENT_STYLE.leading)
+        raw_text = str(text or "")
+
+        if "\n" in raw_text:
+            para_style = ParagraphStyle(
+                name="ContentMultiline",
+                fontName=font,
+                fontSize=size,
+                leading=max(int(gap), int(size * 1.35)),
+                spaceAfter=float(CONTENT_STYLE.spaceAfter or 0),
+            )
+            para = P(_safe_text_for_font(raw_text), para_style)
+            _, para_h = para.wrap(usable_width, max(1, int(y - bottom_content_y)))
+            if y - para_h <= bottom_content_y:
+                c.showPage()
+                draw_header_footer()
+                y = top_content_y
+                _, para_h = para.wrap(usable_width, max(1, int(y - bottom_content_y)))
+            para.drawOn(c, x_left, y - para_h)
+            y -= para_h
+            y -= float(spacer_gap(2).height)
+            return
+
+        safe = _safe_text_for_font(raw_text)
 
         def _split_by_chars(long_line: str) -> list:
             parts = []
@@ -1733,15 +1786,33 @@ def build_pdf_report(
         nonlocal y
         x = x_left + max(0, int(indent))
         local_width = max(80, usable_width - max(0, int(indent)))
-        if is_operation_test:
-            font = bold_font if bold else content_style.fontName
-            if size == 11:
-                size = int(content_style.fontSize)
-            if gap == 18:
-                gap = int(content_style.leading)
-        else:
-            font = bold_font if bold else regular_font
-        safe = _safe_text_for_font(text)
+        font = bold_font if bold else CONTENT_STYLE.fontName
+        if size == 11:
+            size = int(CONTENT_STYLE.fontSize)
+        if gap == 18:
+            gap = int(CONTENT_STYLE.leading)
+        raw_text = str(text or "")
+        if "\n" in raw_text:
+            para_style = ParagraphStyle(
+                name="ContentMultilineIndented",
+                fontName=font,
+                fontSize=size,
+                leading=max(int(gap), int(size * 1.35)),
+                spaceAfter=float(CONTENT_STYLE.spaceAfter or 0),
+            )
+            para = P(_safe_text_for_font(raw_text), para_style)
+            _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+            if y - para_h <= bottom_content_y:
+                c.showPage()
+                draw_header_footer()
+                y = top_content_y
+                _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+            para.drawOn(c, x, y - para_h)
+            y -= para_h
+            y -= float(spacer_gap(2).height)
+            return
+
+        safe = _safe_text_for_font(raw_text)
         initial_lines = simpleSplit(safe, font, size, local_width) or [""]
         wrapped_gap = max(12, int(size * 1.35))
         for idx, line in enumerate(initial_lines):
@@ -1752,6 +1823,45 @@ def build_pdf_report(
             c.setFont(font, size)
             c.drawString(x, y, line)
             y -= gap if idx == len(initial_lines) - 1 else wrapped_gap
+
+    def write_bullet(text: str, indent: int = 28, space_after: int = 4, bullet_text: str = "•"):
+        nonlocal y
+        x = x_left + max(0, int(indent))
+        local_width = max(80, usable_width - max(0, int(indent)))
+        bullet_style = ParagraphStyle(
+            name="BulletRuntime",
+            parent=BULLET_STYLE,
+            fontName=CONTENT_STYLE.fontName,
+            fontSize=CONTENT_STYLE.fontSize,
+            leading=CONTENT_STYLE.leading,
+            spaceAfter=float(space_after),
+        )
+        safe = escape(_safe_text_for_font(text)).replace("\n", "<br/>")
+        para = Paragraph(safe, bullet_style, bulletText=bullet_text)
+        _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+        if y - para_h <= bottom_content_y:
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+            _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+        para.drawOn(c, x, y - para_h)
+        y -= para_h
+        y -= float(space_after)
+
+    def write_paragraph_block(text: str, style, indent: int = 0, extra_gap: int = 10):
+        nonlocal y
+        x = x_left + max(0, int(indent))
+        local_width = max(80, usable_width - max(0, int(indent)))
+        para = P(_safe_text_for_font(text), style)
+        _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+        if y - para_h <= bottom_content_y:
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+            _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+        para.drawOn(c, x, y - para_h)
+        y -= para_h
+        y -= float(gap(extra_gap).height)
 
     def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
         for line in lines:
@@ -1830,25 +1940,33 @@ def build_pdf_report(
         return "Low"
 
     # First impression sections (same narrative style as DOCX simple).
-    write_line(first_impression_label, size=12, bold=True, gap=18)
     if report.first_impression:
         fi = report.first_impression
         if is_operation_test:
             if is_thai:
-                write_line_indented(f"• {eye_label} (Eye Contact)", indent=28, bold=False, gap=14)
-                write_line_indented(f"ระดับ: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", indent=56, bold=True, gap=18)
-                write_line_indented(f"• {upright_label} (Uprightness)", indent=28, bold=False, gap=14)
-                write_line_indented(f"ระดับ: {_first_impression_level(fi.upright_pct, metric='uprightness')}", indent=56, bold=True, gap=18)
-                write_line_indented(f"• {stance_label} (Stance)", indent=28, bold=False, gap=14)
-                write_line_indented(f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}", indent=56, bold=True, gap=18)
+                block = (
+                    "1. ความประทับใจแรกพบ (First Impression)\n"
+                    f"□ {eye_label} (Eye Contact)\n"
+                    f"ระดับ: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}\n"
+                    f"□ {upright_label} (Uprightness)\n"
+                    f"ระดับ: {_first_impression_level(fi.upright_pct, metric='uprightness')}\n"
+                    f"□ {stance_label} (Stance)\n"
+                    f"ระดับ: {_first_impression_level(fi.stance_stability, metric='stance')}\n"
+                )
+                write_paragraph_block(block, CONTENT_STYLE, indent=28, extra_gap=10)
             else:
-                write_line_indented("- Eye Contact", indent=28, bold=False, gap=14)
-                write_line_indented(f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}", indent=56, bold=True, gap=18)
-                write_line_indented("- Uprightness", indent=28, bold=False, gap=14)
-                write_line_indented(f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}", indent=56, bold=True, gap=18)
-                write_line_indented("- Stance (Lower-Body Stability & Grounding)", indent=28, bold=False, gap=14)
-                write_line_indented(f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}", indent=56, bold=True, gap=18)
+                block = (
+                    "1. First impression\n"
+                    "□ Eye Contact\n"
+                    f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}\n"
+                    "□ Uprightness\n"
+                    f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}\n"
+                    "□ Stance (Lower-Body Stability & Grounding)\n"
+                    f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}\n"
+                )
+                write_paragraph_block(block, CONTENT_STYLE, indent=28, extra_gap=10)
         else:
+            write_line(first_impression_label, size=12, bold=True, gap=18)
             eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
             up_lines = generate_uprightness_text_th(fi.upright_pct) if is_thai else generate_uprightness_text(fi.upright_pct)
             st_lines = generate_stance_text_th(fi.stance_stability) if is_thai else generate_stance_text(fi.stance_stability)
@@ -1860,6 +1978,7 @@ def build_pdf_report(
             write_line(stance_label, bold=True, gap=16)
             write_block(st_lines, gap=14)
     else:
+        write_line(first_impression_label, size=12, bold=True, gap=18)
         write_line("- Not available", gap=20)
 
     if is_operation_test:
@@ -1893,8 +2012,8 @@ def build_pdf_report(
             confidence_scale = _scale_th(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_th(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line_indented("• ความเข้าถึงได้", indent=28, gap=14)
-            write_line_indented("• การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, gap=14)
+            write_bullet("ความเข้าถึงได้", indent=28, space_after=4, bullet_text="•")
+            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=4, bullet_text="•")
             write_line(f"ระดับ: {engaging_scale}", bold=True, gap=18)
 
             write_line("3. ความมั่นใจ:", size=12, bold=True, gap=18)
