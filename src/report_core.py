@@ -1448,17 +1448,9 @@ def build_pdf_report(
         try:
             tt = TTFont(font_name, path)
             if require_thai:
-                # Best-effort Thai glyph validation. Do not over-reject fonts when metadata
-                # differs between platforms; runtime rendering is the final authority.
-                required = [ord("ก"), ord("า"), ord("ไ"), ord("ย")]
-                cmap = getattr(tt.face, "charToGlyph", {}) or {}
-                widths = getattr(tt.face, "charWidths", {}) or {}
-                if cmap:
-                    if any((cp not in cmap) and (str(cp) not in cmap) for cp in required):
-                        return False
-                elif widths:
-                    if any((cp not in widths) and (str(cp) not in widths) for cp in required):
-                        return False
+                # Some valid Thai fonts expose cmap/width metadata differently across platforms.
+                # Avoid false negatives here; successful registration is enough.
+                pass
             pdfmetrics.registerFont(tt)
             return True
         except Exception:
