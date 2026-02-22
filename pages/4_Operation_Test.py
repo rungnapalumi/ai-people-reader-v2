@@ -236,7 +236,7 @@ def get_latest_finished_operation_test_job(group_id: str) -> Dict[str, Any]:
                 if str(payload.get("group_id") or "").strip() != group_id:
                     continue
                 if str(payload.get("mode") or "").strip().lower() != "report":
-                        continue
+                    continue
                 last_modified = item.get("LastModified")
                 ts = float(last_modified.timestamp()) if hasattr(last_modified, "timestamp") else 0.0
                 if ts >= latest_ts:
@@ -252,12 +252,12 @@ def get_latest_failed_operation_test_job(group_id: str) -> Dict[str, Any]:
     latest_job: Dict[str, Any] = {}
     latest_ts = 0.0
     try:
-            paginator = s3.get_paginator("list_objects_v2")
+        paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_FAILED_PREFIX):
-                for item in page.get("Contents", []):
+            for item in page.get("Contents", []):
                 key = str(item.get("Key") or "")
-                    if not key.endswith(".json"):
-                        continue
+                if not key.endswith(".json"):
+                    continue
                 payload = s3_read_json(key) or {}
                 if str(payload.get("group_id") or "").strip() != group_id:
                     continue
@@ -293,7 +293,7 @@ def find_latest_group_pdf_key(group_id: str) -> str:
                     ts = float(last_modified.timestamp()) if hasattr(last_modified, "timestamp") else 0.0
                     if ts >= latest_ts:
                         latest_ts = ts
-                            latest_key = key
+                        latest_key = key
     except Exception:
         return ""
     return latest_key
@@ -456,14 +456,14 @@ active_group_id = manual_group_id or st.session_state.get("operation_test_group_
 if active_group_id:
     persist_group_id_to_url(active_group_id)
     st.session_state["operation_test_group_id"] = active_group_id
-        st.divider()
+    st.divider()
     st.subheader("Operation Test Result")
     st.caption(f"Group: `{active_group_id}`")
 
     latest_job = get_latest_operation_test_job(active_group_id)
     if not latest_job:
         st.info("Waiting for job registration. Please refresh in a moment.")
-    st.stop()
+        st.stop()
 
     job_key = str(latest_job.get("_job_bucket_key") or "")
     status = get_job_status_from_key(job_key)
