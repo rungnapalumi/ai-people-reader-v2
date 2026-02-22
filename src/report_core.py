@@ -1437,6 +1437,58 @@ def build_pdf_report(
                 seen.add(p)
         return uniq
 
+    def _try_register_angsana_font() -> bool:
+        angsana_regular_candidates = [
+            os.getenv("PDF_ANGSANA_FONT_PATH", "").strip(),
+            os.getenv("ANGSANA_FONT_PATH", "").strip(),
+            os.getenv("REPORT_ANGSANA_FONT_PATH", "").strip(),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "AngsanaNew.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Angsana New.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Angsana New.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Angsana.ttf"),
+            "/Library/Fonts/Angsana New.ttf",
+            "/Library/Fonts/Angsana.ttf",
+            "C:\\Windows\\Fonts\\ANGSA.TTF",
+            "C:\\Windows\\Fonts\\ANGSANA.TTF",
+            "/usr/share/fonts/truetype/msttcorefonts/Angsana New.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/angsa.ttf",
+        ]
+        angsana_bold_candidates = [
+            os.getenv("PDF_ANGSANA_FONT_BOLD_PATH", "").strip(),
+            os.getenv("ANGSANA_FONT_BOLD_PATH", "").strip(),
+            os.getenv("REPORT_ANGSANA_FONT_BOLD_PATH", "").strip(),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "AngsanaNew-Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Angsana New Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Angsana New Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Angsana Bold.ttf"),
+            "/Library/Fonts/Angsana New Bold.ttf",
+            "/Library/Fonts/Angsana Bold.ttf",
+            "C:\\Windows\\Fonts\\ANGSAB.TTF",
+            "C:\\Windows\\Fonts\\ANGSANAB.TTF",
+            "/usr/share/fonts/truetype/msttcorefonts/angsab.ttf",
+        ]
+
+        ok_regular = False
+        for path in angsana_regular_candidates:
+            if _register_ttf("AngsanaPDFRegular", path, require_thai=True):
+                ok_regular = True
+                break
+
+        if not ok_regular:
+            return False
+
+        ok_bold = False
+        for path in angsana_bold_candidates:
+            if _register_ttf("AngsanaPDFBold", path, require_thai=True):
+                ok_bold = True
+                break
+
+        nonlocal regular_font, bold_font, requires_unicode_font
+        regular_font = "AngsanaPDFRegular"
+        bold_font = "AngsanaPDFBold" if ok_bold else "AngsanaPDFRegular"
+        requires_unicode_font = True
+        return True
+
     def _register_ttf(font_name: str, path: str, require_thai: bool = False) -> bool:
         if not path:
             return False
@@ -1456,7 +1508,11 @@ def build_pdf_report(
         except Exception:
             return False
 
-    if is_thai:
+    # Customer requirement: prefer Angsana New for Operation Test reports when available.
+    # If not found, keep existing font selection/fallback behavior.
+    if is_operation_test and _try_register_angsana_font():
+        pass
+    elif is_thai:
         thai_glob_candidates = _glob_existing(
             [
                 "/usr/share/fonts/**/*.ttf",
