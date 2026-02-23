@@ -1303,7 +1303,8 @@ def build_docx_report(
     doc.add_paragraph(texts["pressing"])
     scale_para3 = doc.add_paragraph(f"{texts['scale']} {authority_cat.scale.capitalize()}")
     scale_para3.runs[0].bold = True
-        
+
+    if not is_simple:
         # PAGE BREAK TO PAGE 4
         doc.add_page_break()
         
