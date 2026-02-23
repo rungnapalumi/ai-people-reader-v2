@@ -1092,6 +1092,49 @@ def build_docx_report(
     impact_upright_en = "Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators."
     impact_stance_en = "A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible."
 
+    def _date_th_display(date_text: str) -> str:
+        raw = str(date_text or "").strip()
+        if not raw:
+            return raw
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                continue
+        return raw
+
+    def _date_en_display(date_text: str) -> str:
+        raw = str(date_text or "").strip()
+        if not raw:
+            return raw
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                continue
+        return raw
+
+    def _fi_level_en(value: float, metric: str = "") -> str:
+        # Requested default: eye contact should be High.
+        if str(metric or "").strip().lower() == "eye_contact":
+            return "High"
+        v = float(value or 0.0)
+        if v >= 70.0:
+            return "High"
+        if v >= 40.0:
+            return "Moderate"
+        return "Low"
+
+    def _fi_level_th(value: float, metric: str = "") -> str:
+        lv = _fi_level_en(value, metric=metric).lower()
+        if lv.startswith("high"):
+            return "สูง"
+        if lv.startswith("moderate"):
+            return "กลาง"
+        return "ต่ำ"
+
     def normalize_spacing() -> None:
         """
         Keep a consistent spacing pattern for numbered headings and bullet points
@@ -1137,12 +1180,16 @@ def build_docx_report(
     
     # Add footer image
     footer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Footer.png")
+    footer = section.footer
     if os.path.exists(footer_path):
-        footer = section.footer
         footer_para = footer.paragraphs[0]
         footer_run = footer_para.add_run()
         footer_run.add_picture(footer_path, width=Inches(6.5))
         footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    contact_para = footer.add_paragraph("หากพบปัญหากรุณาติดต่อ 0817008484")
+    contact_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    if contact_para.runs:
+        contact_para.runs[0].font.size = Pt(10)
     
     # ============================================================
     # PAGE 1: Cover + First Impression (Eye Contact start)
@@ -1159,8 +1206,9 @@ def build_docx_report(
     doc.add_paragraph()
     
     # Client info
+    analysis_date_display = _date_th_display(report.analysis_date) if is_thai else _date_en_display(report.analysis_date)
     doc.add_paragraph(f"{texts['client_name']}  {report.client_name}")
-    doc.add_paragraph(f"{texts['analysis_date']}  {report.analysis_date}")
+    doc.add_paragraph(f"{texts['analysis_date']}  {analysis_date_display}")
     
     # Video info
     video_info = doc.add_paragraph(texts["video_info"])
@@ -1176,85 +1224,36 @@ def build_docx_report(
     section1 = doc.add_paragraph(texts["first_impression"])
     section1.runs[0].bold = True
     
-    # Eye Contact
-    eye_header = doc.add_paragraph(texts["eye_contact"])
-    
+    # First Impression - compact level format (High/Moderate/Low or สูง/กลาง/ต่ำ)
     if report.first_impression:
         fi = report.first_impression
-        eye_texts = generate_eye_contact_text(fi.eye_contact_pct)
-        
-        if is_thai:
-            eye_texts = generate_eye_contact_text_th(fi.eye_contact_pct)
-        for text in eye_texts:
-            doc.add_paragraph(text)
-        
-        impact = doc.add_paragraph(texts["impact_clients"])
-        impact.runs[0].italic = True
-        impact.paragraph_format.space_before = Pt(0)  # Reduce space before impact
-        doc.add_paragraph(impact_eye_thai if is_thai else impact_eye_en)
+        eye_level = _fi_level_th(fi.eye_contact_pct, "eye_contact") if is_thai else _fi_level_en(fi.eye_contact_pct, "eye_contact")
+        up_level = _fi_level_th(fi.upright_pct, "uprightness") if is_thai else _fi_level_en(fi.upright_pct, "uprightness")
+        st_level = _fi_level_th(fi.stance_stability, "stance") if is_thai else _fi_level_en(fi.stance_stability, "stance")
     else:
-        doc.add_paragraph("• Your eye contact is steady, warm, and audience-focused.")
-        doc.add_paragraph("• You maintain direct gaze during key moments, which increases trust and clarity.")
-        doc.add_paragraph("• When you shift your gaze, it is done purposefully (e.g., thinking, emphasizing).")
-        doc.add_paragraph("• There is no sign of avoidance — overall, the eye contact supports confidence and credibility.")
-        
-        impact = doc.add_paragraph(texts["impact_clients"])
-        impact.runs[0].italic = True
-        impact.paragraph_format.space_before = Pt(0)  # Reduce space before impact
-        doc.add_paragraph(impact_eye_thai if is_thai else impact_eye_en)
-    
-    # Uprightness section - show all bullets on page 1
-    upright_header = doc.add_paragraph(texts["uprightness"])
-    
-    if report.first_impression:
-        fi = report.first_impression
-        upright_texts = generate_uprightness_text(fi.upright_pct)
-        
-        if is_thai:
-            upright_texts = generate_uprightness_text_th(fi.upright_pct)
-        for text in upright_texts:
-            doc.add_paragraph(text)
-        
-        impact2 = doc.add_paragraph(texts["impact_clients"])
-        impact2.runs[0].italic = True
-        impact2.paragraph_format.space_before = Pt(0)  # Reduce space before impact
-        doc.add_paragraph(impact_upright_thai if is_thai else impact_upright_en)
-    else:
-        doc.add_paragraph("• You maintain a naturally upright posture throughout the clip.")
-        doc.add_paragraph("• The chest stays open, shoulders relaxed, and head aligned — signaling balance, readiness, and authority.")
-        doc.add_paragraph("• Even when you gesture, your vertical alignment remains stable, showing good core control.")
-        
-        impact2 = doc.add_paragraph(texts["impact_clients"])
-        impact2.runs[0].italic = True
-        impact2.paragraph_format.space_before = Pt(0)  # Reduce space before impact
-        doc.add_paragraph(impact_upright_thai if is_thai else impact_upright_en)
-    
-    # Stance section
-    stance_header = doc.add_paragraph(texts["stance"])
-    
-    if report.first_impression:
-        fi = report.first_impression
-        stance_texts = generate_stance_text(fi.stance_stability)
-        
-        if is_thai:
-            stance_texts = generate_stance_text_th(fi.stance_stability)
-        for text in stance_texts[:2]:
-            doc.add_paragraph(text)
-    
-    # Continue Stance (impact only)
-    if report.first_impression:
-        impact3 = doc.add_paragraph(texts["impact_clients"])
-        impact3.runs[0].italic = True
-        impact3.paragraph_format.space_before = Pt(0)  # Reduce space before impact
-        doc.add_paragraph(impact_stance_thai if is_thai else impact_stance_en)
-    else:
-        doc.add_paragraph("• Your stance is symmetrical and grounded, with feet placed about shoulder-width apart.")
-        doc.add_paragraph("• Weight shifts are controlled and minimal, preventing distraction and showing confidence.")
-        
-        impact3 = doc.add_paragraph(texts["impact_clients"])
-        impact3.runs[0].italic = True
-        impact3.paragraph_format.space_before = Pt(0)  # Reduce space before impact
-        doc.add_paragraph(impact_stance_thai if is_thai else impact_stance_en)
+        eye_level = "-" if is_thai else "-"
+        up_level = "-" if is_thai else "-"
+        st_level = "-" if is_thai else "-"
+
+    doc.add_paragraph(("▪ การสบตา (Eye Contact)" if is_thai else "▪ Eye Contact"))
+    lvl1 = doc.add_paragraph(f"{texts['scale']} {eye_level}")
+    lvl1.runs[0].bold = True
+
+    doc.add_paragraph(("▪ ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "▪ Uprightness"))
+    lvl2 = doc.add_paragraph(f"{texts['scale']} {up_level}")
+    lvl2.runs[0].bold = True
+
+    doc.add_paragraph(("▪ การยืนและการวางเท้า (Stance)" if is_thai else "▪ Stance"))
+    lvl3 = doc.add_paragraph(f"{texts['scale']} {st_level}")
+    lvl3.runs[0].bold = True
+
+    remark = doc.add_paragraph("หมายเหตุ" if is_thai else "Remark")
+    remark.runs[0].bold = True
+    doc.add_paragraph(
+        "ความรู้สึกแรกพบมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน โดยพิจารณาจากภาพรวม การสบตา ความตั้งตรง และการยืนวางเท้า ก่อนเข้าสู่การวิเคราะห์เชิงพฤติกรรมในส่วนถัดไป"
+        if is_thai
+        else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
+    )
 
     # PAGE BREAK TO PAGE 2
     doc.add_page_break()
@@ -1274,8 +1273,6 @@ def build_docx_report(
     doc.add_paragraph(texts["engagement"])
     scale_para1 = doc.add_paragraph(f"{texts['scale']} {engaging_cat.scale.capitalize()}")
     scale_para1.runs[0].bold = True
-    if not is_simple:
-        doc.add_paragraph(f"{texts['description']} {engaging_cat.positives} {texts['indicators']} {engaging_cat.total} {texts['total_indicators']}")
     
     doc.add_paragraph()
     doc.add_paragraph()
@@ -1289,8 +1286,6 @@ def build_docx_report(
     doc.add_paragraph(texts["persuade"])
     scale_para2 = doc.add_paragraph(f"{texts['scale']} {confidence_cat.scale.capitalize()}")
     scale_para2.runs[0].bold = True
-    if not is_simple:
-        doc.add_paragraph(f"{texts['description']} {confidence_cat.positives} {texts['indicators']} {confidence_cat.total} {texts['total_indicators']}")
     
     # Keep spacing between Section 3 and Section 4 similar to Section 2 and 3
     doc.add_paragraph()
@@ -1308,8 +1303,6 @@ def build_docx_report(
     doc.add_paragraph(texts["pressing"])
     scale_para3 = doc.add_paragraph(f"{texts['scale']} {authority_cat.scale.capitalize()}")
     scale_para3.runs[0].bold = True
-    if not is_simple:
-        doc.add_paragraph(f"{texts['description']} {authority_cat.positives} {texts['indicators']} {authority_cat.total} {texts['total_indicators']}")
         
         # PAGE BREAK TO PAGE 4
         doc.add_page_break()
@@ -1646,6 +1639,14 @@ def build_pdf_report(
                 )
             except Exception:
                 pass
+        contact_text = (
+            "หากพบปัญหากรุณาติดต่อ 0817008484"
+            if requires_unicode_font
+            else "If you encounter issues, please contact 0817008484"
+        )
+        c.setFont(regular_font, 9)
+        text_w = pdfmetrics.stringWidth(contact_text, regular_font, 9)
+        c.drawString(x_left + max(0.0, (usable_width - text_w) / 2.0), 52, contact_text)
 
     draw_header_footer()
 
@@ -1955,7 +1956,7 @@ def build_pdf_report(
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
             try:
                 dt = datetime.strptime(raw, fmt)
-                return dt.strftime("%d-%m-%Y")
+                return dt.strftime("%d/%m/%Y")
             except Exception:
                 continue
         return raw
@@ -2181,11 +2182,7 @@ def build_pdf_report(
             bold=True,
             gap=16,
         )
-        if not is_simple:
-            if is_thai:
-                write_line(f"คำอธิบาย: ตรวจพบตัวชี้วัดเชิงบวก {cat.positives} จากทั้งหมด {cat.total}", gap=16)
-            else:
-                write_line(f"Description: Detected {cat.positives} positive indicators out of {cat.total}", gap=16)
+        # Description line intentionally removed by request.
 
     write_line("", gap=10)
     write_line("สร้างโดย AI People Reader" if is_thai else "Generated by AI People Reader", size=10)

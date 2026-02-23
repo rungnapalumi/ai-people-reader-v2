@@ -10,6 +10,8 @@ import streamlit as st
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 
+SUPPORT_CONTACT_TEXT = "หากพบปัญหากรุณาติดต่อ 0817008484"
+
 
 st.set_page_config(page_title="Operation Test", layout="wide")
 
@@ -440,6 +442,7 @@ if run:
         )
     except Exception as e:
         notice.error(f"Upload to S3 failed: {e}")
+        st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
     report_job = {
@@ -467,6 +470,7 @@ if run:
         enqueue_key = enqueue_report_job(report_job)
     except Exception as e:
         notice.error(f"Enqueue job failed: {e}")
+        st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
     st.session_state["operation_test_group_id"] = group_id

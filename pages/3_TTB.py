@@ -30,6 +30,8 @@ import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 
+SUPPORT_CONTACT_TEXT = "หากพบปัญหากรุณาติดต่อ 0817008484"
+
 
 # -------------------------
 # Page setup
@@ -878,6 +880,7 @@ if run:
         )
     except Exception as e:
         note.error(f"Upload to S3 failed: {e}")
+        st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
     outputs = build_output_keys(group_id)
@@ -937,6 +940,7 @@ if run:
             queued_job_ids["report"] = job_report["job_id"]
     except Exception as e:
         note.error(f"Enqueue job failed: {e}")
+        st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
     st.session_state["last_group_id"] = group_id
@@ -1005,6 +1009,10 @@ if group_id:
         outputs["report_en_docx"] = report_outputs["report_en_docx"]
     if report_outputs.get("report_th_docx"):
         outputs["report_th_docx"] = report_outputs["report_th_docx"]
+    if report_outputs.get("report_en_pdf"):
+        outputs["report_en_pdf"] = report_outputs["report_en_pdf"]
+    if report_outputs.get("report_th_pdf"):
+        outputs["report_th_pdf"] = report_outputs["report_th_pdf"]
 else:
     if has_identity_input and not identity_verified:
         st.caption("Please enter the correct Employee ID / Email / Password to view only your own jobs.")
@@ -1027,6 +1035,7 @@ def download_block(title: str, key: str, filename: str) -> None:
         st.code(key, language="text")
     else:
         st.warning(f"⏳ {title} not ready yet")
+        st.caption(SUPPORT_CONTACT_TEXT)
         st.code(key, language="text")
 
 
@@ -1039,12 +1048,21 @@ with c1:
 
 with c2:
     st.markdown("### Reports")
-    selected_pdf = (get_report_format_for_group(group_id) == "pdf")
-    en_key = outputs.get("report_en_pdf", "") if selected_pdf else outputs.get("report_en_docx", "")
-    th_key = outputs.get("report_th_pdf", "") if selected_pdf else outputs.get("report_th_docx", "")
-    en_name = "report_en.pdf" if selected_pdf else "report_en.docx"
-    th_name = "report_th.pdf" if selected_pdf else "report_th.docx"
-    report_label = "PDF" if selected_pdf else "DOCX"
+    en_pdf_candidate = outputs.get("report_en_pdf", "")
+    en_docx_candidate = outputs.get("report_en_docx", "")
+    th_pdf_candidate = outputs.get("report_th_pdf", "")
+    th_docx_candidate = outputs.get("report_th_docx", "")
+
+    en_pdf_ready = bool(en_pdf_candidate) and s3_key_exists(en_pdf_candidate)
+    en_docx_ready = bool(en_docx_candidate) and s3_key_exists(en_docx_candidate)
+    th_pdf_ready = bool(th_pdf_candidate) and s3_key_exists(th_pdf_candidate)
+    th_docx_ready = bool(th_docx_candidate) and s3_key_exists(th_docx_candidate)
+
+    en_key = en_pdf_candidate if en_pdf_ready else (en_docx_candidate if en_docx_ready else (en_pdf_candidate or en_docx_candidate))
+    th_key = th_pdf_candidate if th_pdf_ready else (th_docx_candidate if th_docx_ready else (th_pdf_candidate or th_docx_candidate))
+    en_name = "report_en.pdf" if en_pdf_ready else "report_en.docx"
+    th_name = "report_th.pdf" if th_pdf_ready else "report_th.docx"
+    report_label = "PDF" if (en_pdf_ready or th_pdf_ready) else ("DOCX" if (en_docx_ready or th_docx_ready) else "PDF/DOCX")
     st.markdown("**English**")
     download_block(f"Report EN ({report_label})", en_key, en_name)
 

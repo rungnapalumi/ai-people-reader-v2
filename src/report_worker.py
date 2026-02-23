@@ -445,13 +445,9 @@ def resolve_notification_recipients(notify_email: str, report_style: str = "") -
     if is_operation_test_style(report_style):
         allowed = parse_email_list(FORCED_NOTIFY_EMAILS)
         selected = parse_email_list(notify_email)
-        if allowed:
-            allowed_map = {e.lower(): e for e in allowed}
-            merged = [allowed_map[s.lower()] for s in selected if s.lower() in allowed_map]
-            if not merged:
-                merged = allowed
-        else:
-            merged = selected
+        # Prefer recipients explicitly provided by the user.
+        # Fallback to forced list only when no recipient is provided.
+        merged = selected if selected else allowed
     else:
         merged = parse_email_list(notify_email)
     out: List[str] = []

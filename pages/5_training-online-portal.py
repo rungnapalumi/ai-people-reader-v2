@@ -30,6 +30,8 @@ import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 
+SUPPORT_CONTACT_TEXT = "หากพบปัญหากรุณาติดต่อ 0817008484"
+
 
 # -------------------------
 # Page setup
@@ -861,7 +863,8 @@ if run:
     if not employee_id.strip():
         note.error("กรุณากรอกชื่อที่ใช้ในการรายงานผล")
         st.stop()
-    effective_report_style = org_settings.get("report_style") if org_settings else "full"
+    # Force Training-online-portal to use the compact operation-test template.
+    effective_report_style = "operation_test"
     effective_report_format = org_settings.get("report_format") if org_settings else "docx"
     enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
     enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
@@ -889,6 +892,7 @@ if run:
         )
     except Exception as e:
         note.error(f"อัปโหลดไป S3 ไม่สำเร็จ: {e}")
+        st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
     outputs = build_output_keys(group_id)
@@ -962,6 +966,7 @@ if run:
             queued_job_ids["report"] = job_report["job_id"]
     except Exception as e:
         note.error(f"ส่งงานเข้าคิวไม่สำเร็จ: {e}")
+        st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
     st.session_state["last_group_id"] = group_id
@@ -1078,6 +1083,7 @@ def download_block(title: str, key: str, filename: str) -> None:
         st.code(key, language="text")
     else:
         st.warning(f"⏳ {title} ยังไม่พร้อม")
+        st.caption(SUPPORT_CONTACT_TEXT)
         st.code(key, language="text")
 
 
@@ -1183,11 +1189,10 @@ if videos_ready and not th_report_ready:
     if st.button("สั่งสร้างรายงานใหม่", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            rerun_style = get_report_style_for_group(group_id)
+            rerun_style = "operation_test"
             rerun_format = get_report_format_for_group(group_id)
             rerun_org_cfg = get_org_settings(enterprise_folder)
             if rerun_org_cfg:
-                rerun_style = str(rerun_org_cfg.get("report_style") or rerun_style)
                 rerun_format = str(rerun_org_cfg.get("report_format") or rerun_format)
             rerun_email = notify_email
             if not rerun_email:
@@ -1216,7 +1221,7 @@ if dots_ready or skeleton_ready or th_report_ready or en_report_ready:
     if st.button("ส่งอีเมลผลลัพธ์ซ้ำ (รวม Dots/Skeleton)", width="content"):
         try:
             resend_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            resend_style = get_report_style_for_group(group_id)
+            resend_style = "operation_test"
             resend_format = get_report_format_for_group(group_id)
             resend_email = notify_email
             if not resend_email:
