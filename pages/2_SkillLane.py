@@ -999,6 +999,12 @@ else:
         st.caption("กรุณากรอก Employee ID / อีเมล / รหัสผ่าน ให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
     else:
         st.caption("ยังไม่พบ group_id ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
+    st.divider()
+    st.link_button(
+        "กลับไปสู่บทเรียนออนไลน์ (SkillLane)",
+        "https://www.skilllane.com/courses/8076",
+        width="stretch",
+    )
     st.stop()
 
 st.caption(f"กลุ่มงาน: `{group_id}`")
