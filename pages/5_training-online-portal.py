@@ -973,9 +973,10 @@ if run:
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 
 # Keep showing the latest submitted group in this session even before ownership index catches up.
-if (not active_group_id) and has_identity_input and identity_verified:
+if not active_group_id:
     recent_group_id = str(st.session_state.get("last_group_id") or "").strip()
-    if recent_group_id:
+    recent_jobs = st.session_state.get("last_jobs") or {}
+    if recent_group_id and recent_jobs:
         active_group_id = recent_group_id
         _persist_group_id_to_url(active_group_id)
 
