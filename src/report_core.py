@@ -82,6 +82,36 @@ def get_video_duration_seconds(video_path: str) -> float:
         return 0.0
     return float(frames / fps)
 
+def _apply_default_retreating_share(
+    detection: Dict[str, float],
+    retreat_key: str = "Retreating",
+    retreat_default_pct: float = 1.0,
+) -> Dict[str, float]:
+    """
+    Temporary business override: keep Retreating at a fixed default share,
+    and scale other categories to fill the remaining percentage.
+    """
+    if not isinstance(detection, dict) or retreat_key not in detection:
+        return detection
+
+    fixed = max(0.0, min(100.0, float(retreat_default_pct)))
+    other_keys = [k for k in detection.keys() if k != retreat_key]
+    target_other_total = max(0.0, 100.0 - fixed)
+    current_other_total = sum(max(0.0, float(detection.get(k, 0.0))) for k in other_keys)
+
+    out: Dict[str, float] = {}
+    if other_keys:
+        if current_other_total <= 0.0:
+            even_share = target_other_total / float(len(other_keys))
+            for k in other_keys:
+                out[k] = round(even_share, 1)
+        else:
+            for k in other_keys:
+                raw = max(0.0, float(detection.get(k, 0.0)))
+                out[k] = round((raw / current_other_total) * target_other_total, 1)
+    out[retreat_key] = round(fixed, 1)
+    return out
+
 def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5, max_frames: int = 200) -> FirstImpressionData:
     """Real First Impression analysis with MediaPipe using continuous scoring."""
     cap = cv2.VideoCapture(video_path)
@@ -747,7 +777,8 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                         
                         # Forward/backward: Use average of both hands with higher threshold
                         forward_movement = avg_z_delta < -0.03  # Both hands moving toward camera
-                        backward_movement = avg_z_delta > 0.03  # Both hands moving away from camera
+                        # Use stricter backward threshold to avoid counting normal return-to-neutral motion.
+                        backward_movement = avg_z_delta > 0.05  # Both hands moving away from camera
                         
                         # Vertical movement
                         upward_movement = (left_wrist.y - prev_left_wrist.y) < -0.01 or (right_wrist.y - prev_right_wrist.y) < -0.01
@@ -808,8 +839,8 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                             shape_counts["Advancing"] += 1
                         
                         # 11. RETREATING: Significant backward movement (pulling back defensively)
-                        # Requires sustained backward motion - not just gesture return
-                        if backward_movement and avg_velocity > 0.06 and is_sustained:
+                        # Requires stronger sustained backward motion - not just gesture return.
+                        if backward_movement and avg_velocity > 0.07 and is_sustained:
                             effort_counts["Retreating"] += 1
                             shape_counts["Retreating"] += 1
                     
@@ -824,9 +855,11 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     # Calculate percentages
     total_detections = max(1, sum(effort_counts.values()))
     effort_detection = {k: round(v / total_detections * 100, 1) for k, v in effort_counts.items()}
+    effort_detection = _apply_default_retreating_share(effort_detection, retreat_default_pct=1.0)
 
     total_shape = max(1, sum(shape_counts.values()))
     shape_detection = {k: round(v / total_shape * 100, 1) for k, v in shape_counts.items()}
+    shape_detection = _apply_default_retreating_share(shape_detection, retreat_default_pct=1.0)
 
     # Add diversity/consistency signals so different speaking styles separate better.
     dominant_share = max(effort_detection.values()) / 100.0 if effort_detection else 0.0
@@ -953,6 +986,8 @@ def analyze_video_placeholder(video_path: str, seed: int = 42) -> Dict[str, Any]
         "Flicking": 3.5, "Advancing": 2.6, "Retreating": 2.5
     }
     shape_detection = {"Directing": 40.1, "Enclosing": 20.0, "Spreading": 18.9, "Indirecting": 12.4, "Advancing": 4.4, "Retreating": 4.1}
+    effort_detection = _apply_default_retreating_share(effort_detection, retreat_default_pct=1.0)
+    shape_detection = _apply_default_retreating_share(shape_detection, retreat_default_pct=1.0)
     
     return {
         "analysis_engine": "placeholder",
@@ -1402,6 +1437,8 @@ def build_pdf_report(
     top_content_y = height - 95
     bottom_content_y = 70
     y = top_content_y
+    footer_img_y = 0
+    footer_img_h = 68
 
     style_name = str(report_style or "full").strip().lower()
     is_simple = style_name.startswith("simple")
@@ -1637,11 +1674,11 @@ def build_pdf_report(
             try:
                 c.drawImage(
                     footer_path,
-                    x=20,
-                    y=8,
-                    width=width - 40,
-                    height=42,
-                    preserveAspectRatio=True,
+                    x=8,
+                    y=footer_img_y,
+                    width=width - 16,
+                    height=footer_img_h,
+                    preserveAspectRatio=False,
                     mask="auto",
                 )
             except Exception:
@@ -1697,28 +1734,28 @@ def build_pdf_report(
     content_style = CONTENT_STYLE
     section_style = SECTION_STYLE
 
-    # English operation-test template uses tighter typography.
+    # English operation-test template: improve readability with looser spacing.
     if is_operation_test and (not is_thai):
         TITLE_STYLE.fontSize = 14
-        TITLE_STYLE.leading = 20
-        TITLE_STYLE.spaceAfter = 14
+        TITLE_STYLE.leading = 22
+        TITLE_STYLE.spaceAfter = 18
         SECTION_STYLE.fontSize = 14
-        SECTION_STYLE.leading = 18
-        SECTION_STYLE.spaceBefore = 10
-        SECTION_STYLE.spaceAfter = 8
+        SECTION_STYLE.leading = 20
+        SECTION_STYLE.spaceBefore = 12
+        SECTION_STYLE.spaceAfter = 10
         SUBITEM_STYLE.fontSize = 12
-        SUBITEM_STYLE.leading = 16
+        SUBITEM_STYLE.leading = 19
         SUBITEM_STYLE.leftIndent = 20
-        SUBITEM_STYLE.spaceAfter = 2
+        SUBITEM_STYLE.spaceAfter = 4
         LEVEL_STYLE.fontSize = 12
-        LEVEL_STYLE.leading = 16
+        LEVEL_STYLE.leading = 19
         LEVEL_STYLE.leftIndent = 30
-        LEVEL_STYLE.spaceAfter = 10
+        LEVEL_STYLE.spaceAfter = 12
         BULLET_STYLE.fontSize = 12
-        BULLET_STYLE.leading = 16
+        BULLET_STYLE.leading = 19
         BULLET_STYLE.leftIndent = 28
         BULLET_STYLE.bulletIndent = 18
-        BULLET_STYLE.spaceAfter = 4
+        BULLET_STYLE.spaceAfter = 6
 
     def P(text: str, style):
         # Preserve explicit newlines in ReportLab paragraphs.
@@ -1737,6 +1774,9 @@ def build_pdf_report(
         normalized = (
             str(text or "")
             .replace("•", "- ")
+            .replace("▪", "- ")
+            .replace("□", "- ")
+            .replace("™", "(TM)")
             .replace("—", "-")
             .replace("–", "-")
             .replace("“", '"')
@@ -1751,7 +1791,7 @@ def build_pdf_report(
         c.setFont(font, size)
         text_w = pdfmetrics.stringWidth(safe, font, size)
         x = x_left + max(0.0, usable_width - text_w)
-        c.drawString(x, 8, safe)
+        c.drawString(x, footer_img_y + footer_img_h + 6, safe)
 
     def append_graph_pages_for_operation_test() -> None:
         """Append Effort/Shape graph pages after the two operation-test narrative pages."""
@@ -2168,17 +2208,17 @@ def build_pdf_report(
                     return "Low"
                 return "-"
 
-            write_line("", gap=8)
-            write_line("Note", bold=True, gap=16)
+            write_line("", gap=10)
+            write_line("Note", bold=True, gap=18)
             write_line(
                 "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception.",
-                gap=14,
+                gap=18,
             )
-            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=18)
-            write_line_indented("▪ Approachability.", indent=28, gap=13)
+            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=20)
+            write_line_indented("▪ Approachability.", indent=28, gap=17)
 
             # Match template flow: page break after first bullet of section 2.
-            write_line("", gap=6)
+            write_line("", gap=8)
             c.showPage()
             draw_header_footer()
             y = top_content_y
@@ -2187,20 +2227,20 @@ def build_pdf_report(
             confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line_indented("▪ Relatability.", indent=28, gap=13)
-            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=13)
-            write_line(f"Scale: {engaging_scale}", bold=True, gap=18)
+            write_line_indented("▪ Relatability.", indent=28, gap=17)
+            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=17)
+            write_line(f"Scale: {engaging_scale}", bold=True, gap=20)
 
-            write_line("3. Confidence:", size=12, bold=True, gap=18)
-            write_line_indented("▪ Optimistic Presence.", indent=28, gap=13)
-            write_line_indented("▪ Focus.", indent=28, gap=13)
-            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=13)
-            write_line(f"Scale: {confidence_scale}", bold=True, gap=18)
+            write_line("3. Confidence:", size=12, bold=True, gap=20)
+            write_line_indented("▪ Optimistic Presence.", indent=28, gap=17)
+            write_line_indented("▪ Focus.", indent=28, gap=17)
+            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=17)
+            write_line(f"Scale: {confidence_scale}", bold=True, gap=20)
 
-            write_line("4. Authority:", size=12, bold=True, gap=18)
-            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=13)
-            write_line_indented("▪ Pressing for action.", indent=28, gap=13)
-            write_line(f"Scale: {authority_scale}", bold=True, gap=18)
+            write_line("4. Authority:", size=12, bold=True, gap=20)
+            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=17)
+            write_line_indented("▪ Pressing for action.", indent=28, gap=17)
+            write_line(f"Scale: {authority_scale}", bold=True, gap=20)
             draw_generated_bottom("Generated by AI People Reader™", size=10)
         append_graph_pages_for_operation_test()
         c.save()
