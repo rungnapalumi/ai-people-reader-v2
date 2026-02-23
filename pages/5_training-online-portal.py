@@ -876,6 +876,9 @@ if run:
         report_languages.append("th")
     if enable_report_en:
         report_languages.append("en")
+    # Training-online-portal should always enqueue report jobs for email and downloads.
+    if not report_languages:
+        report_languages = ["th", "en"]
     if not (force_enable_dots or force_enable_skeleton or report_languages):
         note.error("องค์กรนี้ยังไม่ได้เปิดการส่งออกผลลัพธ์ใดๆ กรุณาตั้งค่าจากหน้า Admin ก่อน")
         st.stop()
