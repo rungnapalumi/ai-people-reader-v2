@@ -1751,9 +1751,19 @@ def build_pdf_report(
     def append_graph_pages_for_operation_test() -> None:
         """Append Effort/Shape graph pages after the two operation-test narrative pages."""
         nonlocal y
+        effort_title = (
+            "ผลลัพธ์การตรวจจับการเคลื่อนไหวแบบ Effort (Effort Motion Detection Results)"
+            if is_thai
+            else "Effort Motion Detection Results"
+        )
+        shape_title = (
+            "ผลลัพธ์การตรวจจับการเคลื่อนไหวแบบ Shape (Shape Motion Detection Results)"
+            if is_thai
+            else "Shape Motion Detection Results"
+        )
         graph_specs = [
-            (texts["effort_title"], graph1_path),
-            (texts["shape_title"], graph2_path),
+            (effort_title, graph1_path),
+            (shape_title, graph2_path),
         ]
         for graph_title, graph_path in graph_specs:
             c.showPage()
