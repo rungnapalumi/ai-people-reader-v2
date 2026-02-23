@@ -842,6 +842,7 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     if not langs:
         wants_th, wants_en = True, True
     report_style = str(job.get("report_style") or "").strip().lower()
+    expect_skeleton = bool(job.get("expect_skeleton", False))
     if output_prefix and wants_th and not th_key:
         th_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_TH.{ext}"
     if output_prefix and wants_en and not en_key:
@@ -853,9 +854,10 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "notify_email": str(job.get("notify_email") or "").strip(),
         "report_style": report_style,
         "input_video_key": str(job.get("input_key") or "").strip(),
+        "expect_skeleton": expect_skeleton,
         "expect_dots": bool(job.get("expect_dots", True)),
         "dots_key": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
-        "skeleton_key": f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id else "",
+        "skeleton_key": (f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id and expect_skeleton else ""),
         "report_en_key": en_key,
         "report_th_key": th_key,
         "report_th_email_sent": False,
@@ -983,6 +985,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             report_en_sent = bool(payload.get("report_en_email_sent"))
             skeleton_sent = bool(payload.get("skeleton_email_sent"))
             dots_sent = bool(payload.get("dots_email_sent"))
+            expect_skeleton = bool(payload.get("expect_skeleton", False))
             expects_report_th = bool(str(payload.get("report_th_key") or "").strip())
             expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
             attempts = int(payload.get("attempts") or 0)
@@ -1154,7 +1157,31 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     payload["report_en_email_sent"] = True
                     sent_any = True
 
-            # Stage 3: Dots later, independent from report readiness.
+            # Stage 3: Skeleton later, independent from report readiness.
+            if expect_skeleton and (not skeleton_sent) and email_payload_skeleton_ready(payload):
+                sent, status = send_result_email(
+                    {
+                        "job_id": job_id,
+                        "group_id": payload.get("group_id", ""),
+                        "notify_email": notify_email,
+                        "report_style": report_style,
+                    },
+                    {
+                        **({"Uploaded video (MP4)": payload.get("input_video_key", "")} if is_operation_test else {}),
+                        "Skeleton video (MP4)": payload.get("skeleton_key", ""),
+                    },
+                    {},
+                )
+                statuses.append(f"skeleton:{status}")
+                if sent:
+                    skeleton_sent = True
+                    payload["skeleton_email_sent"] = True
+                    sent_any = True
+            elif not expect_skeleton:
+                skeleton_sent = True
+                payload["skeleton_email_sent"] = True
+
+            # Stage 4: Dots later, independent from report readiness.
             if (not dots_sent) and email_payload_dots_ready(payload):
                 if bool(payload.get("expect_dots", True)):
                     sent, status = send_result_email(
@@ -1187,6 +1214,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     waiting.append("report_th")
                 if expect_report_en and not report_en_sent:
                     waiting.append("report_en")
+                if expect_skeleton and not skeleton_sent:
+                    waiting.append("skeleton")
                 if bool(payload.get("expect_dots", True)) and not dots_sent:
                     waiting.append("dots")
                 statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
@@ -1221,8 +1250,9 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             report_th_done = report_th_sent or (not expects_report_th)
             report_en_done = report_en_sent or (not expect_report_en)
+            skeleton_done = skeleton_sent or (not expect_skeleton)
             # Finish when all requested report deliveries are done.
-            all_done = report_th_done and report_en_done
+            all_done = report_th_done and report_en_done and skeleton_done
             if all_done:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
             else:
@@ -1649,6 +1679,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 report_en_sent = False
                 skeleton_sent = False
                 dots_sent = False
+                expect_skeleton = bool(payload.get("expect_skeleton", False))
                 expects_report_th = bool(str(payload.get("report_th_key") or "").strip())
                 expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
 
@@ -1694,6 +1725,27 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     report_en_sent = bool(sent)
                     payload["report_en_email_sent"] = report_en_sent
 
+                if expect_skeleton and email_payload_skeleton_ready(payload):
+                    sent, status = send_result_email(
+                        {
+                            "job_id": payload["job_id"],
+                            "group_id": payload.get("group_id", ""),
+                            "notify_email": payload["notify_email"],
+                            "report_style": report_style,
+                        },
+                        {
+                            **({"Uploaded video (MP4)": payload.get("input_video_key", "")} if is_operation_test else {}),
+                            "Skeleton video (MP4)": payload.get("skeleton_key", ""),
+                        },
+                        {},
+                    )
+                    statuses.append(f"skeleton:{status}")
+                    skeleton_sent = bool(sent)
+                    payload["skeleton_email_sent"] = skeleton_sent
+                elif not expect_skeleton:
+                    skeleton_sent = True
+                    payload["skeleton_email_sent"] = True
+
                 if bool(payload.get("expect_dots", True)) and email_payload_dots_ready(payload):
                     sent, status = send_result_email(
                         {
@@ -1719,7 +1771,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 report_th_done = report_th_sent or (not expects_report_th)
                 report_en_done = report_en_sent or (not expect_report_en)
-                primary_done = report_th_done and report_en_done
+                skeleton_done = skeleton_sent or (not expect_skeleton)
+                primary_done = report_th_done and report_en_done and skeleton_done
                 if not primary_done:
                     queue_email_pending(payload)
                     waiting = []
@@ -1727,6 +1780,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                         waiting.append("report_th")
                     if expect_report_en and not report_en_sent:
                         waiting.append("report_en")
+                    if expect_skeleton and not skeleton_sent:
+                        waiting.append("skeleton")
                     statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
 
                 email_sent = bool(primary_done or report_en_sent or dots_sent)

@@ -515,6 +515,8 @@ def enqueue_report_only_job(
         "max_frames": 300,
         "report_style": report_style,
         "report_format": report_format,
+        "expect_skeleton": False,
+        "expect_dots": False,
         "priority": 1,
         "enterprise_folder": (enterprise_folder or "").strip(),
         "notify_email": (notify_email or "").strip(),
@@ -932,6 +934,8 @@ if run:
         "max_frames": 300,
         "report_style": effective_report_style,
         "report_format": effective_report_format,
+        "expect_skeleton": bool(enable_skeleton),
+        "expect_dots": bool(enable_dots),
         "notify_email": notify_email,
         "enterprise_folder": (enterprise_folder or "").strip(),
         "employee_id": (employee_id or "").strip(),
@@ -1019,11 +1023,37 @@ if group_id:
         outputs["report_en_docx"] = report_outputs["report_en_docx"]
     if report_outputs.get("report_th_docx"):
         outputs["report_th_docx"] = report_outputs["report_th_docx"]
+    if report_outputs.get("report_en_pdf"):
+        outputs["report_en_pdf"] = report_outputs["report_en_pdf"]
+    if report_outputs.get("report_th_pdf"):
+        outputs["report_th_pdf"] = report_outputs["report_th_pdf"]
 else:
     if has_identity_input and not identity_verified:
         st.caption("กรุณากรอก Employee ID / อีเมล / รหัสผ่าน ให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
     else:
         st.caption("ยังไม่พบ group_id ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
+    # Show guidance/tutorial immediately even before a group_id exists.
+    st.divider()
+    st.markdown("## ข้อแนะนำในการอัดวีดีโอ")
+    st.markdown(
+        """
+1. วิดีโอควรเป็นแนวตั้ง เห็นเต็มตัวหัวจรดเท้า
+2. กรุณาถ่ายวิดีโอเป็น **Full HD (1080 x 1920)**, format **MP4 or MOV**
+3. กรุณาอย่าใส่สีขาว ดำ หรือสีเดียวกับผนัง
+4. กรุณาเลือกยืนหน้าผนังสีอ่อน หรือในกรณีที่ผนังสีเข้ม คุณควรใส่เสื้อผ้าสีอ่อน
+5. กรุณาเคลื่อนไหวและใช้ภาษามือเป็นธรรมชาติ
+6. โปรดตรวจสอบให้แน่ใจว่าวิดีโอของคุณมีความยาวอย่างน้อย 2 นาที
+"""
+    )
+    for training_video in TRAINING_VIDEOS:
+        title = str(training_video.get("title") or "").strip()
+        training_key = str(training_video.get("key") or "").strip()
+        if title:
+            st.markdown(f"### {title}")
+        if training_key and s3_key_exists(training_key):
+            st.video(presigned_get_url(training_key, expires=3600))
+        else:
+            st.warning(f"ไม่พบวิดีโอใน S3: {training_key}")
     st.divider()
     st.link_button(
         "กลับไปสู่บทเรียนออนไลน์ (Training-online-portal)",
@@ -1060,18 +1090,23 @@ with c1:
 
 with c2:
     st.markdown("### รายงาน")
-    en_pdf_key = outputs.get("report_en_pdf", "")
-    en_docx_key = outputs.get("report_en_docx", "")
-    th_pdf_key = outputs.get("report_th_pdf", "")
-    th_docx_key = outputs.get("report_th_docx", "")
+    en_pdf_candidate = outputs.get("report_en_pdf", "")
+    en_docx_candidate = outputs.get("report_en_docx", "")
+    th_pdf_candidate = outputs.get("report_th_pdf", "")
+    th_docx_candidate = outputs.get("report_th_docx", "")
 
-    # Prefer PDF first, then DOCX fallback so users always get available files.
-    en_key = en_pdf_key or en_docx_key
-    th_key = th_pdf_key or th_docx_key
-    en_name = "report_en.pdf" if en_pdf_key else "report_en.docx"
-    th_name = "report_th.pdf" if th_pdf_key else "report_th.docx"
-    en_label = "PDF" if en_pdf_key else ("DOCX" if en_docx_key else "PDF/DOCX")
-    th_label = "PDF" if th_pdf_key else ("DOCX" if th_docx_key else "PDF/DOCX")
+    # Prefer a format that actually exists in S3.
+    en_pdf_ready = bool(en_pdf_candidate) and s3_key_exists(en_pdf_candidate)
+    en_docx_ready = bool(en_docx_candidate) and s3_key_exists(en_docx_candidate)
+    th_pdf_ready = bool(th_pdf_candidate) and s3_key_exists(th_pdf_candidate)
+    th_docx_ready = bool(th_docx_candidate) and s3_key_exists(th_docx_candidate)
+
+    en_key = en_pdf_candidate if en_pdf_ready else (en_docx_candidate if en_docx_ready else (en_pdf_candidate or en_docx_candidate))
+    th_key = th_pdf_candidate if th_pdf_ready else (th_docx_candidate if th_docx_ready else (th_pdf_candidate or th_docx_candidate))
+    en_name = "report_en.pdf" if en_pdf_ready else "report_en.docx"
+    th_name = "report_th.pdf" if th_pdf_ready else "report_th.docx"
+    en_label = "PDF" if en_pdf_ready else ("DOCX" if en_docx_ready else "PDF/DOCX")
+    th_label = "PDF" if th_pdf_ready else ("DOCX" if th_docx_ready else "PDF/DOCX")
 
     st.markdown("**ภาษาอังกฤษ**")
     download_block(f"รายงาน EN ({en_label})", en_key, en_name)
