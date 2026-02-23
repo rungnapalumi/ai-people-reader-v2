@@ -101,7 +101,7 @@ def _apply_theme() -> None:
 
 # Sidebar page names can be customized here.
 HOME_PAGE_TITLE = "Admin"
-SUBMIT_PAGE_TITLE = "AI People Reader"
+SUBMIT_PAGE_TITLE = "SkillLane"
 TTB_PAGE_TITLE = "TTB"
 OPERATION_TEST_PAGE_TITLE = "Operation Test"
 ADMIN_USERNAME = "admin"
@@ -1067,7 +1067,7 @@ def _render_home() -> None:
     _apply_theme()
     _render_top_banner()
     st.title("AI People Reader V2")
-    st.caption("Go to left menu -> AI People Reader")
+    st.caption("Go to left menu -> SkillLane")
     _render_admin_panel()
 
 
