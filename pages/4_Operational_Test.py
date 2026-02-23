@@ -154,6 +154,13 @@ def enqueue_report_job(job: Dict[str, Any]) -> str:
 def is_valid_email_format(value: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(value or "").strip()))
 
+def format_submit_error_message(err: Exception) -> str:
+    message = str(err or "").strip() or "Unknown error"
+    lowered = message.lower()
+    if "axioserror" in lowered or "status code 400" in lowered:
+        return f"{message}\n\nกรุณา upload วีดีโอใหม่"
+    return message
+
 
 def get_job_status_from_key(key: str) -> str:
     if key.startswith(JOBS_PENDING_PREFIX):
@@ -442,7 +449,7 @@ if run:
             content_type=guess_content_type(uploaded.name or "input.mp4"),
         )
     except Exception as e:
-        notice.error(f"Upload to S3 failed: {e}")
+        notice.error(f"Upload to S3 failed: {format_submit_error_message(e)}")
         st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
@@ -470,7 +477,7 @@ if run:
     try:
         enqueue_key = enqueue_report_job(report_job)
     except Exception as e:
-        notice.error(f"Enqueue job failed: {e}")
+        notice.error(f"Enqueue job failed: {format_submit_error_message(e)}")
         st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 

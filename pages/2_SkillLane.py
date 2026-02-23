@@ -196,6 +196,13 @@ def utc_now_iso() -> str:
 def is_valid_email_format(value: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (value or "").strip()))
 
+def format_submit_error_message(err: Exception) -> str:
+    message = str(err or "").strip() or "Unknown error"
+    lowered = message.lower()
+    if "axioserror" in lowered or "status code 400" in lowered:
+        return f"{message}\n\nกรุณา upload วีดีโอใหม่"
+    return message
+
 def is_blocked_typo_domain(value: str) -> bool:
     email = (value or "").strip().lower()
     if "@" not in email:
@@ -888,7 +895,7 @@ if run:
             content_type=guess_content_type(uploaded.name or "input.mp4"),
         )
     except Exception as e:
-        note.error(f"อัปโหลดไป S3 ไม่สำเร็จ: {e}")
+        note.error(f"อัปโหลดไป S3 ไม่สำเร็จ: {format_submit_error_message(e)}")
         st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
@@ -964,7 +971,7 @@ if run:
             queued_job_keys["report"] = enqueue_legacy_job(job_report)
             queued_job_ids["report"] = job_report["job_id"]
     except Exception as e:
-        note.error(f"ส่งงานเข้าคิวไม่สำเร็จ: {e}")
+        note.error(f"ส่งงานเข้าคิวไม่สำเร็จ: {format_submit_error_message(e)}")
         st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
@@ -1181,7 +1188,7 @@ if videos_ready and not th_report_ready:
             )
             st.success(f"ส่งงานสร้างรายงานใหม่เข้าคิวแล้ว ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:
-            st.error(f"ไม่สามารถส่งงานสร้างรายงานใหม่เข้าคิวได้: {e}")
+            st.error(f"ไม่สามารถส่งงานสร้างรายงานใหม่เข้าคิวได้: {format_submit_error_message(e)}")
 
 st.divider()
 st.link_button(
