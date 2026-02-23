@@ -843,8 +843,6 @@ elif candidate_group_id:
     _persist_group_id_to_url("")
 
 note = st.empty()
-if blocked_group_id:
-    note.warning("This group_id is not accessible by the current account. Enter your own credentials to view your jobs only.")
 
 # -------------------------
 # Submit jobs

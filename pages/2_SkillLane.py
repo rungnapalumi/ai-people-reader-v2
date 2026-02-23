@@ -850,8 +850,6 @@ elif candidate_group_id:
     _persist_group_id_to_url("")
 
 note = st.empty()
-if blocked_group_id:
-    note.warning("group_id นี้ไม่ใช่งานของบัญชีปัจจุบัน ระบบจะไม่แสดงผล กรุณาเข้าสู่ระบบด้วยข้อมูลของเจ้าของงาน")
 
 # -------------------------
 # Submit jobs

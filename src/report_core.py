@@ -1613,6 +1613,11 @@ def build_pdf_report(
             bold_font = "ThaiPDFBold" if ok_bold else "ThaiPDFRegular"
             requires_unicode_font = True
 
+    # ReportLab Thai shaping is limited on some viewers/fonts.
+    # Using regular Thai font for emphasis text reduces vowel/tone-mark collisions.
+    if is_thai and requires_unicode_font:
+        bold_font = regular_font
+
     def draw_header_footer() -> None:
         # Match DOCX branding as closely as possible for PDF output.
         if os.path.exists(header_path):
