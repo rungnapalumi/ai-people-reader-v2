@@ -493,6 +493,8 @@ def enqueue_report_only_job(
     report_format: str = "docx",
     enterprise_folder: str = "",
     notify_email: str = "",
+    expect_skeleton: bool = False,
+    expect_dots: bool = False,
 ) -> str:
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
     if not s3_key_exists(input_key):
@@ -515,8 +517,8 @@ def enqueue_report_only_job(
         "max_frames": 300,
         "report_style": report_style,
         "report_format": report_format,
-        "expect_skeleton": False,
-        "expect_dots": False,
+        "expect_skeleton": bool(expect_skeleton),
+        "expect_dots": bool(expect_dots),
         "priority": 1,
         "enterprise_folder": (enterprise_folder or "").strip(),
         "notify_email": (notify_email or "").strip(),
@@ -863,14 +865,15 @@ if run:
     effective_report_format = org_settings.get("report_format") if org_settings else "docx"
     enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
     enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
-    enable_skeleton = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
-    enable_dots = bool(org_settings.get("enable_dots", True)) if org_settings else True
+    # Training-online-portal requirement: always enqueue dots + skeleton.
+    force_enable_skeleton = True
+    force_enable_dots = True
     report_languages = []
     if enable_report_th:
         report_languages.append("th")
     if enable_report_en:
         report_languages.append("en")
-    if not (enable_dots or enable_skeleton or report_languages):
+    if not (force_enable_dots or force_enable_skeleton or report_languages):
         note.error("องค์กรนี้ยังไม่ได้เปิดการส่งออกผลลัพธ์ใดๆ กรุณาตั้งค่าจากหน้า Admin ก่อน")
         st.stop()
 
@@ -934,8 +937,8 @@ if run:
         "max_frames": 300,
         "report_style": effective_report_style,
         "report_format": effective_report_format,
-        "expect_skeleton": bool(enable_skeleton),
-        "expect_dots": bool(enable_dots),
+        "expect_skeleton": True,
+        "expect_dots": True,
         "notify_email": notify_email,
         "enterprise_folder": (enterprise_folder or "").strip(),
         "employee_id": (employee_id or "").strip(),
@@ -950,12 +953,10 @@ if run:
         )
         queued_job_ids: Dict[str, str] = {}
         queued_job_keys: Dict[str, str] = {}
-        if enable_dots:
-            queued_job_keys["dots"] = enqueue_legacy_job(job_dots)
-            queued_job_ids["dots"] = job_dots["job_id"]
-        if enable_skeleton:
-            queued_job_keys["skeleton"] = enqueue_legacy_job(job_skel)
-            queued_job_ids["skeleton"] = job_skel["job_id"]
+        queued_job_keys["dots"] = enqueue_legacy_job(job_dots)
+        queued_job_ids["dots"] = job_dots["job_id"]
+        queued_job_keys["skeleton"] = enqueue_legacy_job(job_skel)
+        queued_job_ids["skeleton"] = job_skel["job_id"]
         if report_languages:
             queued_job_keys["report"] = enqueue_legacy_job(job_report)
             queued_job_ids["report"] = job_report["job_id"]
@@ -1202,10 +1203,41 @@ if videos_ready and not th_report_ready:
                 report_format=rerun_format,
                 enterprise_folder=(enterprise_folder or "").strip(),
                 notify_email=rerun_email,
+                expect_skeleton=bool(skeleton_ready),
+                expect_dots=bool(dots_ready),
             )
             st.success(f"ส่งงานสร้างรายงานใหม่เข้าคิวแล้ว ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:
             st.error(f"ไม่สามารถส่งงานสร้างรายงานใหม่เข้าคิวได้: {e}")
+
+if dots_ready or skeleton_ready or th_report_ready or en_report_ready:
+    st.divider()
+    st.info("หากผลลัพธ์ขึ้นครบแล้วแต่ไม่ได้รับอีเมล Dots/Skeleton สามารถกดส่งอีเมลซ้ำได้")
+    if st.button("ส่งอีเมลผลลัพธ์ซ้ำ (รวม Dots/Skeleton)", width="content"):
+        try:
+            resend_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
+            resend_style = get_report_style_for_group(group_id)
+            resend_format = get_report_format_for_group(group_id)
+            resend_email = notify_email
+            if not resend_email:
+                prev_notif = get_report_notification_status(group_id)
+                resend_email = str(prev_notif.get("notify_email") or "").strip()
+            if resend_email and ((not is_valid_email_format(resend_email)) or is_blocked_typo_domain(resend_email)):
+                st.error("ไม่สามารถส่งอีเมลซ้ำได้: รูปแบบ e-mail ไม่ถูกต้อง")
+                st.stop()
+            resend_key = enqueue_report_only_job(
+                group_id=group_id,
+                client_name=resend_name,
+                report_style=resend_style,
+                report_format=resend_format,
+                enterprise_folder=(enterprise_folder or "").strip(),
+                notify_email=resend_email,
+                expect_skeleton=bool(skeleton_ready),
+                expect_dots=bool(dots_ready),
+            )
+            st.success(f"ส่งคำสั่งส่งอีเมลซ้ำเข้าคิวแล้ว: {resend_key}")
+        except Exception as e:
+            st.error(f"ไม่สามารถส่งคำสั่งส่งอีเมลซ้ำได้: {e}")
 
 st.divider()
 st.link_button(
