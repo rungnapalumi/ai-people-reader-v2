@@ -330,7 +330,7 @@ def prettify_level(level: str) -> str:
     if text.startswith("low"):
         return "ต่ำ"
     if text.startswith("moderate"):
-        return "ปานกลาง"
+        return "กลาง"
     if text.startswith("high"):
         return "สูง"
     return "-"
@@ -503,7 +503,7 @@ if active_group_id:
 
     summary = latest_job.get("first_impression_summary") or {}
     if isinstance(summary, dict) and summary:
-        st.markdown("### First Impression (ต่ำ / ปานกลาง / สูง)")
+        st.markdown("### First Impression (ต่ำ / กลาง / สูง)")
         c1, c2, c3 = st.columns(3)
         eye = summary.get("eye_contact") or {}
         up = summary.get("uprightness") or {}

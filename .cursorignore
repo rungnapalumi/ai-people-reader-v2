@@ -19,6 +19,7 @@
 *.pdf
 *.docx
 *.xlsx
+!Presentation Analysis Thai Report Template_TTB.pdf
 
 # ---- Runtime outputs ----
 outputs/

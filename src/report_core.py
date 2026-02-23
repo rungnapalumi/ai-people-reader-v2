@@ -1652,10 +1652,10 @@ def build_pdf_report(
     TITLE_STYLE = ParagraphStyle(
         name="TitleStyle",
         fontName=bold_font,
-        fontSize=18,
-        leading=22,
+        fontSize=20,
+        leading=26,
         alignment=1,  # center
-        spaceAfter=20,
+        spaceAfter=24,
     )
     SECTION_STYLE = ParagraphStyle(
         name="SectionStyle",
@@ -1669,17 +1669,17 @@ def build_pdf_report(
         name="SubItemStyle",
         fontName=regular_font,
         fontSize=14,
-        leading=18,
-        leftIndent=20,
-        spaceAfter=2,
+        leading=19,
+        leftIndent=22,
+        spaceAfter=3,
     )
     LEVEL_STYLE = ParagraphStyle(
         name="LevelStyle",
         fontName=bold_font,
         fontSize=14,
-        leading=18,
-        leftIndent=35,
-        spaceAfter=8,
+        leading=19,
+        leftIndent=38,
+        spaceAfter=10,
     )
     BULLET_STYLE = ParagraphStyle(
         name="BulletStyle",
@@ -1696,6 +1696,29 @@ def build_pdf_report(
     header_style = HEADER_STYLE
     content_style = CONTENT_STYLE
     section_style = SECTION_STYLE
+
+    # English operation-test template uses tighter typography.
+    if is_operation_test and (not is_thai):
+        TITLE_STYLE.fontSize = 14
+        TITLE_STYLE.leading = 20
+        TITLE_STYLE.spaceAfter = 14
+        SECTION_STYLE.fontSize = 14
+        SECTION_STYLE.leading = 18
+        SECTION_STYLE.spaceBefore = 10
+        SECTION_STYLE.spaceAfter = 8
+        SUBITEM_STYLE.fontSize = 12
+        SUBITEM_STYLE.leading = 16
+        SUBITEM_STYLE.leftIndent = 20
+        SUBITEM_STYLE.spaceAfter = 2
+        LEVEL_STYLE.fontSize = 12
+        LEVEL_STYLE.leading = 16
+        LEVEL_STYLE.leftIndent = 30
+        LEVEL_STYLE.spaceAfter = 10
+        BULLET_STYLE.fontSize = 12
+        BULLET_STYLE.leading = 16
+        BULLET_STYLE.leftIndent = 28
+        BULLET_STYLE.bulletIndent = 18
+        BULLET_STYLE.spaceAfter = 4
 
     def P(text: str, style):
         # Preserve explicit newlines in ReportLab paragraphs.
@@ -1873,6 +1896,20 @@ def build_pdf_report(
         y -= float(getattr(style, "spaceAfter", 0) or 0)
         y -= float(gap(extra_gap).height)
 
+    def write_kv_line(label: str, value: str, size: int = 14, value_indent: int = 120, gap_after: int = 22):
+        nonlocal y
+        label_text = _safe_text_for_font(str(label or "").strip())
+        value_text = _safe_text_for_font(str(value or "").strip())
+        if y <= bottom_content_y:
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+        c.setFont(bold_font, size)
+        c.drawString(x_left, y, label_text)
+        c.setFont(CONTENT_STYLE.fontName, size)
+        c.drawString(x_left + value_indent, y, value_text)
+        y -= gap_after
+
     def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
         for line in lines:
             write_line(line, size=size, bold=bold, gap=gap)
@@ -1911,15 +1948,52 @@ def build_pdf_report(
             return f"{sec} วินาที ({raw})"
         return raw
 
-    write_paragraph_block(title, TITLE_STYLE, indent=0, extra_gap=0)
-    write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
-    write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {report.analysis_date}")
+    def _date_th_display(date_text: str) -> str:
+        raw = str(date_text or "").strip()
+        if not raw:
+            return raw
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%d-%m-%Y")
+            except Exception:
+                continue
+        return raw
+
+    def _date_en_display(date_text: str) -> str:
+        raw = str(date_text or "").strip()
+        if not raw:
+            return raw
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                continue
+        return raw
+
+    if is_thai:
+        display_date = _date_th_display(report.analysis_date)
+    elif is_operation_test:
+        display_date = _date_en_display(report.analysis_date)
+    else:
+        display_date = report.analysis_date
+    if is_operation_test and is_thai:
+        write_paragraph_block("รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหวกับ AI People Reader", TITLE_STYLE, indent=0, extra_gap=4)
+        write_kv_line("ชื่อ:", report.client_name, size=14, value_indent=118, gap_after=21)
+        write_kv_line("วันที่วิเคราะห์:", display_date, size=14, value_indent=118, gap_after=21)
+    else:
+        write_paragraph_block(title, TITLE_STYLE, indent=0, extra_gap=0)
+        write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
+        write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {display_date}")
     duration_label = _duration_th_text(report.video_length_str) if is_thai else report.video_length_str
-    if is_operation_test and (not is_thai):
+    if is_operation_test and is_thai:
+        write_kv_line("ความยาววิดีโอ:", duration_label, size=14, value_indent=118, gap_after=26)
+    elif is_operation_test and (not is_thai):
         write_line("Video Information", bold=True, gap=14)
         write_line(f"Duration: {duration_label}", gap=22)
     else:
-        write_line(f"{'ความยาววิดิโอ' if is_thai else 'Duration'}: {duration_label}", gap=22)
+        write_line(f"{'ความยาววิดีโอ' if is_thai else 'Duration'}: {duration_label}", gap=22)
     write_line(detailed_analysis_label, size=13, bold=True, gap=20)
 
     def _first_impression_level(value: float, metric: str = "") -> str:
@@ -1927,12 +2001,6 @@ def build_pdf_report(
         name = str(metric or "").strip().lower()
         if name == "eye_contact":
             return "High"
-        if name in ("stance", "uprightness"):
-            if v >= 80.0:
-                return "High"
-            if v >= 50.0:
-                return "Moderate"
-            return "Low"
         if v >= 70.0:
             return "High"
         if v >= 40.0:
@@ -1944,7 +2012,7 @@ def build_pdf_report(
         if level_en.startswith("high"):
             return "สูง"
         if level_en.startswith("moderate"):
-            return "ปานกลาง"
+            return "กลาง"
         if level_en.startswith("low"):
             return "ต่ำ"
         return "-"
@@ -1975,23 +2043,23 @@ def build_pdf_report(
                 )
             else:
                 write_paragraph_block("1. First impression", SECTION_STYLE, extra_gap=0)
-                write_paragraph_block("□ Eye Contact", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("▪ Eye Contact", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block("□ Uprightness", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("▪ Uprightness", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block("□ Stance (Lower-Body Stability & Grounding)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("▪ Stance", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}",
                     LEVEL_STYLE,
-                    extra_gap=10,
+                    extra_gap=8,
                 )
         else:
             write_line(first_impression_label, size=12, bold=True, gap=18)
@@ -2016,7 +2084,7 @@ def build_pdf_report(
                 if s.startswith("high"):
                     return "สูง"
                 if s.startswith("moderate"):
-                    return "ปานกลาง"
+                    return "กลาง"
                 if s.startswith("low"):
                     return "ต่ำ"
                 return "-"
@@ -2075,7 +2143,7 @@ def build_pdf_report(
                 gap=14,
             )
             write_line("2. Engaging & Connecting:", size=12, bold=True, gap=18)
-            write_line_indented("- Approachability.", indent=28, gap=14)
+            write_line_indented("▪ Approachability.", indent=28, gap=13)
 
             # Match template flow: page break after first bullet of section 2.
             write_line("", gap=6)
@@ -2087,20 +2155,20 @@ def build_pdf_report(
             confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line_indented("- Relatability.", indent=28, gap=14)
-            write_line_indented("- Engagement, connect and build instant rapport with team.", indent=28, gap=14)
-            write_line(f"Scale: {engaging_scale}", bold=True, gap=20)
+            write_line_indented("▪ Relatability.", indent=28, gap=13)
+            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=13)
+            write_line(f"Scale: {engaging_scale}", bold=True, gap=18)
 
             write_line("3. Confidence:", size=12, bold=True, gap=18)
-            write_line_indented("- Optimistic Presence.", indent=28, gap=14)
-            write_line_indented("- Focus.", indent=28, gap=14)
-            write_line_indented("- Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=14)
-            write_line(f"Scale: {confidence_scale}", bold=True, gap=20)
+            write_line_indented("▪ Optimistic Presence.", indent=28, gap=13)
+            write_line_indented("▪ Focus.", indent=28, gap=13)
+            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=13)
+            write_line(f"Scale: {confidence_scale}", bold=True, gap=18)
 
             write_line("4. Authority:", size=12, bold=True, gap=18)
-            write_line_indented("- Showing sense of importance and urgency in subject matter.", indent=28, gap=14)
-            write_line_indented("- Pressing for action.", indent=28, gap=14)
-            write_line(f"Scale: {authority_scale}", bold=True, gap=20)
+            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=13)
+            write_line_indented("▪ Pressing for action.", indent=28, gap=13)
+            write_line(f"Scale: {authority_scale}", bold=True, gap=18)
             draw_generated_bottom("Generated by AI People Reader™", size=10)
         c.save()
         return
