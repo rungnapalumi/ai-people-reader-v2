@@ -1134,3 +1134,10 @@ if videos_ready and not th_report_ready:
             st.success(f"ส่งงานสร้างรายงานใหม่เข้าคิวแล้ว ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:
             st.error(f"ไม่สามารถส่งงานสร้างรายงานใหม่เข้าคิวได้: {e}")
+
+st.divider()
+st.link_button(
+    "กลับไปสู่บทเรียนออนไลน์ (SkillLane)",
+    "https://www.skilllane.com/courses/8076",
+    width="stretch",
+)
