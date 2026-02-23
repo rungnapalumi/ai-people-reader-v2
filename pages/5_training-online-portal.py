@@ -2,8 +2,8 @@
 # Upload once (shared key) -> get downloads:
 #   1) Dots video
 #   2) Skeleton video
-#   3) English report (DOCX)
-#   4) Thai report (DOCX)
+#   3) English report (PDF)
+#   4) Thai report (PDF)
 #
 # Uses LEGACY queue:
 #   jobs/pending/<job_id>.json
@@ -11,11 +11,12 @@
 # Output paths (fixed):
 #   jobs/output/groups/<group_id>/dots.mp4
 #   jobs/output/groups/<group_id>/skeleton.mp4
-#   jobs/output/groups/<group_id>/report_en.docx
-#   jobs/output/groups/<group_id>/report_th.docx
+#   jobs/output/groups/<group_id>/report_en.pdf
+#   jobs/output/groups/<group_id>/report_th.pdf
 #
 # Key point:
-# - DOCX only (no PDF)
+# - Training-online-portal forces operation_test template in PDF (TH+EN)
+# - Report includes 2 narrative pages + 2 graph pages (Effort/Shape)
 # - Can paste any group_id to retrieve outputs (no session loss problem)
 
 import os
@@ -502,6 +503,10 @@ def enqueue_report_only_job(
     if not s3_key_exists(input_key):
         raise RuntimeError(f"Input video not found for group_id={group_id}")
 
+    style_name = str(report_style or "").strip().lower()
+    force_operation_test = style_name.startswith("operation_test")
+    forced_languages = ["th", "en"] if force_operation_test else ["th"]
+    forced_format = "pdf" if force_operation_test else report_format
     created_at = utc_now_iso()
     job_report = {
         "job_id": new_job_id(),
@@ -512,13 +517,13 @@ def enqueue_report_only_job(
         "input_key": input_key,
         "client_name": client_name or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th"],
+        "languages": forced_languages,
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",
         "sample_fps": 5,
         "max_frames": 300,
         "report_style": report_style,
-        "report_format": report_format,
+        "report_format": forced_format,
         "expect_skeleton": bool(expect_skeleton),
         "expect_dots": bool(expect_dots),
         "priority": 1,
@@ -865,20 +870,12 @@ if run:
         st.stop()
     # Force Training-online-portal to use the compact operation-test template.
     effective_report_style = "operation_test"
-    effective_report_format = org_settings.get("report_format") if org_settings else "docx"
-    enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
-    enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
+    # For this page, lock output to PDF + both TH/EN to match required template.
+    effective_report_format = "pdf"
     # Training-online-portal requirement: always enqueue dots + skeleton.
     force_enable_skeleton = True
     force_enable_dots = True
-    report_languages = []
-    if enable_report_th:
-        report_languages.append("th")
-    if enable_report_en:
-        report_languages.append("en")
-    # Training-online-portal should always enqueue report jobs for email and downloads.
-    if not report_languages:
-        report_languages = ["th", "en"]
+    report_languages = ["th", "en"]
     if not (force_enable_dots or force_enable_skeleton or report_languages):
         note.error("องค์กรนี้ยังไม่ได้เปิดการส่งออกผลลัพธ์ใดๆ กรุณาตั้งค่าจากหน้า Admin ก่อน")
         st.stop()
@@ -1193,10 +1190,7 @@ if videos_ready and not th_report_ready:
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
             rerun_style = "operation_test"
-            rerun_format = get_report_format_for_group(group_id)
-            rerun_org_cfg = get_org_settings(enterprise_folder)
-            if rerun_org_cfg:
-                rerun_format = str(rerun_org_cfg.get("report_format") or rerun_format)
+            rerun_format = "pdf"
             rerun_email = notify_email
             if not rerun_email:
                 prev_notif = get_report_notification_status(group_id)
@@ -1225,7 +1219,7 @@ if dots_ready or skeleton_ready or th_report_ready or en_report_ready:
         try:
             resend_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
             resend_style = "operation_test"
-            resend_format = get_report_format_for_group(group_id)
+            resend_format = "pdf"
             resend_email = notify_email
             if not resend_email:
                 prev_notif = get_report_notification_status(group_id)

@@ -1051,8 +1051,10 @@ def build_docx_report(
     # Language-specific text
     is_thai = (lang == "th")
     
+    en_operation_title = "Movement in Communication\nwith AI People Reader Report" if is_operation_test and (not is_thai) else "Character Analysis Report"
+    th_operation_title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader" if is_operation_test and is_thai else "รายงานการวิเคราะห์การนำเสนอ"
     texts = {
-        "title": "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report",
+        "title": th_operation_title if is_thai else en_operation_title,
         "client_name": "ชื่อลูกค้า:" if is_thai else "Client Name:",
         "analysis_date": "วันที่วิเคราะห์:" if is_thai else "Analysis Date:",
         "video_info": "ข้อมูลวิดีโอ (Video Information)" if is_thai else "Video Information",
@@ -1064,16 +1066,16 @@ def build_docx_report(
         "stance": "การยืนและการวางเท้า (Stance)" if is_thai else "Stance (Lower-Body Stability & Grounding)",
         "impact_clients": "ผลกระทบ:" if is_thai else "Impact:",
         "engaging": "2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_thai else "2. Engaging & Connecting:",
-        "approachability": "• ความเป็นกันเอง" if is_thai else "• Approachability",
-        "relatability": "• ความเข้าถึงได้" if is_thai else "• Relatability",
-        "engagement": "• การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_thai else "• Engagement, connect and build instant rapport with team",
+        "approachability": "• ความเป็นกันเอง" if is_thai else "▪ Approachability",
+        "relatability": "• ความเข้าถึงได้" if is_thai else "▪ Relatability",
+        "engagement": "• การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_thai else "▪ Engagement, connect and build instant rapport with team",
         "confidence": "3. ความมั่นใจ:" if is_thai else "3. Confidence:",
-        "optimistic": "• บุคลิกภาพเชิงบวก" if is_thai else "• Optimistic Presence",
-        "focus": "• ความมีสมาธิ" if is_thai else "• Focus",
-        "persuade": "• ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_thai else "• Ability to persuade and stand one's ground, in order to convince others.",
+        "optimistic": "• บุคลิกภาพเชิงบวก" if is_thai else "▪ Optimistic Presence",
+        "focus": "• ความมีสมาธิ" if is_thai else "▪ Focus",
+        "persuade": "• ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_thai else "▪ Ability to persuade and stand one's ground, in order to convince others.",
         "authority": "4.  ความเป็นผู้นำ (Authority):" if is_thai else "4. Authority:",
-        "importance": "• แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_thai else "• Showing sense of importance and urgency in subject matter",
-        "pressing": "• ผลักดันให้เกิดการลงมือทำ" if is_thai else "• Pressing for action",
+        "importance": "• แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_thai else "▪ Showing sense of importance and urgency in subject matter",
+        "pressing": "• ผลักดันให้เกิดการลงมือทำ" if is_thai else "▪ Pressing for action",
         "scale": "ระดับ:" if is_thai else "Scale:",
         "description": "คำอธิบาย: ตรวจพบ" if is_thai else "Description: Detected",
         "indicators": "การเคลื่อนไหวเชิงบวก" if is_thai else "positive indicators out of",
@@ -1111,7 +1113,7 @@ def build_docx_report(
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
             try:
                 dt = datetime.strptime(raw, fmt)
-                return dt.strftime("%d/%m/%Y")
+                return f"{dt.day}/{dt.month}/{dt.year}"
             except Exception:
                 continue
         return raw
@@ -1186,10 +1188,6 @@ def build_docx_report(
         footer_run = footer_para.add_run()
         footer_run.add_picture(footer_path, width=Inches(6.5))
         footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    contact_para = footer.add_paragraph("หากพบปัญหากรุณาติดต่อ 0817008484")
-    contact_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    if contact_para.runs:
-        contact_para.runs[0].font.size = Pt(10)
     
     # ============================================================
     # PAGE 1: Cover + First Impression (Eye Contact start)
@@ -1236,15 +1234,18 @@ def build_docx_report(
         st_level = "-" if is_thai else "-"
 
     doc.add_paragraph(("▪ การสบตา (Eye Contact)" if is_thai else "▪ Eye Contact"))
-    lvl1 = doc.add_paragraph(f"{texts['scale']} {eye_level}")
+    lvl1_text = texts["scale"] if (is_operation_test and is_thai) else f"{texts['scale']} {eye_level}"
+    lvl1 = doc.add_paragraph(lvl1_text)
     lvl1.runs[0].bold = True
 
     doc.add_paragraph(("▪ ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "▪ Uprightness"))
-    lvl2 = doc.add_paragraph(f"{texts['scale']} {up_level}")
+    lvl2_text = texts["scale"] if (is_operation_test and is_thai) else f"{texts['scale']} {up_level}"
+    lvl2 = doc.add_paragraph(lvl2_text)
     lvl2.runs[0].bold = True
 
     doc.add_paragraph(("▪ การยืนและการวางเท้า (Stance)" if is_thai else "▪ Stance"))
-    lvl3 = doc.add_paragraph(f"{texts['scale']} {st_level}")
+    lvl3_text = texts["scale"] if (is_operation_test and is_thai) else f"{texts['scale']} {st_level}"
+    lvl3 = doc.add_paragraph(lvl3_text)
     lvl3.runs[0].bold = True
 
     remark = doc.add_paragraph("หมายเหตุ" if is_thai else "Remark")
@@ -1640,14 +1641,6 @@ def build_pdf_report(
                 )
             except Exception:
                 pass
-        contact_text = (
-            "หากพบปัญหากรุณาติดต่อ 0817008484"
-            if requires_unicode_font
-            else "If you encounter issues, please contact 0817008484"
-        )
-        c.setFont(regular_font, 9)
-        text_w = pdfmetrics.stringWidth(contact_text, regular_font, 9)
-        c.drawString(x_left + max(0.0, (usable_width - text_w) / 2.0), 52, contact_text)
 
     draw_header_footer()
 
@@ -1663,34 +1656,34 @@ def build_pdf_report(
         name="SectionStyle",
         fontName=bold_font,
         fontSize=14,
-        leading=18,
+        leading=20,
         spaceBefore=12,
-        spaceAfter=6,
+        spaceAfter=8,
     )
     SUBITEM_STYLE = ParagraphStyle(
         name="SubItemStyle",
         fontName=regular_font,
         fontSize=14,
-        leading=19,
+        leading=21,
         leftIndent=22,
-        spaceAfter=3,
+        spaceAfter=5,
     )
     LEVEL_STYLE = ParagraphStyle(
         name="LevelStyle",
         fontName=bold_font,
         fontSize=14,
-        leading=19,
+        leading=21,
         leftIndent=38,
-        spaceAfter=10,
+        spaceAfter=12,
     )
     BULLET_STYLE = ParagraphStyle(
         name="BulletStyle",
         fontName=regular_font,
         fontSize=14,
-        leading=18,
+        leading=21,
         leftIndent=40,
         bulletIndent=30,
-        spaceAfter=4,
+        spaceAfter=6,
     )
     # Backward-compatible aliases for existing references.
     HEADER_STYLE = TITLE_STYLE
@@ -1754,6 +1747,35 @@ def build_pdf_report(
         text_w = pdfmetrics.stringWidth(safe, font, size)
         x = x_left + max(0.0, usable_width - text_w)
         c.drawString(x, 8, safe)
+
+    def append_graph_pages_for_operation_test() -> None:
+        """Append Effort/Shape graph pages after the two operation-test narrative pages."""
+        nonlocal y
+        graph_specs = [
+            (texts["effort_title"], graph1_path),
+            (texts["shape_title"], graph2_path),
+        ]
+        for graph_title, graph_path in graph_specs:
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+            write_paragraph_block(graph_title, TITLE_STYLE, indent=0, extra_gap=10)
+            if graph_path and os.path.exists(graph_path):
+                try:
+                    c.drawImage(
+                        graph_path,
+                        x=x_left,
+                        y=100,
+                        width=usable_width,
+                        height=height - 250,
+                        preserveAspectRatio=True,
+                        anchor="c",
+                        mask="auto",
+                    )
+                except Exception:
+                    write_line("Graph image unavailable", size=11, gap=16)
+            else:
+                write_line("Graph image unavailable", size=11, gap=16)
 
     def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
@@ -1926,7 +1948,7 @@ def build_pdf_report(
             detailed_analysis_label = "Detailed Presentation Analysis"
             first_impression_label = "1. First Impression"
         else:
-            title = "Presentation Analysis Report"
+            title = "Movement in Communication\nwith AI People Reader Report"
             detailed_analysis_label = "Detailed Analysis"
             first_impression_label = "1. First impression"
     else:
@@ -1969,7 +1991,7 @@ def build_pdf_report(
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
             try:
                 dt = datetime.strptime(raw, fmt)
-                return dt.strftime("%d/%m/%Y")
+                return f"{dt.day}/{dt.month}/{dt.year}"
             except Exception:
                 continue
         return raw
@@ -1981,7 +2003,7 @@ def build_pdf_report(
     else:
         display_date = report.analysis_date
     if is_operation_test and is_thai:
-        write_paragraph_block("รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหวกับ AI People Reader", TITLE_STYLE, indent=0, extra_gap=4)
+        write_paragraph_block("รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader", TITLE_STYLE, indent=0, extra_gap=4)
         write_kv_line("ชื่อ:", report.client_name, size=14, value_indent=118, gap_after=21)
         write_kv_line("วันที่วิเคราะห์:", display_date, size=14, value_indent=118, gap_after=21)
     else:
@@ -2025,21 +2047,21 @@ def build_pdf_report(
         if is_operation_test:
             if is_thai:
                 write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
-                write_paragraph_block(f"□ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"▪ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    f"ระดับ: {_first_impression_level_th(fi.eye_contact_pct, metric='eye_contact')}",
+                    "ระดับ:",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block(f"□ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"▪ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    f"ระดับ: {_first_impression_level_th(fi.upright_pct, metric='uprightness')}",
+                    "ระดับ:",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block(f"□ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"▪ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    f"ระดับ: {_first_impression_level_th(fi.stance_stability, metric='stance')}",
+                    "ระดับ:",
                     LEVEL_STYLE,
                     extra_gap=10,
                 )
@@ -2091,17 +2113,18 @@ def build_pdf_report(
                     return "ต่ำ"
                 return "-"
 
-            write_line("", gap=6)
-            write_line("หมายเหตุ", bold=True, gap=16)
-            write_line(
+            write_paragraph_block("", SUBITEM_STYLE, extra_gap=0)
+            write_paragraph_block("หมายเหตุ", SECTION_STYLE, extra_gap=0)
+            write_paragraph_block(
                 "ความรู้สึกที่เกิดจากความประทับใจแรกพบนั้นเป็นสิ่งที่มนุษย์หลีกเลี่ยงไม่ได้ และมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน แต่หลังจากนั้นจะเริ่มวิเคราะห์การเคลื่อนไหวโดยรวมมาประกอบการตัดสินใจ",
-                gap=14,
+                SUBITEM_STYLE,
+                extra_gap=6,
             )
-            write_line("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", size=12, bold=True, gap=18)
-            write_line_indented("• ความเป็นกันเอง", indent=28, gap=14)
+            write_paragraph_block("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", SECTION_STYLE, extra_gap=0)
+            write_bullet("ความเป็นกันเอง", indent=28, space_after=6, bullet_text="•")
 
             # Match template flow: page break after section 2 intro.
-            write_line("", gap=6)
+            write_paragraph_block("", SUBITEM_STYLE, extra_gap=2)
             c.showPage()
             draw_header_footer()
             y = top_content_y
@@ -2110,20 +2133,20 @@ def build_pdf_report(
             confidence_scale = _scale_th(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_th(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_bullet("ความเข้าถึงได้", indent=28, space_after=4, bullet_text="•")
-            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=4, bullet_text="•")
-            write_line(f"ระดับ: {engaging_scale}", bold=True, gap=18)
+            write_bullet("ความเข้าถึงได้", indent=28, space_after=6, bullet_text="•")
+            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=6, bullet_text="•")
+            write_paragraph_block(f"ระดับ: {engaging_scale}", LEVEL_STYLE, extra_gap=4)
 
-            write_line("3. ความมั่นใจ:", size=12, bold=True, gap=18)
-            write_line_indented("• บุคลิกภาพเชิงบวก", indent=28, gap=14)
-            write_line_indented("• ความมีสมาธิ", indent=28, gap=14)
-            write_line_indented("• ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, gap=14)
-            write_line(f"ระดับ: {confidence_scale}", bold=True, gap=18)
+            write_paragraph_block("3. ความมั่นใจ:", SECTION_STYLE, extra_gap=0)
+            write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=6, bullet_text="•")
+            write_bullet("ความมีสมาธิ", indent=28, space_after=6, bullet_text="•")
+            write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=6, bullet_text="•")
+            write_paragraph_block(f"ระดับ: {confidence_scale}", LEVEL_STYLE, extra_gap=4)
 
-            write_line("4. ความเป็นผู้นำและความดูมีอำนาจ:", size=12, bold=True, gap=18)
-            write_line_indented("• แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, gap=14)
-            write_line_indented("• ผลักดันให้เกิดการลงมือทำ", indent=28, gap=14)
-            write_line(f"ระดับ: {authority_scale}", bold=True, gap=18)
+            write_paragraph_block("4. ความเป็นผู้นำและความดูมีอำนาจ:", SECTION_STYLE, extra_gap=0)
+            write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=6, bullet_text="•")
+            write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=6, bullet_text="•")
+            write_paragraph_block(f"ระดับ: {authority_scale}", LEVEL_STYLE, extra_gap=4)
             draw_generated_bottom("จัดทำโดย AI People Reader™", size=10)
         else:
             if thai_font_fallback and lang_name == "th":
@@ -2172,6 +2195,7 @@ def build_pdf_report(
             write_line_indented("▪ Pressing for action.", indent=28, gap=13)
             write_line(f"Scale: {authority_scale}", bold=True, gap=18)
             draw_generated_bottom("Generated by AI People Reader™", size=10)
+        append_graph_pages_for_operation_test()
         c.save()
         return
 

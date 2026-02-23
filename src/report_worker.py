@@ -1446,7 +1446,9 @@ def generate_reports_for_lang(
     )
     graph1_path = ""
     graph2_path = ""
-    if report_style != "operation_test":
+    # Requirement update: operation_test must include graph pages in both TH/EN reports.
+    should_generate_graphs = True
+    if should_generate_graphs:
         try:
             effort_data = result.get("effort_detection") or {}
             shape_data = result.get("shape_detection") or {}
