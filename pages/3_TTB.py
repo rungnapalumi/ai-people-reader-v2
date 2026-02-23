@@ -406,7 +406,7 @@ def org_settings_key(org_name: str) -> str:
     return f"{ORG_SETTINGS_PREFIX}{org_id}.json"
 
 
-def get_org_settings(org_name: str) -> Dict[str, str]:
+def get_org_settings(org_name: str) -> Dict[str, Any]:
     org_id = normalize_org_name(org_name)
     if not org_id:
         return {}
@@ -420,6 +420,10 @@ def get_org_settings(org_name: str) -> Dict[str, str]:
         "organization_id": org_id,
         "report_style": style,
         "report_format": fmt,
+        "enable_report_th": bool(payload.get("enable_report_th", True)),
+        "enable_report_en": bool(payload.get("enable_report_en", True)),
+        "enable_skeleton": bool(payload.get("enable_skeleton", True)),
+        "enable_dots": bool(payload.get("enable_dots", True)),
         "default_page": str(payload.get("default_page") or "").strip().lower(),
         "updated_at": str(payload.get("updated_at") or ""),
     }
@@ -848,6 +852,17 @@ if run:
         st.stop()
     effective_report_style = org_settings.get("report_style") if org_settings else "full"
     effective_report_format = org_settings.get("report_format") if org_settings else "docx"
+    enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
+    enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
+    enable_skeleton = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
+    report_languages = []
+    if enable_report_th:
+        report_languages.append("th")
+    if enable_report_en:
+        report_languages.append("en")
+    if not (enable_skeleton or report_languages):
+        note.error("This organization has no enabled outputs. Please update organization settings in Admin page.")
+        st.stop()
 
     base_user = safe_slug(user_name, fallback="user")
     group_id = f"{new_group_id()}__{base_user}"
@@ -889,7 +904,7 @@ if run:
         "input_key": input_key,
         "client_name": user_name or "Anonymous",
         "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": ["th"],
+        "languages": report_languages,
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",  # Use real MediaPipe analysis
         "sample_fps": 5,
@@ -909,8 +924,14 @@ if run:
             employee_email=notify_email,
             organization_name=enterprise_folder,
         )
-        k2 = enqueue_legacy_job(job_skel)
-        k3 = enqueue_legacy_job(job_report)
+        queued_job_ids: Dict[str, str] = {}
+        queued_job_keys: Dict[str, str] = {}
+        if enable_skeleton:
+            queued_job_keys["skeleton"] = enqueue_legacy_job(job_skel)
+            queued_job_ids["skeleton"] = job_skel["job_id"]
+        if report_languages:
+            queued_job_keys["report"] = enqueue_legacy_job(job_report)
+            queued_job_ids["report"] = job_report["job_id"]
     except Exception as e:
         note.error(f"Enqueue job failed: {e}")
         st.stop()
@@ -919,17 +940,12 @@ if run:
     _persist_group_id_to_url(group_id)
     active_group_id = group_id
     st.session_state["last_outputs"] = outputs
-    st.session_state["last_jobs"] = {
-        "skeleton": job_skel["job_id"],
-        "report": job_report["job_id"],
-    }
-    st.session_state["last_job_json_keys"] = {
-        "skeleton": k2,
-        "report": k3,
-    }
+    st.session_state["last_jobs"] = queued_job_ids
+    st.session_state["last_job_json_keys"] = queued_job_keys
 
     note.success(
-        f"Submitted! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}"
+        f"Submitted! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
+        f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
     )
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 

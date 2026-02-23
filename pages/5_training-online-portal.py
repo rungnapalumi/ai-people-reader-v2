@@ -1,4 +1,4 @@
-# pages/2_Submit_Job.py — Video Analysis (วิเคราะห์วิดีโอ)
+# pages/5_training-online-portal.py — Video Analysis (วิเคราะห์วิดีโอ)
 # Upload once (shared key) -> get downloads:
 #   1) Dots video
 #   2) Skeleton video
@@ -34,7 +34,7 @@ from botocore.config import Config
 # -------------------------
 # Page setup
 # -------------------------
-st.set_page_config(page_title="วิเคราะห์วิดีโอ", layout="wide")
+st.set_page_config(page_title="training-online-portal", layout="wide")
 
 THEME_CSS = """
 <style>
@@ -781,17 +781,17 @@ url_group_id = _read_group_id_from_url()
 if url_group_id and not st.session_state.get("last_group_id"):
     st.session_state["last_group_id"] = url_group_id
 
-st.markdown("# วิเคราะห์วิดีโอ")
-st.caption("อัปโหลดวิดีโอ 1 ครั้ง แล้วกด **เริ่มวิเคราะห์** เพื่อสร้าง dots + skeleton + รายงาน")
+st.markdown("# training-online-portal")
+st.caption("อัปโหลดวิดีโอ 1 ครั้ง แล้วกด **เริ่มวิเคราะห์** เพื่อสร้างผลลัพธ์สำหรับ training-online-portal")
 
-page_default_org = "SkillLane"
+page_default_org = "training-online-portal"
 enterprise_folder = st.text_input(
     "ชื่อองค์กร",
     value=page_default_org,
     placeholder="เช่น TTB / ACME Group",
     disabled=True,
 )
-st.caption("หน้านี้กำหนดชื่อองค์กรเป็น SkillLane อัตโนมัติและไม่สามารถแก้ไขได้")
+st.caption("หน้านี้กำหนดชื่อองค์กรเป็น training-online-portal อัตโนมัติและไม่สามารถแก้ไขได้")
 user_name = st.text_input(
     "อีเมลผู้ใช้งาน",
     value="",
@@ -1018,7 +1018,7 @@ else:
         st.caption("ยังไม่พบ group_id ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
     st.divider()
     st.link_button(
-        "กลับไปสู่บทเรียนออนไลน์ (SkillLane)",
+        "กลับไปสู่บทเรียนออนไลน์ (training-online-portal)",
         "https://www.skilllane.com/courses/8076",
         width="stretch",
     )
@@ -1166,7 +1166,7 @@ if videos_ready and not th_report_ready:
 
 st.divider()
 st.link_button(
-    "กลับไปสู่บทเรียนออนไลน์ (SkillLane)",
+    "กลับไปสู่บทเรียนออนไลน์ (training-online-portal)",
     "https://www.skilllane.com/courses/8076",
     width="stretch",
 )

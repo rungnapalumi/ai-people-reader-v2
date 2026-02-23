@@ -104,6 +104,7 @@ HOME_PAGE_TITLE = "Admin"
 SUBMIT_PAGE_TITLE = "SkillLane"
 TTB_PAGE_TITLE = "TTB"
 OPERATION_TEST_PAGE_TITLE = "Operation Test"
+TRAINING_ONLINE_PORTAL_PAGE_TITLE = "training-online-portal"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "0108"
 JOBS_PENDING_PREFIX = "jobs/pending/"
@@ -1115,6 +1116,7 @@ if hasattr(st, "Page") and hasattr(st, "navigation"):
                 st.Page("pages/2_SkillLane.py", title=SUBMIT_PAGE_TITLE),
                 st.Page("pages/3_TTB.py", title=TTB_PAGE_TITLE),
                 st.Page("pages/4_Operation_Test.py", title=OPERATION_TEST_PAGE_TITLE),
+                st.Page("pages/5_training-online-portal.py", title=TRAINING_ONLINE_PORTAL_PAGE_TITLE),
             ]
         }
     )
