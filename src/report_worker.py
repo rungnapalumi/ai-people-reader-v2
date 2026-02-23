@@ -1422,9 +1422,23 @@ def generate_reports_for_lang(
         report_format,
         enterprise_folder,
     )
-    # Graphs are disabled for all report styles by request.
     graph1_path = ""
     graph2_path = ""
+    if report_style != "operation_test":
+        try:
+            effort_data = result.get("effort_detection") or {}
+            shape_data = result.get("shape_detection") or {}
+            if isinstance(effort_data, dict) and isinstance(shape_data, dict) and effort_data and shape_data:
+                graph1_path = os.path.join(out_dir, f"Graph_1_{lang_code}.png")
+                graph2_path = os.path.join(out_dir, f"Graph_2_{lang_code}.png")
+                generate_effort_graph(effort_data, shape_data, graph1_path)
+                generate_shape_graph(shape_data, graph2_path)
+            else:
+                logger.info("[report] skip graph generation: missing effort/shape data lang=%s", lang_code)
+        except Exception as e:
+            logger.warning("[report] graph generation failed for lang=%s: %s", lang_code, e)
+            graph1_path = ""
+            graph2_path = ""
 
     # DOCX (in-memory)
     docx_bio = io.BytesIO()
