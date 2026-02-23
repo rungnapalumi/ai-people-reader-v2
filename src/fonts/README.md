@@ -6,5 +6,5 @@ Required:
 Optional (recommended):
 - Sarabun-Bold.ttf
 
-The report generator will try `src/fonts/` first for Operation Test PDFs.
+The report generator will try `src/fonts/` first for Operational Test PDFs.
 

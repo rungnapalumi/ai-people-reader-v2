@@ -13,7 +13,7 @@ from botocore.config import Config
 SUPPORT_CONTACT_TEXT = "หากพบปัญหากรุณาติดต่อ 0817008484"
 
 
-st.set_page_config(page_title="Operation Test", layout="wide")
+st.set_page_config(page_title="Operational Test", layout="wide")
 
 AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
@@ -369,7 +369,7 @@ def persist_group_id_to_url(group_id: str) -> None:
 ensure_session_defaults()
 render_banner()
 
-st.markdown("# Operation Test")
+st.markdown("# Operational Test")
 st.caption("Upload one video to analyze First Impression only: Eye Contact, Uprightness, and Stance.")
 st.caption("Result format: PDF only.")
 manual_group_id = st.text_input(
@@ -420,6 +420,7 @@ uploaded = st.file_uploader(
 )
 
 run = st.button("Analyze First Impression", type="primary", width="stretch")
+st.caption(SUPPORT_CONTACT_TEXT)
 notice = st.empty()
 
 if run:
@@ -486,7 +487,7 @@ if active_group_id:
     persist_group_id_to_url(active_group_id)
     st.session_state["operation_test_group_id"] = active_group_id
     st.divider()
-    st.subheader("Operation Test Result")
+    st.subheader("Operational Test Result")
     st.caption(f"Group: `{active_group_id}`")
 
     latest_job = get_latest_operation_test_job(active_group_id)
@@ -544,22 +545,22 @@ if active_group_id:
         en_ready = bool(en_key) and s3_key_exists(en_key)
         if th_ready:
             st.link_button(
-                "Download Operation Test PDF (TH)",
-                presigned_get_url(th_key, expires=3600, filename="operation_test_report_th.pdf"),
+                "Download Operational Test PDF (TH)",
+                presigned_get_url(th_key, expires=3600, filename="operational_test_report_th.pdf"),
                 width="stretch",
             )
             st.code(th_key, language="text")
         if en_ready:
             st.link_button(
-                "Download Operation Test PDF (EN)",
-                presigned_get_url(en_key, expires=3600, filename="operation_test_report_en.pdf"),
+                "Download Operational Test PDF (EN)",
+                presigned_get_url(en_key, expires=3600, filename="operational_test_report_en.pdf"),
                 width="stretch",
             )
             st.code(en_key, language="text")
         if (not th_ready) and (not en_ready):
             st.link_button(
-                "Download Operation Test PDF",
-                presigned_get_url(pdf_key, expires=3600, filename="operation_test_report.pdf"),
+                "Download Operational Test PDF",
+                presigned_get_url(pdf_key, expires=3600, filename="operational_test_report.pdf"),
                 width="stretch",
             )
             st.code(pdf_key, language="text")

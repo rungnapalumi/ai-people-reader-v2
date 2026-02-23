@@ -1535,8 +1535,8 @@ def build_pdf_report(
             return False
 
     # Customer requirement:
-    # - Operation Test TH: prefer Sarabun
-    # - Operation Test EN: prefer Arial
+    # - Operational Test TH: prefer Sarabun
+    # - Operational Test EN: prefer Arial
     if is_operation_test and lang_name == "en" and register_arial_fonts():
         pass
     elif is_operation_test and lang_name == "th" and register_sarabun_fonts():

@@ -823,6 +823,7 @@ uploaded = st.file_uploader(
 )
 
 run = st.button("🎬 เริ่มวิเคราะห์", type="primary", width="stretch")
+st.caption(SUPPORT_CONTACT_TEXT)
 
 has_identity_input = bool(employee_id.strip() and notify_email)
 identity_verified = False

@@ -8,5 +8,5 @@ Also accepted by the loader:
 - Angsana New.ttf
 - Angsana New Bold.ttf
 
-The report generator will try these files first for Operation Test PDFs.
+The report generator will try these files first for Operational Test PDFs.
 

@@ -1547,7 +1547,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if report_format not in ("docx", "pdf"):
         report_format = "docx"
 
-    # Operation Test must always produce PDF output.
+    # Operational Test must always produce PDF output.
     if report_style == "operation_test":
         if not languages:
             languages = ["th", "en"]
@@ -1559,7 +1559,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     # output prefix
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
     if report_style == "operation_test" and group_id:
-        # Keep Operation Test outputs under the same group folder as input for easy S3 lookup.
+        # Keep Operational Test outputs under the same group folder as input for easy S3 lookup.
         output_prefix = f"jobs/groups/{group_id}"
         job["output_prefix"] = output_prefix
     # We'll store files under:
@@ -1616,7 +1616,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 pdf_key = f"{output_prefix}/{pdf_name}"
                 upload_bytes(pdf_key, pdf_bytes, "application/pdf")
                 if report_style == "operation_test" and group_id:
-                    # Canonical path for Operation Test so UI/S3 always find report in group folder.
+                    # Canonical path for Operational Test so UI/S3 always find report in group folder.
                     canonical_pdf_key = f"jobs/groups/{group_id}/{pdf_name}"
                     if canonical_pdf_key != pdf_key:
                         upload_bytes(canonical_pdf_key, pdf_bytes, "application/pdf")
