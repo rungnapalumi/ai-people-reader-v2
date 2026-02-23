@@ -1234,17 +1234,17 @@ def build_docx_report(
         st_level = "-" if is_thai else "-"
 
     doc.add_paragraph(("▪ การสบตา (Eye Contact)" if is_thai else "▪ Eye Contact"))
-    lvl1_text = texts["scale"] if (is_operation_test and is_thai) else f"{texts['scale']} {eye_level}"
+    lvl1_text = f"{texts['scale']} {eye_level}"
     lvl1 = doc.add_paragraph(lvl1_text)
     lvl1.runs[0].bold = True
 
     doc.add_paragraph(("▪ ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "▪ Uprightness"))
-    lvl2_text = texts["scale"] if (is_operation_test and is_thai) else f"{texts['scale']} {up_level}"
+    lvl2_text = f"{texts['scale']} {up_level}"
     lvl2 = doc.add_paragraph(lvl2_text)
     lvl2.runs[0].bold = True
 
     doc.add_paragraph(("▪ การยืนและการวางเท้า (Stance)" if is_thai else "▪ Stance"))
-    lvl3_text = texts["scale"] if (is_operation_test and is_thai) else f"{texts['scale']} {st_level}"
+    lvl3_text = f"{texts['scale']} {st_level}"
     lvl3 = doc.add_paragraph(lvl3_text)
     lvl3.runs[0].bold = True
 
@@ -2059,19 +2059,19 @@ def build_pdf_report(
                 write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
                 write_paragraph_block(f"▪ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    "ระดับ:",
+                    f"ระดับ: {_first_impression_level_th(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
                 write_paragraph_block(f"▪ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    "ระดับ:",
+                    f"ระดับ: {_first_impression_level_th(fi.upright_pct, metric='uprightness')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
                 write_paragraph_block(f"▪ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
-                    "ระดับ:",
+                    f"ระดับ: {_first_impression_level_th(fi.stance_stability, metric='stance')}",
                     LEVEL_STYLE,
                     extra_gap=10,
                 )
