@@ -240,7 +240,7 @@ def _org_settings_key(org_name: str) -> str:
     return f"{ORG_SETTINGS_PREFIX}{org_id}.json"
 
 
-def _get_org_settings(org_name: str) -> Dict[str, str]:
+def _get_org_settings(org_name: str) -> Dict[str, Any]:
     if not AWS_BUCKET:
         return {}
     org_id = _normalize_org_name(org_name)
@@ -264,12 +264,25 @@ def _get_org_settings(org_name: str) -> Dict[str, str]:
         "organization_id": org_id,
         "report_style": style,
         "report_format": fmt,
+        "enable_report_th": bool(payload.get("enable_report_th", True)),
+        "enable_report_en": bool(payload.get("enable_report_en", True)),
+        "enable_skeleton": bool(payload.get("enable_skeleton", True)),
+        "enable_dots": bool(payload.get("enable_dots", True)),
         "default_page": str(payload.get("default_page") or "").strip().lower(),
         "updated_at": str(payload.get("updated_at") or ""),
     }
 
 
-def _save_org_settings(org_name: str, report_style: str, report_format: str, default_page: str = "") -> str:
+def _save_org_settings(
+    org_name: str,
+    report_style: str,
+    report_format: str,
+    default_page: str = "",
+    enable_report_th: bool = True,
+    enable_report_en: bool = True,
+    enable_skeleton: bool = True,
+    enable_dots: bool = True,
+) -> str:
     if not AWS_BUCKET:
         raise RuntimeError("Missing AWS_BUCKET (or S3_BUCKET)")
 
@@ -289,6 +302,10 @@ def _save_org_settings(org_name: str, report_style: str, report_format: str, def
         "organization_id": org_id,
         "report_style": style,
         "report_format": fmt,
+        "enable_report_th": bool(enable_report_th),
+        "enable_report_en": bool(enable_report_en),
+        "enable_skeleton": bool(enable_skeleton),
+        "enable_dots": bool(enable_dots),
         "default_page": str(default_page or "").strip().lower(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -303,7 +320,7 @@ def _save_org_settings(org_name: str, report_style: str, report_format: str, def
     return key
 
 
-def _list_org_settings(limit: int = 200) -> List[Dict[str, str]]:
+def _list_org_settings(limit: int = 200) -> List[Dict[str, Any]]:
     if not AWS_BUCKET:
         return []
     s3 = _get_s3_client()
@@ -325,6 +342,10 @@ def _list_org_settings(limit: int = 200) -> List[Dict[str, str]]:
                     "organization_id": str(payload.get("organization_id") or ""),
                     "report_style": str(payload.get("report_style") or ""),
                     "report_format": str(payload.get("report_format") or ""),
+                    "enable_report_th": bool(payload.get("enable_report_th", True)),
+                    "enable_report_en": bool(payload.get("enable_report_en", True)),
+                    "enable_skeleton": bool(payload.get("enable_skeleton", True)),
+                    "enable_dots": bool(payload.get("enable_dots", True)),
                     "default_page": str(payload.get("default_page") or ""),
                     "updated_at": _to_local_time_display(payload.get("updated_at")),
                 }
@@ -919,6 +940,10 @@ def _render_admin_panel() -> None:
 
     default_style_ui = "Simple" if existing_org_cfg.get("report_style") == "simple" else "Full"
     default_format_ui = "PDF" if existing_org_cfg.get("report_format") == "pdf" else "DOCX"
+    default_enable_report_th = bool(existing_org_cfg.get("enable_report_th", True))
+    default_enable_report_en = bool(existing_org_cfg.get("enable_report_en", True))
+    default_enable_skeleton = bool(existing_org_cfg.get("enable_skeleton", True))
+    default_enable_dots = bool(existing_org_cfg.get("enable_dots", True))
     page_options = {
         "Any page": "",
         "AI People Reader page": "ai_people_reader",
@@ -930,6 +955,11 @@ def _render_admin_panel() -> None:
     with st.form("org_settings_form", clear_on_submit=False):
         report_style_ui = st.selectbox("Default Report Type", options=["Full", "Simple"], index=0 if default_style_ui == "Full" else 1)
         report_format_ui = st.selectbox("Default Report File", options=["DOCX", "PDF"], index=0 if default_format_ui == "DOCX" else 1)
+        st.markdown("**Allowed Outputs For This Organization**")
+        enable_report_th_ui = st.checkbox("1) รายงานภาษาไทย (Thai Report)", value=default_enable_report_th)
+        enable_report_en_ui = st.checkbox("2) English Report", value=default_enable_report_en)
+        enable_skeleton_ui = st.checkbox("3) Skeleton", value=default_enable_skeleton)
+        enable_dots_ui = st.checkbox("4) Dots", value=default_enable_dots)
         default_page_ui = st.selectbox(
             "Default Page",
             options=list(page_options.keys()),
@@ -939,11 +969,17 @@ def _render_admin_panel() -> None:
         save_org = st.form_submit_button("Save Organization Settings", type="primary")
     if save_org:
         try:
+            if not (enable_report_th_ui or enable_report_en_ui or enable_skeleton_ui or enable_dots_ui):
+                raise ValueError("At least one output must be enabled.")
             saved_key = _save_org_settings(
                 org_name=org_name,
                 report_style="simple" if report_style_ui == "Simple" else "full",
                 report_format="pdf" if report_format_ui == "PDF" else "docx",
                 default_page=page_options.get(default_page_ui, ""),
+                enable_report_th=enable_report_th_ui,
+                enable_report_en=enable_report_en_ui,
+                enable_skeleton=enable_skeleton_ui,
+                enable_dots=enable_dots_ui,
             )
             st.success(f"Saved organization settings: {saved_key}")
             st.rerun()
@@ -1073,12 +1109,14 @@ def _render_home() -> None:
 
 if hasattr(st, "Page") and hasattr(st, "navigation"):
     nav = st.navigation(
-        [
-            st.Page(_render_home, title=HOME_PAGE_TITLE),
-            st.Page("pages/2_SkillLane.py", title=SUBMIT_PAGE_TITLE),
-            st.Page("pages/3_TTB.py", title=TTB_PAGE_TITLE),
-            st.Page("pages/4_Operation_Test.py", title=OPERATION_TEST_PAGE_TITLE),
-        ]
+        {
+            "Admin": [
+                st.Page(_render_home, title=HOME_PAGE_TITLE),
+                st.Page("pages/2_SkillLane.py", title=SUBMIT_PAGE_TITLE),
+                st.Page("pages/3_TTB.py", title=TTB_PAGE_TITLE),
+                st.Page("pages/4_Operation_Test.py", title=OPERATION_TEST_PAGE_TITLE),
+            ]
+        }
     )
     _inject_ttb_sidebar_logo()
     nav.run()
