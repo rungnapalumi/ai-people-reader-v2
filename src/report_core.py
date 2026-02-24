@@ -1727,10 +1727,12 @@ def build_pdf_report(
         bulletIndent=30,
         spaceAfter=6,
     )
+    # For write_bullet(..., indent=28), visible text starts at x_left + 28 + leftIndent.
+    BULLET_TEXT_X_OFFSET = 28 + int(BULLET_STYLE.leftIndent)
     LEVEL_BULLET_STYLE = ParagraphStyle(
         name="LevelBulletStyle",
         parent=LEVEL_STYLE,
-        leftIndent=BULLET_STYLE.leftIndent,
+        leftIndent=BULLET_TEXT_X_OFFSET,
     )
     # Backward-compatible aliases for existing references.
     HEADER_STYLE = TITLE_STYLE
