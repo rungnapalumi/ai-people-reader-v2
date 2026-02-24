@@ -1781,6 +1781,11 @@ def build_pdf_report(
     header_style = HEADER_STYLE
     content_style = CONTENT_STYLE
     section_style = SECTION_STYLE
+    THAI_NOTE_STYLE = ParagraphStyle(
+        name="ThaiNoteStyle",
+        parent=SUBITEM_STYLE,
+        leading=max(int(SUBITEM_STYLE.leading), int(SUBITEM_STYLE.fontSize * 2.3)),
+    )
 
     # English operation-test template: improve readability with looser spacing.
     if is_operation_test and (not is_thai):
@@ -1807,11 +1812,17 @@ def build_pdf_report(
 
     if is_thai:
         # Thai glyph stacks (vowels/tone marks) need extra vertical room in PDF rendering.
+        TITLE_STYLE.fontSize = min(int(TITLE_STYLE.fontSize), 19)
+        SECTION_STYLE.fontSize = min(int(SECTION_STYLE.fontSize), 13)
+        SUBITEM_STYLE.fontSize = min(int(SUBITEM_STYLE.fontSize), 13)
+        LEVEL_STYLE.fontSize = min(int(LEVEL_STYLE.fontSize), 13)
+        BULLET_STYLE.fontSize = min(int(BULLET_STYLE.fontSize), 13)
         TITLE_STYLE.leading = max(TITLE_STYLE.leading, int(TITLE_STYLE.fontSize * 1.65))
         SECTION_STYLE.leading = max(SECTION_STYLE.leading, int(SECTION_STYLE.fontSize * 1.65))
-        SUBITEM_STYLE.leading = max(SUBITEM_STYLE.leading, int(SUBITEM_STYLE.fontSize * 1.7))
-        LEVEL_STYLE.leading = max(LEVEL_STYLE.leading, int(LEVEL_STYLE.fontSize * 1.7))
-        BULLET_STYLE.leading = max(BULLET_STYLE.leading, int(BULLET_STYLE.fontSize * 1.7))
+        SUBITEM_STYLE.leading = max(SUBITEM_STYLE.leading, int(SUBITEM_STYLE.fontSize * 2.0))
+        LEVEL_STYLE.leading = max(LEVEL_STYLE.leading, int(LEVEL_STYLE.fontSize * 2.0))
+        BULLET_STYLE.leading = max(BULLET_STYLE.leading, int(BULLET_STYLE.fontSize * 2.0))
+        THAI_NOTE_STYLE.leading = max(THAI_NOTE_STYLE.leading, int(THAI_NOTE_STYLE.fontSize * 2.4))
 
     def P(text: str, style):
         # Preserve explicit newlines in ReportLab paragraphs.
@@ -2057,15 +2068,17 @@ def build_pdf_report(
 
     def write_kv_line(label: str, value: str, size: int = 14, value_indent: int = 120, gap_after: int = 22):
         nonlocal y
+        draw_size = max(12, int(size) - 1) if is_thai else int(size)
+        draw_gap_after = max(int(gap_after), int(draw_size * (2.0 if is_thai else 1.4)))
         label_text = _safe_text_for_font(str(label or "").strip())
         value_text = _safe_text_for_font(str(value or "").strip())
         if y <= bottom_content_y:
             c.showPage()
             draw_header_footer()
             y = top_content_y
-        _draw_text_line(x_left, y, bold_font, size, label_text)
-        _draw_text_line(x_left + value_indent, y, CONTENT_STYLE.fontName, size, value_text)
-        y -= gap_after
+        _draw_text_line(x_left, y, bold_font, draw_size, label_text)
+        _draw_text_line(x_left + value_indent, y, CONTENT_STYLE.fontName, draw_size, value_text)
+        y -= draw_gap_after
 
     def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
         for line in lines:
@@ -2250,7 +2263,7 @@ def build_pdf_report(
             write_paragraph_block("หมายเหตุ", SECTION_STYLE, extra_gap=0)
             write_paragraph_block(
                 "ความรู้สึกที่เกิดจากความประทับใจแรกพบนั้นเป็นสิ่งที่มนุษย์หลีกเลี่ยงไม่ได้ และมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน แต่หลังจากนั้นจะเริ่มวิเคราะห์การเคลื่อนไหวโดยรวมมาประกอบการตัดสินใจ",
-                SUBITEM_STYLE,
+                THAI_NOTE_STYLE,
                 extra_gap=6,
             )
             write_paragraph_block("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", SECTION_STYLE, extra_gap=0)
