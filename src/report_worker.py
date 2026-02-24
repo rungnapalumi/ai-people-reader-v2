@@ -1154,56 +1154,12 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     payload["report_en_email_sent"] = True
                     sent_any = True
 
-            # Stage 3: Skeleton later, independent from report readiness.
-            if expect_skeleton and (not skeleton_sent) and email_payload_skeleton_ready(payload):
-                sent, status = send_result_email(
-                    {
-                        "job_id": job_id,
-                        "group_id": payload.get("group_id", ""),
-                        "notify_email": notify_email,
-                        "report_style": report_style,
-                    },
-                    {
-                        **({"Uploaded video (MP4)": payload.get("input_video_key", "")} if is_operation_test else {}),
-                        "Skeleton video (MP4)": payload.get("skeleton_key", ""),
-                    },
-                    {},
-                )
-                statuses.append(f"skeleton:{status}")
-                if sent:
-                    skeleton_sent = True
-                    payload["skeleton_email_sent"] = True
-                    sent_any = True
-            elif not expect_skeleton:
-                skeleton_sent = True
-                payload["skeleton_email_sent"] = True
-
-            # Stage 4: Dots later, independent from report readiness.
-            if (not dots_sent) and email_payload_dots_ready(payload):
-                if expect_dots:
-                    sent, status = send_result_email(
-                        {
-                            "job_id": job_id,
-                            "group_id": payload.get("group_id", ""),
-                            "notify_email": notify_email,
-                            "report_style": report_style,
-                        },
-                        (
-                            {
-                                **({"Uploaded video (MP4)": payload.get("input_video_key", "")} if is_operation_test else {}),
-                                "Dots video (MP4)": payload.get("dots_key", ""),
-                            }
-                        ),
-                        {},
-                    )
-                    statuses.append(f"dots:{status}")
-                    if sent:
-                        dots_sent = True
-                        payload["dots_email_sent"] = True
-                        sent_any = True
-                else:
-                    dots_sent = True
-                    payload["dots_email_sent"] = True
+            # Video emails are handled in src/worker.py as soon as each mode finishes.
+            skeleton_sent = True
+            dots_sent = True
+            payload["skeleton_email_sent"] = True
+            payload["dots_email_sent"] = True
+            statuses.append("video_emails:handled_by_worker")
 
             if not statuses:
                 waiting = []
@@ -1292,8 +1248,7 @@ def find_one_pending_job_key() -> Optional[str]:
                 picked_key = k
                 picked_priority = priority
                 picked_created_at = created_at
-        else:
-            logger.info("[find_one_pending_job_key] ignore non-report key=%s mode=%s", k, mode)
+        logger.info("[find_one_pending_job_key] ignore non-report key=%s mode=%s", k, mode)
     if picked_key:
         logger.info(
             "[find_one_pending_job_key] picked report key=%s priority=%s created_at=%s",
@@ -1720,49 +1675,12 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     report_en_sent = bool(sent)
                     payload["report_en_email_sent"] = report_en_sent
 
-                if expect_skeleton and email_payload_skeleton_ready(payload):
-                    sent, status = send_result_email(
-                        {
-                            "job_id": payload["job_id"],
-                            "group_id": payload.get("group_id", ""),
-                            "notify_email": payload["notify_email"],
-                            "report_style": report_style,
-                        },
-                        {
-                            **({"Uploaded video (MP4)": payload.get("input_video_key", "")} if is_operation_test else {}),
-                            "Skeleton video (MP4)": payload.get("skeleton_key", ""),
-                        },
-                        {},
-                    )
-                    statuses.append(f"skeleton:{status}")
-                    skeleton_sent = bool(sent)
-                    payload["skeleton_email_sent"] = skeleton_sent
-                elif not expect_skeleton:
-                    skeleton_sent = True
-                    payload["skeleton_email_sent"] = True
-
-                if expect_dots and email_payload_dots_ready(payload):
-                    sent, status = send_result_email(
-                        {
-                            "job_id": payload["job_id"],
-                            "group_id": payload.get("group_id", ""),
-                            "notify_email": payload["notify_email"],
-                            "report_style": report_style,
-                        },
-                        (
-                            {
-                                **({"Uploaded video (MP4)": payload.get("input_video_key", "")} if is_operation_test else {}),
-                                "Dots video (MP4)": payload.get("dots_key", ""),
-                            }
-                        ),
-                        {},
-                    )
-                    statuses.append(f"dots:{status}")
-                    dots_sent = bool(sent)
-                    payload["dots_email_sent"] = dots_sent
-                elif not expect_dots:
-                    dots_sent = True
-                    payload["dots_email_sent"] = True
+                # Video emails are handled directly by src/worker.py for independent delivery.
+                skeleton_sent = True
+                dots_sent = True
+                payload["skeleton_email_sent"] = True
+                payload["dots_email_sent"] = True
+                statuses.append("video_emails:handled_by_worker")
 
                 report_th_done = report_th_sent or (not expects_report_th)
                 report_en_done = report_en_sent or (not expect_report_en)

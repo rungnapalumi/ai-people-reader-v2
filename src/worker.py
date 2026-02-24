@@ -7,8 +7,11 @@ import tempfile
 import logging
 import shutil
 import subprocess
+import smtplib
+import re
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List, Tuple
+from email.mime.text import MIMEText
 
 import boto3
 
@@ -40,6 +43,15 @@ if not AWS_BUCKET:
     raise RuntimeError("Missing AWS_BUCKET (or S3_BUCKET)")
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
+SES_REGION = os.getenv("SES_REGION", AWS_REGION).strip() or AWS_REGION
+SES_FROM_EMAIL = (os.getenv("SES_FROM_EMAIL") or "").strip()
+SMTP_HOST = (os.getenv("SMTP_HOST") or "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+SMTP_USERNAME = (os.getenv("SMTP_USERNAME") or "").strip()
+SMTP_PASSWORD = (os.getenv("SMTP_PASSWORD") or "").strip()
+SMTP_USE_TLS = str(os.getenv("SMTP_USE_TLS", "false")).strip().lower() in ("1", "true", "yes", "y")
+SMTP_USE_SSL = str(os.getenv("SMTP_USE_SSL", "true")).strip().lower() in ("1", "true", "yes", "y")
+SMTP_FROM_EMAIL = (os.getenv("SMTP_FROM_EMAIL") or SES_FROM_EMAIL).strip()
 
 PENDING = "jobs/pending/"
 PROCESSING = "jobs/processing/"
@@ -50,6 +62,9 @@ FAILED = "jobs/failed/"
 # -----------------------------
 # S3 helpers
 # -----------------------------
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 def s3_read_json(key: str) -> Dict[str, Any]:
     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
     raw = obj["Body"].read().decode("utf-8")
@@ -76,6 +91,112 @@ def s3_upload_file(path: str, key: str, content_type: str) -> None:
 
 def s3_put_bytes(key: str, data: bytes, content_type: str) -> None:
     s3.put_object(Bucket=AWS_BUCKET, Key=key, Body=data, ContentType=content_type)
+
+
+def presigned_get_url(key: str, expires: int = 86400) -> str:
+    return s3.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": AWS_BUCKET, "Key": key},
+        ExpiresIn=max(300, int(expires)),
+    )
+
+
+def is_valid_email(value: str) -> bool:
+    return bool(EMAIL_RE.match(str(value or "").strip()))
+
+
+def parse_email_list(value: str) -> List[str]:
+    seen: set = set()
+    out: List[str] = []
+    for token in re.split(r"[,\s;]+", str(value or "").strip()):
+        email = token.strip()
+        if not email:
+            continue
+        key = email.lower()
+        if key in seen:
+            continue
+        if is_valid_email(email):
+            seen.add(key)
+            out.append(email)
+    return out
+
+
+def _send_email_via_ses(to_email: str, subject: str, body: str) -> Tuple[bool, str]:
+    if not SES_FROM_EMAIL:
+        return False, "ses_from_not_configured"
+    try:
+        ses = boto3.client("ses", region_name=SES_REGION)
+        ses.send_email(
+            Source=SES_FROM_EMAIL,
+            Destination={"ToAddresses": [to_email]},
+            Message={
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {"Text": {"Data": body, "Charset": "UTF-8"}},
+            },
+        )
+        return True, "sent_via_ses"
+    except Exception as e:
+        return False, f"ses_failed:{e}"
+
+
+def _send_email_via_smtp(to_email: str, subject: str, body: str) -> Tuple[bool, str]:
+    if not (SMTP_HOST and SMTP_USERNAME and SMTP_PASSWORD and SMTP_FROM_EMAIL):
+        return False, "smtp_not_configured"
+    try:
+        msg = MIMEText(body, _charset="utf-8")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_FROM_EMAIL
+        msg["To"] = to_email
+        if SMTP_USE_SSL:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM_EMAIL, [to_email], msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                if SMTP_USE_TLS:
+                    server.starttls()
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM_EMAIL, [to_email], msg.as_string())
+        return True, "sent_via_smtp"
+    except Exception as e:
+        return False, f"smtp_failed:{e}"
+
+
+def send_mode_ready_email(job: Dict[str, Any], result: Dict[str, Any]) -> Tuple[bool, str]:
+    mode = str(result.get("mode") or "").strip().lower()
+    if mode not in ("dots", "skeleton"):
+        return False, "skip_non_video_mode"
+    recipients = parse_email_list(str(job.get("notify_email") or ""))
+    if not recipients:
+        return False, "skip_no_valid_recipients"
+    output_key = str(result.get("output_key") or "").strip()
+    if not output_key:
+        return False, "skip_missing_output_key"
+    try:
+        url = presigned_get_url(output_key, expires=86400)
+    except Exception as e:
+        return False, f"skip_presign_failed:{e}"
+
+    group_id = str(job.get("group_id") or "").strip()
+    job_id = str(job.get("job_id") or "").strip()
+    mode_title = "Dots Video" if mode == "dots" else "Skeleton Video"
+    subject = f"AI People Reader - {mode_title} Ready ({group_id or job_id})"
+    body = (
+        f"Your {mode_title.lower()} is ready.\n\n"
+        f"Group ID: {group_id}\n"
+        f"Job ID: {job_id}\n"
+        f"Download link (valid for 24 hours):\n{url}\n"
+    )
+
+    statuses: List[str] = []
+    sent_any = False
+    for to_email in recipients:
+        sent, status = _send_email_via_ses(to_email, subject, body)
+        if not sent:
+            sent, status = _send_email_via_smtp(to_email, subject, body)
+        statuses.append(f"{to_email}:{status}")
+        sent_any = sent_any or sent
+    return sent_any, " | ".join(statuses)
 
 
 def list_pending(limit: int = 200) -> List[str]:
@@ -771,13 +892,25 @@ def main_loop(poll_seconds: int = 3) -> None:
 
                 logging.info("Processing job %s mode=%s", job.get("job_id"), mode)
                 result = process_job(job)
+                email_sent, email_status = send_mode_ready_email(job, result)
 
                 job["status"] = "finished"
                 job["result"] = result
+                job["notification"] = {
+                    "notify_email": str(job.get("notify_email") or "").strip(),
+                    "sent": bool(email_sent),
+                    "status": email_status,
+                }
                 s3_write_json(processing_key, job)
                 move_job(processing_key, FINISHED)
 
-                logging.info("Finished job %s", job.get("job_id"))
+                logging.info(
+                    "Finished job %s mode=%s email_sent=%s email_status=%s",
+                    job.get("job_id"),
+                    mode,
+                    email_sent,
+                    email_status,
+                )
 
             except Exception as e:
                 logging.exception("Job failed: %s", e)
