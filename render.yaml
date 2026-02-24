@@ -5,7 +5,7 @@ services:
     runtime: python
     region: singapore
     plan: starter
-    buildCommand: python -m pip install --upgrade pip setuptools wheel && python -m pip install --no-cache-dir -r worker_requirements.txt
+    buildCommand: pip install --upgrade pip && pip install "setuptools>=65.0.0" "wheel>=0.38.0" && pip cache purge && pip install --no-cache-dir -r worker_requirements.txt
     startCommand: python src/worker.py
     envVars:
       - key: PYTHON_VERSION
@@ -17,7 +17,7 @@ services:
     runtime: python
     region: singapore
     plan: starter
-    buildCommand: python -m pip install --upgrade pip setuptools wheel && python -m pip install --no-cache-dir -r worker_report_requirements.txt
+    buildCommand: pip install --upgrade pip && pip install "setuptools>=65.0.0" "wheel>=0.38.0" && pip cache purge && pip install --no-cache-dir -r worker_report_requirements.txt
     startCommand: python src/report_worker.py
     envVars:
       - key: PYTHON_VERSION

@@ -1804,6 +1804,14 @@ def build_pdf_report(
         BULLET_STYLE.bulletIndent = 18
         BULLET_STYLE.spaceAfter = 6
 
+    if is_thai:
+        # Thai glyph stacks (vowels/tone marks) need extra vertical room in PDF rendering.
+        TITLE_STYLE.leading = max(TITLE_STYLE.leading, int(TITLE_STYLE.fontSize * 1.65))
+        SECTION_STYLE.leading = max(SECTION_STYLE.leading, int(SECTION_STYLE.fontSize * 1.65))
+        SUBITEM_STYLE.leading = max(SUBITEM_STYLE.leading, int(SUBITEM_STYLE.fontSize * 1.7))
+        LEVEL_STYLE.leading = max(LEVEL_STYLE.leading, int(LEVEL_STYLE.fontSize * 1.7))
+        BULLET_STYLE.leading = max(BULLET_STYLE.leading, int(BULLET_STYLE.fontSize * 1.7))
+
     def P(text: str, style):
         # Preserve explicit newlines in ReportLab paragraphs.
         safe = escape(str(text or "")).replace("\n", "<br/>")
@@ -1815,8 +1823,23 @@ def build_pdf_report(
     def spacer_gap(h=8):
         return gap(h)
 
+    def _normalize_thai_for_pdf(text: str) -> str:
+        normalized = unicodedata.normalize("NFC", str(text or ""))
+        if not is_thai:
+            return normalized
+        # Fix common Thai combining-mark order issues that can trigger stacked collisions.
+        prev = None
+        while prev != normalized:
+            prev = normalized
+            normalized = re.sub(
+                r"([\u0E48-\u0E4C])([\u0E31\u0E34-\u0E37\u0E47\u0E4D])",
+                r"\2\1",
+                normalized,
+            )
+        return normalized
+
     def _safe_text_for_font(text: str) -> str:
-        normalized_text = unicodedata.normalize("NFC", str(text or ""))
+        normalized_text = _normalize_thai_for_pdf(text)
         if requires_unicode_font:
             return normalized_text
         normalized = (
@@ -1894,7 +1917,7 @@ def build_pdf_report(
                 name="ContentMultiline",
                 fontName=font,
                 fontSize=size,
-                leading=max(int(gap), int(size * 1.35)),
+                leading=max(int(gap), int(size * (1.7 if is_thai else 1.35))),
                 spaceAfter=float(CONTENT_STYLE.spaceAfter or 0),
             )
             para = P(_safe_text_for_font(raw_text), para_style)
@@ -1936,7 +1959,7 @@ def build_pdf_report(
             else:
                 lines.append(ln)
 
-        wrapped_gap = max(12, int(size * 1.35))
+        wrapped_gap = max(16 if is_thai else 12, int(size * (1.7 if is_thai else 1.35)))
         for idx, line in enumerate(lines):
             if y <= bottom_content_y:
                 c.showPage()
@@ -1959,7 +1982,7 @@ def build_pdf_report(
                 name="ContentMultilineIndented",
                 fontName=font,
                 fontSize=size,
-                leading=max(int(gap), int(size * 1.35)),
+                leading=max(int(gap), int(size * (1.7 if is_thai else 1.35))),
                 spaceAfter=float(CONTENT_STYLE.spaceAfter or 0),
             )
             para = P(_safe_text_for_font(raw_text), para_style)
@@ -1976,7 +1999,7 @@ def build_pdf_report(
 
         safe = _safe_text_for_font(raw_text)
         initial_lines = simpleSplit(safe, font, size, local_width) or [""]
-        wrapped_gap = max(12, int(size * 1.35))
+        wrapped_gap = max(16 if is_thai else 12, int(size * (1.7 if is_thai else 1.35)))
         for idx, line in enumerate(initial_lines):
             if y <= bottom_content_y:
                 c.showPage()

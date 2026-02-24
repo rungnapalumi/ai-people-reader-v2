@@ -4,6 +4,8 @@ import io
 import math
 import random
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -1526,6 +1528,8 @@ def build_pdf_report(
             regular_font = "ThaiPDFRegular"
             bold_font = "ThaiPDFBold" if ok_bold else "ThaiPDFRegular"
             requires_unicode_font = True
+            # ReportLab Thai rendering clips stacked marks more easily with bold faces.
+            bold_font = regular_font
 
     def draw_header_footer() -> None:
         # Match DOCX branding as closely as possible for PDF output.
@@ -1558,15 +1562,29 @@ def build_pdf_report(
 
     draw_header_footer()
 
+    def _normalize_thai_for_pdf(text: str) -> str:
+        normalized = unicodedata.normalize("NFC", str(text or ""))
+        if not is_thai:
+            return normalized
+        prev = None
+        while prev != normalized:
+            prev = normalized
+            normalized = re.sub(
+                r"([\u0E48-\u0E4C])([\u0E31\u0E34-\u0E37\u0E47\u0E4D])",
+                r"\2\1",
+                normalized,
+            )
+        return normalized
+
     def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
         font = bold_font if bold else regular_font
         if requires_unicode_font:
-            safe = str(text or "")
+            safe = _normalize_thai_for_pdf(text)
         else:
             # Normalize common unicode punctuation for ASCII/Latin fonts.
             normalized = (
-                str(text or "")
+                _normalize_thai_for_pdf(text)
                 .replace("•", "- ")
                 .replace("—", "-")
                 .replace("–", "-")
@@ -1601,7 +1619,7 @@ def build_pdf_report(
             else:
                 lines.append(ln)
 
-        wrapped_gap = max(12, int(size * 1.35))
+        wrapped_gap = max(16 if is_thai else 12, int(size * (1.7 if is_thai else 1.35)))
         for idx, line in enumerate(lines):
             if y <= bottom_content_y:
                 c.showPage()
