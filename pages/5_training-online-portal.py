@@ -963,13 +963,16 @@ if run:
         )
         queued_job_ids: Dict[str, str] = {}
         queued_job_keys: Dict[str, str] = {}
-        queued_job_keys["dots"] = enqueue_legacy_job(job_dots)
-        queued_job_ids["dots"] = job_dots["job_id"]
-        queued_job_keys["skeleton"] = enqueue_legacy_job(job_skel)
-        queued_job_ids["skeleton"] = job_skel["job_id"]
         if report_languages:
             queued_job_keys["report"] = enqueue_legacy_job(job_report)
             queued_job_ids["report"] = job_report["job_id"]
+            print(f"[enqueue] group_id={group_id} mode=report key={queued_job_keys['report']}")
+        queued_job_keys["dots"] = enqueue_legacy_job(job_dots)
+        queued_job_ids["dots"] = job_dots["job_id"]
+        print(f"[enqueue] group_id={group_id} mode=dots key={queued_job_keys['dots']}")
+        queued_job_keys["skeleton"] = enqueue_legacy_job(job_skel)
+        queued_job_ids["skeleton"] = job_skel["job_id"]
+        print(f"[enqueue] group_id={group_id} mode=skeleton key={queued_job_keys['skeleton']}")
     except Exception as e:
         note.error(f"ส่งงานเข้าคิวไม่สำเร็จ: {format_submit_error_message(e)}")
         st.warning(SUPPORT_CONTACT_TEXT)

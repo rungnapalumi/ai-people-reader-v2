@@ -1292,8 +1292,8 @@ def find_one_pending_job_key() -> Optional[str]:
                 picked_key = k
                 picked_priority = priority
                 picked_created_at = created_at
-
-        logger.info("[find_one_pending_job_key] ignore non-report key=%s mode=%s", k, mode)
+        else:
+            logger.info("[find_one_pending_job_key] ignore non-report key=%s mode=%s", k, mode)
     if picked_key:
         logger.info(
             "[find_one_pending_job_key] picked report key=%s priority=%s created_at=%s",
