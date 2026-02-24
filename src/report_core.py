@@ -1727,6 +1727,11 @@ def build_pdf_report(
         bulletIndent=30,
         spaceAfter=6,
     )
+    LEVEL_BULLET_STYLE = ParagraphStyle(
+        name="LevelBulletStyle",
+        parent=LEVEL_STYLE,
+        leftIndent=BULLET_STYLE.leftIndent,
+    )
     # Backward-compatible aliases for existing references.
     HEADER_STYLE = TITLE_STYLE
     CONTENT_STYLE = SUBITEM_STYLE
@@ -2189,13 +2194,13 @@ def build_pdf_report(
 
             write_bullet("ความเข้าถึงได้", indent=28, space_after=6, bullet_text="•")
             write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=6, bullet_text="•")
-            write_paragraph_block(f"ระดับ: {engaging_scale}", LEVEL_STYLE, extra_gap=4)
+            write_paragraph_block(f"ระดับ: {engaging_scale}", LEVEL_BULLET_STYLE, extra_gap=4)
 
             write_paragraph_block("3. ความมั่นใจ:", SECTION_STYLE, extra_gap=0)
             write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=6, bullet_text="•")
             write_bullet("ความมีสมาธิ", indent=28, space_after=6, bullet_text="•")
             write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=6, bullet_text="•")
-            write_paragraph_block(f"ระดับ: {confidence_scale}", LEVEL_STYLE, extra_gap=4)
+            write_paragraph_block(f"ระดับ: {confidence_scale}", LEVEL_BULLET_STYLE, extra_gap=4)
 
             write_paragraph_block("4. ความเป็นผู้นำและความดูมีอำนาจ:", SECTION_STYLE, extra_gap=0)
             write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=6, bullet_text="•")
@@ -2232,13 +2237,13 @@ def build_pdf_report(
 
             write_line_indented("▪ Relatability.", indent=28, gap=17)
             write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=17)
-            write_line(f"Scale: {engaging_scale}", bold=True, gap=20)
+            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=20)
 
             write_line("3. Confidence:", size=12, bold=True, gap=20)
             write_line_indented("▪ Optimistic Presence.", indent=28, gap=17)
             write_line_indented("▪ Focus.", indent=28, gap=17)
             write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=17)
-            write_line(f"Scale: {confidence_scale}", bold=True, gap=20)
+            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=20)
 
             write_line("4. Authority:", size=12, bold=True, gap=20)
             write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=17)
