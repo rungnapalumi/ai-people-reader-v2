@@ -4,6 +4,7 @@ import io
 import math
 import random
 import logging
+import unicodedata
 from xml.sax.saxutils import escape
 from dataclasses import dataclass
 from datetime import datetime
@@ -1515,21 +1516,21 @@ def build_pdf_report(
     def register_noto_thai_fonts() -> bool:
         noto_regular_candidates = [
             os.getenv("PDF_THAI_FONT_PATH", "").strip(),
-            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansThaiUI-Regular.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.ttf",
-            "/Library/Fonts/NotoSansThaiUI-Regular.ttf",
             "/Library/Fonts/NotoSansThai-Regular.ttf",
+            "/Library/Fonts/NotoSansThaiUI-Regular.ttf",
         ]
         noto_bold_candidates = [
             os.getenv("PDF_THAI_FONT_BOLD_PATH", "").strip(),
-            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansThaiUI-Bold.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansThai-Bold.ttf",
-            "/Library/Fonts/NotoSansThaiUI-Bold.ttf",
             "/Library/Fonts/NotoSansThai-Bold.ttf",
+            "/Library/Fonts/NotoSansThaiUI-Bold.ttf",
         ]
 
         regular_path = _first_existing(noto_regular_candidates)
@@ -1621,8 +1622,12 @@ def build_pdf_report(
             ]
         )
         thai_glob_preferred = [
-            p for p in thai_glob_candidates
-            if any(k in os.path.basename(p).lower() for k in ("noto", "sarabun", "thsarabun", "thai", "garuda", "waree", "kinnari", "loma"))
+            p
+            for p in thai_glob_candidates
+            if any(
+                k in os.path.basename(p).lower()
+                for k in ("noto", "sarabun", "thsarabun", "thai", "garuda", "waree", "kinnari", "loma")
+            )
         ]
 
         thai_regular_candidates = [
@@ -1811,10 +1816,11 @@ def build_pdf_report(
         return gap(h)
 
     def _safe_text_for_font(text: str) -> str:
+        normalized_text = unicodedata.normalize("NFC", str(text or ""))
         if requires_unicode_font:
-            return str(text or "")
+            return normalized_text
         normalized = (
-            str(text or "")
+            normalized_text
             .replace("•", "- ")
             .replace("▪", "- ")
             .replace("□", "- ")

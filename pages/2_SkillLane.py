@@ -828,6 +828,7 @@ uploaded = st.file_uploader(
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
 )
+st.caption("หากอัปโหลดล้มเหลวหรือขึ้นสถานะ 400 กรุณา upload วีดีโอใหม่")
 
 run = st.button("🎬 เริ่มวิเคราะห์", type="primary", width="stretch")
 st.caption(SUPPORT_CONTACT_TEXT)
@@ -856,7 +857,7 @@ note = st.empty()
 # -------------------------
 if run:
     if not uploaded:
-        note.error("กรุณาอัปโหลดวิดีโอก่อน")
+        note.error("กรุณา upload วีดีโอใหม่")
         st.stop()
     if not notify_email:
         note.error("กรุณากรอกอีเมลผู้ใช้งาน")

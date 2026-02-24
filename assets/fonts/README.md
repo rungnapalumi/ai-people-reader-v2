@@ -1,3 +1,6 @@
+Place font files in this folder if needed by runtime packaging.
+
+For operation-test PDF rendering, the app primarily reads from `src/fonts/`.
 Place customer font files in this folder for PDF rendering.
 
 Required (preferred):
