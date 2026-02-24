@@ -1857,13 +1857,19 @@ def build_pdf_report(
         )
         return normalized.encode("latin-1", "replace").decode("latin-1")
 
+    def _draw_text_line(x: float, y_pos: float, font_name: str, size: int, line: str) -> None:
+        text_obj = c.beginText()
+        text_obj.setTextOrigin(x, y_pos)
+        text_obj.setFont(font_name, size)
+        text_obj.textLine(str(line or ""))
+        c.drawText(text_obj)
+
     def draw_generated_bottom(text: str, size: int = 10) -> None:
         font = CONTENT_STYLE.fontName
         safe = _safe_text_for_font(text)
-        c.setFont(font, size)
         text_w = pdfmetrics.stringWidth(safe, font, size)
         x = x_left + max(0.0, usable_width - text_w)
-        c.drawString(x, footer_img_y + footer_img_h + 6, safe)
+        _draw_text_line(x, footer_img_y + footer_img_h + 6, font, size, safe)
 
     def append_graph_pages_for_operation_test() -> None:
         """Append Effort/Shape graph pages after the two operation-test narrative pages."""
@@ -1911,6 +1917,7 @@ def build_pdf_report(
         font = bold_font if bold else CONTENT_STYLE.fontName
         if size == 11:
             size = int(CONTENT_STYLE.fontSize)
+        effective_gap = max(int(gap), int(size * (1.9 if is_thai else 1.35)))
         raw_text = str(text or "")
 
         if "\n" in raw_text:
@@ -1918,7 +1925,7 @@ def build_pdf_report(
                 name="ContentMultiline",
                 fontName=font,
                 fontSize=size,
-                leading=max(int(gap), int(size * (1.7 if is_thai else 1.35))),
+                leading=max(effective_gap, int(size * (1.7 if is_thai else 1.35))),
                 spaceAfter=float(CONTENT_STYLE.spaceAfter or 0),
             )
             para = P(_safe_text_for_font(raw_text), para_style)
@@ -1966,9 +1973,8 @@ def build_pdf_report(
                 c.showPage()
                 draw_header_footer()
                 y = top_content_y
-            c.setFont(font, size)
-            c.drawString(x_left, y, line)
-            y -= gap if idx == len(lines) - 1 else wrapped_gap
+            _draw_text_line(x_left, y, font, size, line)
+            y -= effective_gap if idx == len(lines) - 1 else wrapped_gap
 
     def write_line_indented(text: str, indent: int = 0, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
@@ -1977,13 +1983,14 @@ def build_pdf_report(
         font = bold_font if bold else CONTENT_STYLE.fontName
         if size == 11:
             size = int(CONTENT_STYLE.fontSize)
+        effective_gap = max(int(gap), int(size * (1.9 if is_thai else 1.35)))
         raw_text = str(text or "")
         if "\n" in raw_text:
             para_style = ParagraphStyle(
                 name="ContentMultilineIndented",
                 fontName=font,
                 fontSize=size,
-                leading=max(int(gap), int(size * (1.7 if is_thai else 1.35))),
+                leading=max(effective_gap, int(size * (1.7 if is_thai else 1.35))),
                 spaceAfter=float(CONTENT_STYLE.spaceAfter or 0),
             )
             para = P(_safe_text_for_font(raw_text), para_style)
@@ -2006,9 +2013,8 @@ def build_pdf_report(
                 c.showPage()
                 draw_header_footer()
                 y = top_content_y
-            c.setFont(font, size)
-            c.drawString(x, y, line)
-            y -= gap if idx == len(initial_lines) - 1 else wrapped_gap
+            _draw_text_line(x, y, font, size, line)
+            y -= effective_gap if idx == len(initial_lines) - 1 else wrapped_gap
 
     def write_bullet(text: str, indent: int = 28, space_after: int = 4, bullet_text: str = "•"):
         nonlocal y
@@ -2057,10 +2063,8 @@ def build_pdf_report(
             c.showPage()
             draw_header_footer()
             y = top_content_y
-        c.setFont(bold_font, size)
-        c.drawString(x_left, y, label_text)
-        c.setFont(CONTENT_STYLE.fontName, size)
-        c.drawString(x_left + value_indent, y, value_text)
+        _draw_text_line(x_left, y, bold_font, size, label_text)
+        _draw_text_line(x_left + value_indent, y, CONTENT_STYLE.fontName, size, value_text)
         y -= gap_after
 
     def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):

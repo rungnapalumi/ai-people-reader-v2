@@ -1576,9 +1576,17 @@ def build_pdf_report(
             )
         return normalized
 
+    def _draw_text_line(x: float, y_pos: float, font_name: str, size: int, line: str) -> None:
+        text_obj = c.beginText()
+        text_obj.setTextOrigin(x, y_pos)
+        text_obj.setFont(font_name, size)
+        text_obj.textLine(str(line or ""))
+        c.drawText(text_obj)
+
     def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
         font = bold_font if bold else regular_font
+        effective_gap = max(int(gap), int(size * (1.9 if is_thai else 1.35)))
         if requires_unicode_font:
             safe = _normalize_thai_for_pdf(text)
         else:
@@ -1625,9 +1633,8 @@ def build_pdf_report(
                 c.showPage()
                 draw_header_footer()
                 y = top_content_y
-            c.setFont(font, size)
-            c.drawString(x_left, y, line)
-            y -= gap if idx == len(lines) - 1 else wrapped_gap
+            _draw_text_line(x_left, y, font, size, line)
+            y -= effective_gap if idx == len(lines) - 1 else wrapped_gap
 
     def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
         for line in lines:
