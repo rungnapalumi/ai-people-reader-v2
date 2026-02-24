@@ -4,6 +4,7 @@ import io
 import math
 import random
 import logging
+import re
 import unicodedata
 from xml.sax.saxutils import escape
 from dataclasses import dataclass
