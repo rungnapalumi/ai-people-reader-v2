@@ -1512,6 +1512,41 @@ def build_pdf_report(
         requires_unicode_font = True
         return True
 
+    def register_noto_thai_fonts() -> bool:
+        noto_regular_candidates = [
+            os.getenv("PDF_THAI_FONT_PATH", "").strip(),
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansThaiUI-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.ttf",
+            "/Library/Fonts/NotoSansThaiUI-Regular.ttf",
+            "/Library/Fonts/NotoSansThai-Regular.ttf",
+        ]
+        noto_bold_candidates = [
+            os.getenv("PDF_THAI_FONT_BOLD_PATH", "").strip(),
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansThaiUI-Bold.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansThai-Bold.ttf",
+            "/Library/Fonts/NotoSansThaiUI-Bold.ttf",
+            "/Library/Fonts/NotoSansThai-Bold.ttf",
+        ]
+
+        regular_path = _first_existing(noto_regular_candidates)
+        if not regular_path:
+            return False
+        if not _register_ttf("NotoThaiRegular", regular_path, require_thai=True):
+            return False
+
+        bold_path = _first_existing(noto_bold_candidates)
+        ok_bold = bool(bold_path) and _register_ttf("NotoThaiBold", bold_path, require_thai=True)
+
+        nonlocal regular_font, bold_font, requires_unicode_font
+        regular_font = "NotoThaiRegular"
+        bold_font = "NotoThaiBold" if ok_bold else "NotoThaiRegular"
+        requires_unicode_font = True
+        return True
+
     def register_arial_fonts() -> bool:
         base_dir = os.path.dirname(os.path.abspath(__file__))  # .../src
         arial_regular_candidates = [
@@ -1572,11 +1607,11 @@ def build_pdf_report(
             return False
 
     # Customer requirement:
-    # - Operational Test TH: prefer Sarabun
+    # - Operational Test TH: prefer Noto Thai (better Thai diacritic rendering in PDF viewers), then Sarabun
     # - Operational Test EN: prefer Arial
     if is_operation_test and lang_name == "en" and register_arial_fonts():
         pass
-    elif is_operation_test and lang_name == "th" and register_sarabun_fonts():
+    elif is_operation_test and lang_name == "th" and (register_noto_thai_fonts() or register_sarabun_fonts()):
         pass
     elif is_thai:
         thai_glob_candidates = _glob_existing(
