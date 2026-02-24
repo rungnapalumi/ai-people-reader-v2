@@ -2207,7 +2207,7 @@ def build_pdf_report(
             write_paragraph_block("4. ความเป็นผู้นำและความดูมีอำนาจ:", SECTION_STYLE, extra_gap=0)
             write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=6, bullet_text="•")
             write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=6, bullet_text="•")
-            write_paragraph_block(f"ระดับ: {authority_scale}", LEVEL_STYLE, extra_gap=4)
+            write_paragraph_block(f"ระดับ: {authority_scale}", LEVEL_BULLET_STYLE, extra_gap=4)
         else:
             if thai_font_fallback and lang_name == "th":
                 write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
@@ -2250,7 +2250,7 @@ def build_pdf_report(
             write_line("4. Authority:", size=12, bold=True, gap=20)
             write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=17)
             write_line_indented("▪ Pressing for action.", indent=28, gap=17)
-            write_line(f"Scale: {authority_scale}", bold=True, gap=20)
+            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=20)
         append_graph_pages_for_operation_test()
         c.save()
         return
