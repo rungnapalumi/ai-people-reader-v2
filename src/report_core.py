@@ -1549,6 +1549,35 @@ def build_pdf_report(
         requires_unicode_font = True
         return True
 
+    def register_tlwg_thai_fonts() -> bool:
+        tlwg_regular_candidates = [
+            "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree.ttf",
+            "/usr/share/fonts/truetype/tlwg/Kinnari.ttf",
+            "/usr/share/fonts/truetype/tlwg/Loma.ttf",
+        ]
+        tlwg_bold_candidates = [
+            "/usr/share/fonts/truetype/tlwg/Garuda-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Kinnari-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Loma-Bold.ttf",
+        ]
+
+        regular_path = _first_existing(tlwg_regular_candidates)
+        if not regular_path:
+            return False
+        if not _register_ttf("TLWGThaiRegular", regular_path, require_thai=True):
+            return False
+
+        bold_path = _first_existing(tlwg_bold_candidates)
+        ok_bold = bool(bold_path) and _register_ttf("TLWGThaiBold", bold_path, require_thai=True)
+
+        nonlocal regular_font, bold_font, requires_unicode_font
+        regular_font = "TLWGThaiRegular"
+        bold_font = "TLWGThaiBold" if ok_bold else "TLWGThaiRegular"
+        requires_unicode_font = True
+        return True
+
     def register_arial_fonts() -> bool:
         base_dir = os.path.dirname(os.path.abspath(__file__))  # .../src
         arial_regular_candidates = [
@@ -1613,7 +1642,9 @@ def build_pdf_report(
     # - Operational Test EN: prefer Arial
     if is_operation_test and lang_name == "en" and register_arial_fonts():
         pass
-    elif is_operation_test and lang_name == "th" and (register_noto_thai_fonts() or register_sarabun_fonts()):
+    elif is_operation_test and lang_name == "th" and (
+        register_tlwg_thai_fonts() or register_noto_thai_fonts() or register_sarabun_fonts()
+    ):
         pass
     elif is_thai:
         thai_glob_candidates = _glob_existing(
@@ -1695,6 +1726,7 @@ def build_pdf_report(
     # Using regular Thai font for emphasis text reduces vowel/tone-mark collisions.
     if is_thai and requires_unicode_font:
         bold_font = regular_font
+    logger.info("[pdf] thai_font regular=%s bold=%s unicode=%s", regular_font, bold_font, requires_unicode_font)
 
     def draw_header_footer() -> None:
         # Match DOCX branding as closely as possible for PDF output.
