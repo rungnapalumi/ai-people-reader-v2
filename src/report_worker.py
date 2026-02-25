@@ -98,6 +98,9 @@ THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
 THAI_PDF_IMAGE_CAPTURE_STRICT = str(
     os.getenv("THAI_PDF_IMAGE_CAPTURE_STRICT", "true")
 ).strip().lower() in ("1", "true", "yes", "on")
+THAI_CAPTURE_FROM_DOCX_DIRECT = str(
+    os.getenv("THAI_CAPTURE_FROM_DOCX_DIRECT", "true")
+).strip().lower() in ("1", "true", "yes", "on")
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
@@ -484,6 +487,76 @@ def rasterize_pdf_bytes_to_image_pdf_bytes(pdf_bytes: bytes, dpi: int = 220) -> 
     if not result:
         raise RuntimeError("Rasterized PDF output is empty")
     return result
+
+
+def convert_docx_bytes_to_image_pdf_bytes(docx_bytes: bytes, filename_stem: str = "report", dpi: int = 220) -> bytes:
+    """
+    Convert DOCX to PNG pages via LibreOffice, then merge PNG pages into a PDF.
+    This captures Writer layout directly from DOCX before any reportlab path.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception as e:
+        raise RuntimeError(f"PyMuPDF is required for DOCX image capture mode: {e}")
+
+    if not docx_bytes:
+        raise RuntimeError("DOCX bytes are empty")
+    lo_bin = _find_libreoffice_bin()
+    if not lo_bin:
+        raise RuntimeError("LibreOffice binary not found (expected libreoffice/soffice)")
+
+    with tempfile.TemporaryDirectory(prefix="docx2imgpdf_") as td:
+        input_path = os.path.join(td, f"{filename_stem}.docx")
+        with open(input_path, "wb") as f:
+            f.write(docx_bytes)
+
+        # LibreOffice writer export to PNG (one file per page in most builds).
+        cmd = [
+            lo_bin,
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--convert-to",
+            "png",
+            "--outdir",
+            td,
+            input_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=DOCX_TO_PDF_TIMEOUT_SECONDS)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"LibreOffice DOCX->PNG failed rc={proc.returncode} err={err[:500]}")
+
+        png_paths = sorted(
+            [
+                os.path.join(td, name)
+                for name in os.listdir(td)
+                if str(name).lower().endswith(".png")
+            ]
+        )
+        if not png_paths:
+            raise RuntimeError("DOCX->PNG produced no images")
+
+        out = fitz.open()
+        for p in png_paths:
+            with open(p, "rb") as f:
+                img_bytes = f.read()
+            # Optional upscale by dpi via pixmap resample if needed.
+            if dpi and int(dpi) > 96:
+                img_doc = fitz.open("png", img_bytes)
+                pix = img_doc[0].get_pixmap(matrix=fitz.Matrix(float(dpi) / 96.0, float(dpi) / 96.0), alpha=False)
+                img_bytes = pix.tobytes("png")
+                img_doc.close()
+            img_pdf = fitz.open("png", img_bytes).convert_to_pdf()
+            page_doc = fitz.open("pdf", img_pdf)
+            out.insert_pdf(page_doc)
+            page_doc.close()
+
+        result = out.tobytes(deflate=True, garbage=3)
+        out.close()
+        if not result:
+            raise RuntimeError("DOCX image-capture PDF output is empty")
+        return result
 
 def s3_key_exists(key: str) -> bool:
     try:
@@ -1703,9 +1776,22 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 pdf_render_mode = "docx_or_reportlab"
                 if lang_code == "th" and THAI_PDF_IMAGE_CAPTURE:
                     try:
-                        pdf_bytes = rasterize_pdf_bytes_to_image_pdf_bytes(pdf_bytes, dpi=THAI_PDF_IMAGE_DPI)
-                        logger.info("[pdf] thai image-capture pdf enabled lang=%s dpi=%s", lang_code, THAI_PDF_IMAGE_DPI)
-                        pdf_render_mode = "image_capture"
+                        if THAI_CAPTURE_FROM_DOCX_DIRECT:
+                            pdf_bytes = convert_docx_bytes_to_image_pdf_bytes(
+                                docx_bytes,
+                                filename_stem=f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}",
+                                dpi=THAI_PDF_IMAGE_DPI,
+                            )
+                            logger.info(
+                                "[pdf] thai docx-direct image-capture enabled lang=%s dpi=%s",
+                                lang_code,
+                                THAI_PDF_IMAGE_DPI,
+                            )
+                            pdf_render_mode = "image_capture_docx_direct"
+                        else:
+                            pdf_bytes = rasterize_pdf_bytes_to_image_pdf_bytes(pdf_bytes, dpi=THAI_PDF_IMAGE_DPI)
+                            logger.info("[pdf] thai image-capture pdf enabled lang=%s dpi=%s", lang_code, THAI_PDF_IMAGE_DPI)
+                            pdf_render_mode = "image_capture"
                     except Exception as e:
                         if THAI_PDF_IMAGE_CAPTURE_STRICT:
                             raise RuntimeError(
