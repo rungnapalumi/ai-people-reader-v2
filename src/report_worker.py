@@ -402,7 +402,12 @@ def _find_libreoffice_bin() -> str:
         resolved = shutil.which(candidate)
         if resolved:
             return resolved
-    for candidate in ("/usr/bin/libreoffice", "/usr/bin/soffice"):
+    for candidate in (
+        "/usr/bin/libreoffice",
+        "/usr/bin/soffice",
+        "/usr/lib/libreoffice/program/soffice",
+        "/usr/lib/libreoffice/program/soffice.bin",
+    ):
         if os.path.exists(candidate):
             return candidate
     return ""

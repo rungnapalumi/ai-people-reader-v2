@@ -5,6 +5,7 @@ libxext6
 libxrender-dev
 libgomp1
 ffmpeg
+libreoffice
 libreoffice-writer
 fonts-noto-core
 fonts-noto-ui-core
