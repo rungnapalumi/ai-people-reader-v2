@@ -407,9 +407,26 @@ def _find_libreoffice_bin() -> str:
         "/usr/bin/soffice",
         "/usr/lib/libreoffice/program/soffice",
         "/usr/lib/libreoffice/program/soffice.bin",
+        "/opt/render/project/src/.apt/usr/bin/libreoffice",
+        "/opt/render/project/src/.apt/usr/bin/soffice",
+        "/opt/render/project/src/.apt/usr/lib/libreoffice/program/soffice",
+        "/opt/render/project/src/.apt/usr/lib/libreoffice/program/soffice.bin",
     ):
         if os.path.exists(candidate):
             return candidate
+    # Last-resort scan for buildpack-style installs where binary location may vary.
+    try:
+        import glob
+
+        for pat in (
+            "/opt/render/project/src/.apt/**/soffice",
+            "/opt/render/project/src/.apt/**/libreoffice",
+        ):
+            for p in glob.glob(pat, recursive=True):
+                if os.path.isfile(p) and os.access(p, os.X_OK):
+                    return p
+    except Exception:
+        pass
     return ""
 
 
