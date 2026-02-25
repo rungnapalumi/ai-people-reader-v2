@@ -29,6 +29,7 @@ import logging
 import tempfile
 import re
 import subprocess
+import shutil
 import smtplib
 import ssl
 from datetime import datetime, timezone
@@ -86,6 +87,11 @@ SMTP_USE_SSL = str(os.getenv("SMTP_USE_SSL", "false")).strip().lower() in ("1", 
 EMAIL_LINK_EXPIRES_SECONDS = int(os.getenv("EMAIL_LINK_EXPIRES_SECONDS", "604800"))  # up to 7 days
 MAX_DOCX_ATTACHMENT_BYTES = int(os.getenv("MAX_DOCX_ATTACHMENT_BYTES", "4194304"))  # 4MB per docx
 ENABLE_EMAIL_NOTIFICATIONS = str(os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "true")).strip().lower() in ("1", "true", "yes", "on")
+EMERGENCY_THAI_DOCX_FALLBACK = str(
+    os.getenv("EMERGENCY_THAI_DOCX_FALLBACK", "false")
+).strip().lower() in ("1", "true", "yes", "on")
+THAI_PDF_VIA_DOCX = str(os.getenv("THAI_PDF_VIA_DOCX", "true")).strip().lower() in ("1", "true", "yes", "on")
+DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("DOCX_TO_PDF_TIMEOUT_SECONDS", "180"))
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
@@ -380,6 +386,62 @@ def upload_file(path: str, key: str, content_type: str) -> None:
     logger.info("[s3_upload_file] %s -> %s", path, key)
     with open(path, "rb") as f:
         s3.upload_fileobj(f, AWS_BUCKET, key, ExtraArgs={"ContentType": content_type})
+
+
+def _find_libreoffice_bin() -> str:
+    for candidate in ("libreoffice", "soffice"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    for candidate in ("/usr/bin/libreoffice", "/usr/bin/soffice"):
+        if os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def convert_docx_bytes_to_pdf_bytes(docx_bytes: bytes, filename_stem: str = "report") -> bytes:
+    if not docx_bytes:
+        raise RuntimeError("DOCX bytes are empty")
+    lo_bin = _find_libreoffice_bin()
+    if not lo_bin:
+        raise RuntimeError("LibreOffice binary not found (expected libreoffice/soffice)")
+
+    with tempfile.TemporaryDirectory(prefix="docx2pdf_") as td:
+        input_path = os.path.join(td, f"{filename_stem}.docx")
+        expected_pdf_path = os.path.join(td, f"{filename_stem}.pdf")
+        with open(input_path, "wb") as f:
+            f.write(docx_bytes)
+
+        cmd = [
+            lo_bin,
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--convert-to",
+            "pdf:writer_pdf_Export",
+            "--outdir",
+            td,
+            input_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=DOCX_TO_PDF_TIMEOUT_SECONDS)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"LibreOffice convert failed rc={proc.returncode} err={err[:500]}")
+
+        pdf_path = expected_pdf_path
+        if not os.path.exists(pdf_path):
+            # Some platforms output lowercase/variant names; scan folder as fallback.
+            cands = [p for p in os.listdir(td) if p.lower().endswith(".pdf")]
+            if cands:
+                pdf_path = os.path.join(td, cands[0])
+        if not os.path.exists(pdf_path):
+            raise RuntimeError("LibreOffice conversion succeeded but PDF output not found")
+
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        if not pdf_bytes:
+            raise RuntimeError("Converted PDF is empty")
+        return pdf_bytes
 
 def s3_key_exists(key: str) -> bool:
     try:
@@ -1437,22 +1499,34 @@ def generate_reports_for_lang(
     pdf_bytes = None
     pdf_out_path = ""
     if wants_pdf:
-        pdf_out_path = os.path.join(out_dir, f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf")
-        try:
-            build_pdf_report(
-                report,
-                pdf_out_path,
-                graph1_path=graph1_path,
-                graph2_path=graph2_path,
-                lang=lang_code,
-                report_style=report_style,
-            )
-            if os.path.exists(pdf_out_path):
-                with open(pdf_out_path, "rb") as f:
-                    pdf_bytes = f.read()
-        except Exception as e:
-            logger.warning("[pdf] PDF build failed for lang=%s: %s", lang_code, e)
-            pdf_bytes = None
+        if lang_code == "th" and THAI_PDF_VIA_DOCX:
+            try:
+                pdf_bytes = convert_docx_bytes_to_pdf_bytes(
+                    docx_bytes,
+                    filename_stem=f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}",
+                )
+                logger.info("[pdf] generated via docx->pdf conversion lang=%s", lang_code)
+            except Exception as e:
+                logger.warning("[pdf] docx->pdf conversion failed for lang=%s: %s", lang_code, e)
+                pdf_bytes = None
+
+        if not pdf_bytes:
+            pdf_out_path = os.path.join(out_dir, f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf")
+            try:
+                build_pdf_report(
+                    report,
+                    pdf_out_path,
+                    graph1_path=graph1_path,
+                    graph2_path=graph2_path,
+                    lang=lang_code,
+                    report_style=report_style,
+                )
+                if os.path.exists(pdf_out_path):
+                    with open(pdf_out_path, "rb") as f:
+                        pdf_bytes = f.read()
+            except Exception as e:
+                logger.warning("[pdf] PDF build failed for lang=%s: %s", lang_code, e)
+                pdf_bytes = None
 
     key_map = {
         "graph1_path": graph1_path,
@@ -1550,10 +1624,18 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             g1_key = None
             g2_key = None
 
-            # Upload DOCX when requested format is DOCX.
+            # Emergency switch: Thai PDF glyph overlap can block delivery.
+            # In this mode, keep Thai output as DOCX so customers receive readable files immediately.
+            force_thai_docx = bool(EMERGENCY_THAI_DOCX_FALLBACK and lang_code == "th")
+            wants_docx_output = (report_format == "docx") or force_thai_docx
+            wants_pdf_output = (report_format == "pdf") and (not force_thai_docx)
+            if force_thai_docx and report_format == "pdf":
+                logger.warning("[report] emergency_thai_docx_fallback enabled; lang=th will upload DOCX instead of PDF")
+
+            # Upload DOCX when requested, or when Thai emergency fallback is active.
             analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             docx_key = None
-            if report_format == "docx":
+            if wants_docx_output:
                 docx_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.docx"
                 docx_key = f"{output_prefix}/{docx_name}"
                 upload_bytes(
@@ -1562,9 +1644,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
 
-            # Upload PDF when requested format is PDF.
+            # Upload PDF when requested and not overridden by Thai fallback.
             pdf_key = None
-            if report_format == "pdf":
+            if wants_pdf_output:
                 if not pdf_bytes:
                     raise RuntimeError("PDF format requested but PDF generation failed")
                 pdf_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf"
