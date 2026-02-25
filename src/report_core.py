@@ -4,7 +4,6 @@ import io
 import math
 import random
 import logging
-import re
 import unicodedata
 from xml.sax.saxutils import escape
 from dataclasses import dataclass
@@ -17,6 +16,8 @@ import matplotlib.pyplot as plt
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 try:
     from mediapipe.python.solutions import pose as mp_pose_module
@@ -1404,6 +1405,39 @@ def build_docx_report(
     generated_run = generated_para.runs[0]
     generated_run.italic = True
     generated_run.font.size = Pt(11)
+
+    if is_thai:
+        # Ensure Thai complex-script font is explicitly set in DOCX so
+        # LibreOffice conversion does not fallback to problematic glyph shaping.
+        thai_font_family = os.getenv("DOCX_THAI_FONT_FAMILY", "Noto Sans Thai UI").strip() or "Noto Sans Thai UI"
+
+        def _apply_run_font(run, font_name: str) -> None:
+            if run is None:
+                return
+            run.font.name = font_name
+            r_pr = run._element.get_or_add_rPr()
+            r_fonts = r_pr.rFonts
+            if r_fonts is None:
+                r_fonts = OxmlElement("w:rFonts")
+                r_pr.append(r_fonts)
+            r_fonts.set(qn("w:ascii"), font_name)
+            r_fonts.set(qn("w:hAnsi"), font_name)
+            r_fonts.set(qn("w:eastAsia"), font_name)
+            r_fonts.set(qn("w:cs"), font_name)
+
+        # Apply to all body runs.
+        for p in doc.paragraphs:
+            for run in p.runs:
+                _apply_run_font(run, thai_font_family)
+
+        # Apply to header/footer runs too, for consistency.
+        for sec in doc.sections:
+            for p in sec.header.paragraphs:
+                for run in p.runs:
+                    _apply_run_font(run, thai_font_family)
+            for p in sec.footer.paragraphs:
+                for run in p.runs:
+                    _apply_run_font(run, thai_font_family)
     
     # Save
     doc.save(output_bio)
@@ -1517,21 +1551,21 @@ def build_pdf_report(
     def register_noto_thai_fonts() -> bool:
         noto_regular_candidates = [
             os.getenv("PDF_THAI_FONT_PATH", "").strip(),
-            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansThaiUI-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.ttf",
-            "/Library/Fonts/NotoSansThai-Regular.ttf",
             "/Library/Fonts/NotoSansThaiUI-Regular.ttf",
+            "/Library/Fonts/NotoSansThai-Regular.ttf",
         ]
         noto_bold_candidates = [
             os.getenv("PDF_THAI_FONT_BOLD_PATH", "").strip(),
-            "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansThaiUI-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansThai-Bold.ttf",
-            "/Library/Fonts/NotoSansThai-Bold.ttf",
             "/Library/Fonts/NotoSansThaiUI-Bold.ttf",
+            "/Library/Fonts/NotoSansThai-Bold.ttf",
         ]
 
         regular_path = _first_existing(noto_regular_candidates)
@@ -1643,7 +1677,7 @@ def build_pdf_report(
     if is_operation_test and lang_name == "en" and register_arial_fonts():
         pass
     elif is_operation_test and lang_name == "th" and (
-        register_tlwg_thai_fonts() or register_noto_thai_fonts() or register_sarabun_fonts()
+        register_noto_thai_fonts() or register_sarabun_fonts() or register_tlwg_thai_fonts()
     ):
         pass
     elif is_thai:
@@ -1868,19 +1902,7 @@ def build_pdf_report(
         return gap(h)
 
     def _normalize_thai_for_pdf(text: str) -> str:
-        normalized = unicodedata.normalize("NFC", str(text or ""))
-        if not is_thai:
-            return normalized
-        # Fix common Thai combining-mark order issues that can trigger stacked collisions.
-        prev = None
-        while prev != normalized:
-            prev = normalized
-            normalized = re.sub(
-                r"([\u0E48-\u0E4C])([\u0E31\u0E34-\u0E37\u0E47\u0E4D])",
-                r"\2\1",
-                normalized,
-            )
-        return normalized
+        return unicodedata.normalize("NFC", str(text or ""))
 
     def _safe_text_for_font(text: str) -> str:
         normalized_text = _normalize_thai_for_pdf(text)
@@ -2335,14 +2357,18 @@ def build_pdf_report(
                     return "Low"
                 return "-"
 
-            write_line("", gap=10)
-            write_line("Note", bold=True, gap=18)
+            en_section_gap = 16
+            en_item_gap = 14
+            en_scale_gap = 14
+
+            write_line("", gap=8)
+            write_line("Note", bold=True, gap=en_item_gap)
             write_line(
                 "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception.",
-                gap=18,
+                gap=en_item_gap,
             )
-            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=20)
-            write_line_indented("▪ Approachability.", indent=28, gap=17)
+            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Approachability.", indent=28, gap=en_item_gap)
 
             # Keep section 2 on page 1; do not force a page break after the first bullet.
             write_line("", gap=2)
@@ -2351,20 +2377,25 @@ def build_pdf_report(
             confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line_indented("▪ Relatability.", indent=28, gap=17)
-            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=17)
-            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=20)
+            write_line_indented("▪ Relatability.", indent=28, gap=en_item_gap)
+            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=en_item_gap)
+            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=en_scale_gap)
 
-            write_line("3. Confidence:", size=12, bold=True, gap=20)
-            write_line_indented("▪ Optimistic Presence.", indent=28, gap=17)
-            write_line_indented("▪ Focus.", indent=28, gap=17)
-            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=17)
-            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=20)
+            # Requested EN layout: page 1 ends after section 2, sections 3-4 on page 2.
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
 
-            write_line("4. Authority:", size=12, bold=True, gap=20)
-            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=17)
-            write_line_indented("▪ Pressing for action.", indent=28, gap=17)
-            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=20)
+            write_line("3. Confidence:", size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Optimistic Presence.", indent=28, gap=en_item_gap)
+            write_line_indented("▪ Focus.", indent=28, gap=en_item_gap)
+            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_item_gap)
+            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=en_scale_gap)
+
+            write_line("4. Authority:", size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_item_gap)
+            write_line_indented("▪ Pressing for action.", indent=28, gap=en_item_gap)
+            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_scale_gap)
         append_graph_pages_for_operation_test()
         c.save()
         return
