@@ -1696,19 +1696,23 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
             # Upload PDF when requested and not overridden by Thai fallback.
             pdf_key = None
+            pdf_render_mode = "disabled"
             if wants_pdf_output:
                 if not pdf_bytes:
                     raise RuntimeError("PDF format requested but PDF generation failed")
+                pdf_render_mode = "docx_or_reportlab"
                 if lang_code == "th" and THAI_PDF_IMAGE_CAPTURE:
                     try:
                         pdf_bytes = rasterize_pdf_bytes_to_image_pdf_bytes(pdf_bytes, dpi=THAI_PDF_IMAGE_DPI)
                         logger.info("[pdf] thai image-capture pdf enabled lang=%s dpi=%s", lang_code, THAI_PDF_IMAGE_DPI)
+                        pdf_render_mode = "image_capture"
                     except Exception as e:
                         if THAI_PDF_IMAGE_CAPTURE_STRICT:
                             raise RuntimeError(
                                 f"thai image-capture conversion failed (strict mode): {e}"
                             ) from e
                         logger.warning("[pdf] thai image-capture conversion failed lang=%s err=%s", lang_code, e)
+                        pdf_render_mode = "docx_or_reportlab_fallback"
                 pdf_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf"
                 pdf_key = f"{output_prefix}/{pdf_name}"
                 upload_bytes(pdf_key, pdf_bytes, "application/pdf")
@@ -1720,7 +1724,11 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     pdf_key = canonical_pdf_key
 
             outputs["graphs"][lang_code.upper()] = {"graph1_key": g1_key, "graph2_key": g2_key}
-            outputs["reports"][lang_code.upper()] = {"docx_key": docx_key, "pdf_key": pdf_key}
+            outputs["reports"][lang_code.upper()] = {
+                "docx_key": docx_key,
+                "pdf_key": pdf_key,
+                "pdf_render_mode": pdf_render_mode,
+            }
 
         # Save structured outputs into job JSON
         job["output_prefix"] = output_prefix
