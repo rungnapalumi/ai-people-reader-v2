@@ -1,0 +1,13 @@
+libgl1-mesa-glx
+libglib2.0-0
+libsm6
+libxext6
+libxrender-dev
+libgomp1
+ffmpeg
+libreoffice
+libreoffice-writer
+fonts-noto-core
+fonts-noto-ui-core
+fonts-thai-tlwg
+
