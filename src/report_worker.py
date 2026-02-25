@@ -95,6 +95,9 @@ PDF_VIA_DOCX_FOR_ALL_LANGS = str(os.getenv("PDF_VIA_DOCX_FOR_ALL_LANGS", "true")
 DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("DOCX_TO_PDF_TIMEOUT_SECONDS", "180"))
 THAI_PDF_IMAGE_CAPTURE = str(os.getenv("THAI_PDF_IMAGE_CAPTURE", "true")).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
+THAI_PDF_IMAGE_CAPTURE_STRICT = str(
+    os.getenv("THAI_PDF_IMAGE_CAPTURE_STRICT", "true")
+).strip().lower() in ("1", "true", "yes", "on")
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
@@ -1701,6 +1704,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                         pdf_bytes = rasterize_pdf_bytes_to_image_pdf_bytes(pdf_bytes, dpi=THAI_PDF_IMAGE_DPI)
                         logger.info("[pdf] thai image-capture pdf enabled lang=%s dpi=%s", lang_code, THAI_PDF_IMAGE_DPI)
                     except Exception as e:
+                        if THAI_PDF_IMAGE_CAPTURE_STRICT:
+                            raise RuntimeError(
+                                f"thai image-capture conversion failed (strict mode): {e}"
+                            ) from e
                         logger.warning("[pdf] thai image-capture conversion failed lang=%s err=%s", lang_code, e)
                 pdf_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf"
                 pdf_key = f"{output_prefix}/{pdf_name}"
