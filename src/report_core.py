@@ -1439,9 +1439,9 @@ def build_docx_report(
     generated_run.italic = True
     generated_run.font.size = Pt(11)
 
-    if is_thai:
-        # Ensure Thai complex-script font is explicitly set in DOCX so
-        # LibreOffice conversion does not fallback to problematic glyph shaping.
+    if is_thai and str(os.getenv("DOCX_FORCE_THAI_FONT", "false")).strip().lower() in ("1", "true", "yes", "on"):
+        # Optional override only. Keep disabled by default so DOCX uses the
+        # previous behavior that users validated as correct.
         thai_font_family = os.getenv("DOCX_THAI_FONT_FAMILY", "Noto Sans Thai UI").strip() or "Noto Sans Thai UI"
 
         def _apply_run_font(run, font_name: str) -> None:
