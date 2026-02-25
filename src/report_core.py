@@ -1205,6 +1205,22 @@ def build_docx_report(
                 pf.space_before = Pt(6)
                 pf.space_after = Pt(0)
                 continue
+
+    def _apply_th_bullet_layout(paragraph) -> None:
+        if (not is_thai) or (paragraph is None):
+            return
+        # Keep Thai bullet marker slightly outdented while body text starts at a fixed column.
+        pf = paragraph.paragraph_format
+        pf.left_indent = Pt(28)
+        pf.first_line_indent = Pt(-14)
+
+    def _apply_th_scale_layout(paragraph) -> None:
+        if (not is_thai) or (paragraph is None):
+            return
+        # Align "ระดับ:" with the first character column of bullet body text.
+        pf = paragraph.paragraph_format
+        pf.left_indent = Pt(28)
+        pf.first_line_indent = Pt(0)
     
     # Add header and footer images to all pages
     section = doc.sections[0]
@@ -1271,20 +1287,26 @@ def build_docx_report(
         up_level = "-" if is_thai else "-"
         st_level = "-" if is_thai else "-"
 
-    doc.add_paragraph(("▪ การสบตา (Eye Contact)" if is_thai else "▪ Eye Contact"))
+    eye_bullet = doc.add_paragraph(("▪ การสบตา (Eye Contact)" if is_thai else "▪ Eye Contact"))
+    _apply_th_bullet_layout(eye_bullet)
     lvl1_text = f"{texts['scale']} {eye_level}"
     lvl1 = doc.add_paragraph(lvl1_text)
     lvl1.runs[0].bold = True
+    _apply_th_scale_layout(lvl1)
 
-    doc.add_paragraph(("▪ ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "▪ Uprightness"))
+    upright_bullet = doc.add_paragraph(("▪ ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "▪ Uprightness"))
+    _apply_th_bullet_layout(upright_bullet)
     lvl2_text = f"{texts['scale']} {up_level}"
     lvl2 = doc.add_paragraph(lvl2_text)
     lvl2.runs[0].bold = True
+    _apply_th_scale_layout(lvl2)
 
-    doc.add_paragraph(("▪ การยืนและการวางเท้า (Stance)" if is_thai else "▪ Stance"))
+    stance_bullet = doc.add_paragraph(("▪ การยืนและการวางเท้า (Stance)" if is_thai else "▪ Stance"))
+    _apply_th_bullet_layout(stance_bullet)
     lvl3_text = f"{texts['scale']} {st_level}"
     lvl3 = doc.add_paragraph(lvl3_text)
     lvl3.runs[0].bold = True
+    _apply_th_scale_layout(lvl3)
 
     remark = doc.add_paragraph("หมายเหตุ" if is_thai else "Remark")
     remark.runs[0].bold = True
@@ -1307,11 +1329,15 @@ def build_docx_report(
     engaging_cat = report.categories[0]
     section2 = doc.add_paragraph(texts["engaging"])
     section2.runs[0].bold = True
-    doc.add_paragraph(texts["approachability"])
-    doc.add_paragraph(texts["relatability"])
-    doc.add_paragraph(texts["engagement"])
+    p_approach = doc.add_paragraph(texts["approachability"])
+    _apply_th_bullet_layout(p_approach)
+    p_relate = doc.add_paragraph(texts["relatability"])
+    _apply_th_bullet_layout(p_relate)
+    p_engage = doc.add_paragraph(texts["engagement"])
+    _apply_th_bullet_layout(p_engage)
     scale_para1 = doc.add_paragraph(f"{texts['scale']} {engaging_cat.scale.capitalize()}")
     scale_para1.runs[0].bold = True
+    _apply_th_scale_layout(scale_para1)
     
     doc.add_paragraph()
     doc.add_paragraph()
@@ -1320,11 +1346,15 @@ def build_docx_report(
     confidence_cat = report.categories[1]
     section3 = doc.add_paragraph(texts["confidence"])
     section3.runs[0].bold = True
-    doc.add_paragraph(texts["optimistic"])
-    doc.add_paragraph(texts["focus"])
-    doc.add_paragraph(texts["persuade"])
+    p_opt = doc.add_paragraph(texts["optimistic"])
+    _apply_th_bullet_layout(p_opt)
+    p_focus = doc.add_paragraph(texts["focus"])
+    _apply_th_bullet_layout(p_focus)
+    p_persuade = doc.add_paragraph(texts["persuade"])
+    _apply_th_bullet_layout(p_persuade)
     scale_para2 = doc.add_paragraph(f"{texts['scale']} {confidence_cat.scale.capitalize()}")
     scale_para2.runs[0].bold = True
+    _apply_th_scale_layout(scale_para2)
     
     # Keep spacing between Section 3 and Section 4 similar to Section 2 and 3
     doc.add_paragraph()
@@ -1338,10 +1368,13 @@ def build_docx_report(
     authority_cat = report.categories[2]
     section4 = doc.add_paragraph(texts["authority"])
     section4.runs[0].bold = True
-    doc.add_paragraph(texts["importance"])
-    doc.add_paragraph(texts["pressing"])
+    p_importance = doc.add_paragraph(texts["importance"])
+    _apply_th_bullet_layout(p_importance)
+    p_pressing = doc.add_paragraph(texts["pressing"])
+    _apply_th_bullet_layout(p_pressing)
     scale_para3 = doc.add_paragraph(f"{texts['scale']} {authority_cat.scale.capitalize()}")
     scale_para3.runs[0].bold = True
+    _apply_th_scale_layout(scale_para3)
 
     if not is_simple:
         # PAGE BREAK TO PAGE 4

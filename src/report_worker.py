@@ -93,6 +93,8 @@ EMERGENCY_THAI_DOCX_FALLBACK = str(
 THAI_PDF_VIA_DOCX = str(os.getenv("THAI_PDF_VIA_DOCX", "true")).strip().lower() in ("1", "true", "yes", "on")
 PDF_VIA_DOCX_FOR_ALL_LANGS = str(os.getenv("PDF_VIA_DOCX_FOR_ALL_LANGS", "true")).strip().lower() in ("1", "true", "yes", "on")
 DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("DOCX_TO_PDF_TIMEOUT_SECONDS", "180"))
+THAI_PDF_IMAGE_CAPTURE = str(os.getenv("THAI_PDF_IMAGE_CAPTURE", "true")).strip().lower() in ("1", "true", "yes", "on")
+THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
@@ -443,6 +445,42 @@ def convert_docx_bytes_to_pdf_bytes(docx_bytes: bytes, filename_stem: str = "rep
         if not pdf_bytes:
             raise RuntimeError("Converted PDF is empty")
         return pdf_bytes
+
+
+def rasterize_pdf_bytes_to_image_pdf_bytes(pdf_bytes: bytes, dpi: int = 220) -> bytes:
+    """
+    Convert each PDF page into an image and rebuild a PDF from those images.
+    This avoids text shaping differences in downstream PDF viewers at the cost of
+    non-selectable text.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception as e:
+        raise RuntimeError(f"PyMuPDF is required for PDF image capture mode: {e}")
+
+    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+    if src.page_count == 0:
+        raise RuntimeError("Cannot rasterize empty PDF")
+
+    out = fitz.open()
+    use_dpi = max(120, min(int(dpi or 220), 400))
+    zoom = float(use_dpi) / 72.0
+    mat = fitz.Matrix(zoom, zoom)
+
+    for page in src:
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img_bytes = pix.tobytes("png")
+        img_pdf = fitz.open("png", img_bytes).convert_to_pdf()
+        img_doc = fitz.open("pdf", img_pdf)
+        out.insert_pdf(img_doc)
+        img_doc.close()
+
+    result = out.tobytes(deflate=True, garbage=3)
+    out.close()
+    src.close()
+    if not result:
+        raise RuntimeError("Rasterized PDF output is empty")
+    return result
 
 def s3_key_exists(key: str) -> bool:
     try:
@@ -1658,6 +1696,12 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             if wants_pdf_output:
                 if not pdf_bytes:
                     raise RuntimeError("PDF format requested but PDF generation failed")
+                if lang_code == "th" and THAI_PDF_IMAGE_CAPTURE:
+                    try:
+                        pdf_bytes = rasterize_pdf_bytes_to_image_pdf_bytes(pdf_bytes, dpi=THAI_PDF_IMAGE_DPI)
+                        logger.info("[pdf] thai image-capture pdf enabled lang=%s dpi=%s", lang_code, THAI_PDF_IMAGE_DPI)
+                    except Exception as e:
+                        logger.warning("[pdf] thai image-capture conversion failed lang=%s err=%s", lang_code, e)
                 pdf_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf"
                 pdf_key = f"{output_prefix}/{pdf_name}"
                 upload_bytes(pdf_key, pdf_bytes, "application/pdf")

@@ -20,6 +20,7 @@ pandas==2.1.4
 # PDF generation (optional, requires Thai fonts)
 reportlab==4.0.9
 Pillow==10.2.0
+PyMuPDF==1.24.10
 
 # Build tools
 setuptools>=65.0.0
