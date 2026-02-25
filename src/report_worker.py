@@ -91,6 +91,7 @@ EMERGENCY_THAI_DOCX_FALLBACK = str(
     os.getenv("EMERGENCY_THAI_DOCX_FALLBACK", "false")
 ).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_VIA_DOCX = str(os.getenv("THAI_PDF_VIA_DOCX", "true")).strip().lower() in ("1", "true", "yes", "on")
+PDF_VIA_DOCX_FOR_ALL_LANGS = str(os.getenv("PDF_VIA_DOCX_FOR_ALL_LANGS", "true")).strip().lower() in ("1", "true", "yes", "on")
 DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("DOCX_TO_PDF_TIMEOUT_SECONDS", "180"))
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
@@ -885,8 +886,13 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     job_id = str(job.get("job_id") or "").strip()
     en_report = outputs.get("reports", {}).get("EN", {}) or {}
     th_report = outputs.get("reports", {}).get("TH", {}) or {}
-    en_key = en_report.get("docx_key") or en_report.get("pdf_key") or ""
-    th_key = th_report.get("docx_key") or th_report.get("pdf_key") or ""
+    en_docx_key = str(en_report.get("docx_key") or "").strip()
+    en_pdf_key = str(en_report.get("pdf_key") or "").strip()
+    th_docx_key = str(th_report.get("docx_key") or "").strip()
+    th_pdf_key = str(th_report.get("pdf_key") or "").strip()
+    # Keep legacy "report_*_key" as primary; prefer PDF when report_format asks for it.
+    en_key = en_pdf_key or en_docx_key
+    th_key = th_pdf_key or th_docx_key
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
     analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     report_format = str(job.get("report_format") or "docx").strip().lower()
@@ -918,6 +924,10 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "skeleton_key": (f"jobs/output/groups/{group_id}/skeleton.mp4" if group_id and expect_skeleton else ""),
         "report_en_key": en_key,
         "report_th_key": th_key,
+        "report_en_docx_key": en_docx_key,
+        "report_en_pdf_key": en_pdf_key,
+        "report_th_docx_key": th_docx_key,
+        "report_th_pdf_key": th_pdf_key,
         "report_th_email_sent": False,
         "report_en_email_sent": False,
         "skeleton_email_sent": False,
@@ -1499,7 +1509,8 @@ def generate_reports_for_lang(
     pdf_bytes = None
     pdf_out_path = ""
     if wants_pdf:
-        if lang_code == "th" and THAI_PDF_VIA_DOCX:
+        use_docx_to_pdf = bool(PDF_VIA_DOCX_FOR_ALL_LANGS or (lang_code == "th" and THAI_PDF_VIA_DOCX))
+        if use_docx_to_pdf:
             try:
                 pdf_bytes = convert_docx_bytes_to_pdf_bytes(
                     docx_bytes,
@@ -1627,22 +1638,20 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             # Emergency switch: Thai PDF glyph overlap can block delivery.
             # In this mode, keep Thai output as DOCX so customers receive readable files immediately.
             force_thai_docx = bool(EMERGENCY_THAI_DOCX_FALLBACK and lang_code == "th")
-            wants_docx_output = (report_format == "docx") or force_thai_docx
             wants_pdf_output = (report_format == "pdf") and (not force_thai_docx)
             if force_thai_docx and report_format == "pdf":
                 logger.warning("[report] emergency_thai_docx_fallback enabled; lang=th will upload DOCX instead of PDF")
 
-            # Upload DOCX when requested, or when Thai emergency fallback is active.
+            # Upload DOCX for every language so users can compare DOCX/PDF side-by-side.
             analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             docx_key = None
-            if wants_docx_output:
-                docx_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.docx"
-                docx_key = f"{output_prefix}/{docx_name}"
-                upload_bytes(
-                    docx_key,
-                    docx_bytes,
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
+            docx_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.docx"
+            docx_key = f"{output_prefix}/{docx_name}"
+            upload_bytes(
+                docx_key,
+                docx_bytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
             # Upload PDF when requested and not overridden by Thai fallback.
             pdf_key = None
@@ -1716,6 +1725,13 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
 
                 if email_payload_report_th_ready(payload):
+                    th_report_links: Dict[str, str] = {}
+                    if str(payload.get("report_th_pdf_key") or "").strip():
+                        th_report_links["Report TH (PDF)"] = str(payload.get("report_th_pdf_key") or "").strip()
+                    if str(payload.get("report_th_docx_key") or "").strip():
+                        th_report_links["Report TH (DOCX)"] = str(payload.get("report_th_docx_key") or "").strip()
+                    if not th_report_links and str(payload.get("report_th_key") or "").strip():
+                        th_report_links["Report TH"] = str(payload.get("report_th_key") or "").strip()
                     sent, status = send_result_email(
                         {
                             "job_id": payload["job_id"],
@@ -1728,15 +1744,20 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                             if is_operation_test
                             else {}
                         ),
-                        {
-                            "Report TH": payload.get("report_th_key", ""),
-                        },
+                        th_report_links,
                     )
                     statuses.append(f"report_th:{status}")
                     report_th_sent = bool(sent)
                     payload["report_th_email_sent"] = report_th_sent
 
                 if email_payload_report_en_ready(payload):
+                    en_report_links: Dict[str, str] = {}
+                    if str(payload.get("report_en_pdf_key") or "").strip():
+                        en_report_links["Report EN (PDF)"] = str(payload.get("report_en_pdf_key") or "").strip()
+                    if str(payload.get("report_en_docx_key") or "").strip():
+                        en_report_links["Report EN (DOCX)"] = str(payload.get("report_en_docx_key") or "").strip()
+                    if not en_report_links and str(payload.get("report_en_key") or "").strip():
+                        en_report_links["Report EN"] = str(payload.get("report_en_key") or "").strip()
                     sent, status = send_result_email(
                         {
                             "job_id": payload["job_id"],
@@ -1749,9 +1770,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                             if is_operation_test
                             else {}
                         ),
-                        {
-                            "Report EN": payload.get("report_en_key", ""),
-                        },
+                        en_report_links,
                     )
                     statuses.append(f"report_en:{status}")
                     report_en_sent = bool(sent)
