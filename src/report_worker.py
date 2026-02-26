@@ -1815,12 +1815,20 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                             logger.info("[pdf] thai image-capture pdf enabled lang=%s dpi=%s", lang_code, THAI_PDF_IMAGE_DPI)
                             pdf_render_mode = "image_capture"
                     except Exception as e:
-                        if THAI_PDF_IMAGE_CAPTURE_STRICT:
+                        err_text = str(e or "")
+                        lo_missing = "libreoffice binary not found" in err_text.lower()
+                        if THAI_PDF_IMAGE_CAPTURE_STRICT and not lo_missing:
                             raise RuntimeError(
                                 f"thai image-capture conversion failed (strict mode): {e}"
                             ) from e
-                        logger.warning("[pdf] thai image-capture conversion failed lang=%s err=%s", lang_code, e)
-                        pdf_render_mode = "docx_or_reportlab_fallback"
+                        if lo_missing:
+                            logger.warning(
+                                "[pdf] thai image-capture skipped because LibreOffice is unavailable; using fallback pdf path"
+                            )
+                            pdf_render_mode = "docx_or_reportlab_fallback"
+                        else:
+                            logger.warning("[pdf] thai image-capture conversion failed lang=%s err=%s", lang_code, e)
+                            pdf_render_mode = "docx_or_reportlab_fallback"
                 pdf_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf"
                 pdf_key = f"{output_prefix}/{pdf_name}"
                 upload_bytes(pdf_key, pdf_bytes, "application/pdf")

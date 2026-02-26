@@ -780,6 +780,37 @@ def infer_job_bucket_status(job_key: str) -> str:
         return "failed"
     return "unknown"
 
+def list_jobs_for_group(group_id: str) -> list:
+    gid = str(group_id or "").strip()
+    if not gid:
+        return []
+    rows = []
+    prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
+    try:
+        for prefix in prefixes:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = str(item.get("Key") or "")
+                    if not key.endswith(".json"):
+                        continue
+                    job_data = s3_read_json(key) or {}
+                    if str(job_data.get("group_id") or "").strip() != gid:
+                        continue
+                    rows.append(
+                        {
+                            "status": infer_job_bucket_status(key),
+                            "mode": str(job_data.get("mode") or "").strip() or "-",
+                            "job_id": str(job_data.get("job_id") or "").strip() or "-",
+                            "job_key": key,
+                            "updated_at": str(job_data.get("updated_at") or job_data.get("created_at") or "").strip() or "-",
+                        }
+                    )
+    except Exception:
+        return []
+    rows.sort(key=lambda x: (str(x.get("updated_at") or ""), str(x.get("job_key") or "")), reverse=True)
+    return rows
+
 
 # -------------------------
 # UI
@@ -987,6 +1018,14 @@ if run:
     )
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 
+# Keep showing the latest submitted group in this session even before ownership index catches up.
+if not active_group_id:
+    recent_group_id = str(st.session_state.get("last_group_id") or "").strip()
+    recent_jobs = st.session_state.get("last_jobs") or {}
+    if recent_group_id and recent_jobs:
+        active_group_id = recent_group_id
+        _persist_group_id_to_url(active_group_id)
+
 group_id = active_group_id
 if group_id:
     notification = get_report_notification_status(group_id)
@@ -1032,7 +1071,7 @@ if group_id:
         outputs["report_th_pdf"] = report_outputs["report_th_pdf"]
 else:
     if has_identity_input and not identity_verified:
-        st.caption("กรุณากรอก Employee ID / อีเมล / รหัสผ่าน ให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
+        st.caption("กรุณากรอก Employee ID และอีเมลให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
     else:
         st.caption("ยังไม่พบ group_id ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
     st.divider()
@@ -1044,6 +1083,35 @@ else:
     st.stop()
 
 st.caption(f"กลุ่มงาน: `{group_id}`")
+
+with st.expander("ตรวจสถานะ group_id นี้ (Debug)", expanded=True):
+    debug_group_id = st.text_input(
+        "group_id ที่ต้องการตรวจสถานะ",
+        value=group_id,
+        key="skilllane_debug_group_id",
+        help="ตรวจว่าแต่ละ job ของ group นี้อยู่ใน pending/processing/finished/failed",
+    ).strip()
+    if debug_group_id:
+        debug_rows = list_jobs_for_group(debug_group_id)
+        if debug_rows:
+            status_counts = {"pending": 0, "processing": 0, "finished": 0, "failed": 0}
+            for row in debug_rows:
+                state = str(row.get("status") or "").strip().lower()
+                if state in status_counts:
+                    status_counts[state] += 1
+            st.caption(
+                " | ".join(
+                    [
+                        f"pending={status_counts['pending']}",
+                        f"processing={status_counts['processing']}",
+                        f"finished={status_counts['finished']}",
+                        f"failed={status_counts['failed']}",
+                    ]
+                )
+            )
+            st.dataframe(debug_rows, width="stretch", hide_index=True)
+        else:
+            st.warning("ไม่พบ job ของ group_id นี้ในคิว pending/processing/finished/failed")
 
 
 def download_block(title: str, key: str, filename: str) -> None:
