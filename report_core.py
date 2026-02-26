@@ -4,7 +4,6 @@ import io
 import math
 import random
 import logging
-import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -1563,18 +1562,7 @@ def build_pdf_report(
     draw_header_footer()
 
     def _normalize_thai_for_pdf(text: str) -> str:
-        normalized = unicodedata.normalize("NFC", str(text or ""))
-        if not is_thai:
-            return normalized
-        prev = None
-        while prev != normalized:
-            prev = normalized
-            normalized = re.sub(
-                r"([\u0E48-\u0E4C])([\u0E31\u0E34-\u0E37\u0E47\u0E4D])",
-                r"\2\1",
-                normalized,
-            )
-        return normalized
+        return unicodedata.normalize("NFC", str(text or ""))
 
     def _draw_text_line(x: float, y_pos: float, font_name: str, size: int, line: str) -> None:
         text_obj = c.beginText()

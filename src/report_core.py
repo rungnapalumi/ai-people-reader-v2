@@ -19,6 +19,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
+logger = logging.getLogger("report_core.analysis")
+
 try:
     from mediapipe.python.solutions import pose as mp_pose_module
     from mediapipe.python.solutions.pose import Pose, PoseLandmark
@@ -695,6 +697,20 @@ def generate_stance_text_th(stability: float) -> list:
 # Analysis functions
 def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: int = 300, **kwargs) -> Dict[str, Any]:
     """Real MediaPipe analysis with proper Laban Movement Analysis"""
+    enclosing_max_expansion = float(os.getenv("ENCLOSING_MAX_EXPANSION", "0.8"))
+    enclosing_min_velocity = float(os.getenv("ENCLOSING_MIN_VELOCITY", "0.03"))
+    spreading_body_expansion_threshold = float(
+        os.getenv("SPREADING_BODY_EXPANSION_THRESHOLD", "1.3")
+    )
+    spreading_min_velocity = float(os.getenv("SPREADING_MIN_VELOCITY", "0.03"))
+    gesture_debug_log = str(os.getenv("GESTURE_DEBUG_LOG", "false")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    gesture_debug_every_n = max(1, int(os.getenv("GESTURE_DEBUG_EVERY_N_FRAMES", "5")))
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("Cannot open video")
@@ -801,7 +817,11 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                             shape_counts["Directing"] += 1
                         
                         # 2. ENCLOSING: Arms coming together, wrapping motion
-                        if body_expansion < 0.8 and avg_velocity > 0.03:
+                        enclosing_detected = (
+                            body_expansion < enclosing_max_expansion
+                            and avg_velocity > enclosing_min_velocity
+                        )
+                        if enclosing_detected:
                             effort_counts["Enclosing"] += 1
                             shape_counts["Enclosing"] += 1
                         
@@ -810,9 +830,26 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                             effort_counts["Punching"] += 1
                         
                         # 4. SPREADING: Arms spreading wide, opening gesture
-                        if body_expansion > 1.5 and avg_velocity > 0.03:
+                        spreading_detected = (
+                            body_expansion > spreading_body_expansion_threshold
+                            and avg_velocity > spreading_min_velocity
+                        )
+                        if spreading_detected:
                             effort_counts["Spreading"] += 1
                             shape_counts["Spreading"] += 1
+                        if gesture_debug_log and (analyzed % gesture_debug_every_n == 0):
+                            logger.info(
+                                "[gesture_debug] frame=%s enclosing=%s spreading=%s body_expansion=%.3f [enclose<%.3f, spread>%.3f] avg_velocity=%.4f [>enclose%.4f, >spread%.4f]",
+                                analyzed,
+                                enclosing_detected,
+                                spreading_detected,
+                                body_expansion,
+                                enclosing_max_expansion,
+                                spreading_body_expansion_threshold,
+                                avg_velocity,
+                                enclosing_min_velocity,
+                                spreading_min_velocity,
+                            )
                         
                         # 5. PRESSING: Sustained, strong, downward force
                         if is_sustained and is_strong and downward_movement:
@@ -894,6 +931,16 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     engaging_boost = max(0.85, min(1.35, 0.85 + engaging_activity * 1.60))
     confidence_boost = max(0.85, min(1.35, 0.85 + confidence_activity * 1.50))
     authority_boost = max(0.85, min(1.35, 0.85 + authority_activity * 1.50))
+
+    if gesture_debug_log:
+        logger.info(
+            "[gesture_debug_summary] analyzed_frames=%s enclosing_count=%s spreading_count=%s enclosing_per_frame=%.4f spreading_per_frame=%.4f",
+            total_frames,
+            effort_counts.get("Enclosing", 0),
+            effort_counts.get("Spreading", 0),
+            effort_counts.get("Enclosing", 0) / max(1, total_frames),
+            effort_counts.get("Spreading", 0) / max(1, total_frames),
+        )
 
     # Category raw signals: positives minus small penalties from counter-signals.
     engaging_raw = (
@@ -1161,7 +1208,7 @@ def build_docx_report(
         if str(metric or "").strip().lower() == "eye_contact":
             return "High"
         v = float(value or 0.0)
-        if v >= 70.0:
+        if v >= 75.0:
             return "High"
         if v >= 40.0:
             return "Moderate"
