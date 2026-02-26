@@ -2417,10 +2417,16 @@ def build_pdf_report(
                 THAI_NOTE_STYLE,
                 extra_gap=6,
             )
+            # Keep page 1 focused on first impression + note.
+            # Section 2 should start at the top of page 2.
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+
             write_paragraph_block("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", SECTION_STYLE, extra_gap=0)
             write_bullet("ความเป็นกันเอง", indent=28, space_after=6, bullet_text="•")
 
-            # Keep section 2 on page 1; do not force a page break after the first bullet.
+            # Keep section 2 contiguous before section 3.
             write_paragraph_block("", SUBITEM_STYLE, extra_gap=0)
 
             engaging_scale = _scale_th(report.categories[0].scale) if len(report.categories) > 0 else "-"
@@ -2430,12 +2436,6 @@ def build_pdf_report(
             write_bullet("ความเข้าถึงได้", indent=28, space_after=6, bullet_text="•")
             write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=6, bullet_text="•")
             write_paragraph_block(f"ระดับ: {engaging_scale}", LEVEL_BULLET_STYLE, extra_gap=4)
-
-            # Requested TH layout: keep section 2 on page 1 and move sections 3-4 to page 2,
-            # so the first graph page (Efforts) starts on page 3.
-            c.showPage()
-            draw_header_footer()
-            y = top_content_y
 
             write_paragraph_block("3. ความมั่นใจ:", SECTION_STYLE, extra_gap=0)
             write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=4, bullet_text="•")
