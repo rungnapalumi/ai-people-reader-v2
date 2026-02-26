@@ -900,7 +900,8 @@ if run:
     if not employee_id.strip():
         note.error("กรุณากรอกชื่อที่ใช้ในการรายงานผล")
         st.stop()
-    effective_report_style = org_settings.get("report_style") if org_settings else "full"
+    # Page policy: SkillLane always uses full report style.
+    effective_report_style = "full"
     # Temporary policy for SkillLane: always deliver Word first and disable PDF jobs.
     effective_report_format = "docx"
     enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
@@ -1234,12 +1235,8 @@ if videos_ready and not th_report_ready:
     if st.button("สั่งสร้างรายงานใหม่", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            rerun_style = get_report_style_for_group(group_id)
+            rerun_style = "full"
             rerun_format = "docx"
-            rerun_org_cfg = get_org_settings(enterprise_folder)
-            if rerun_org_cfg:
-                rerun_style = str(rerun_org_cfg.get("report_style") or rerun_style)
-                rerun_format = "docx"
             rerun_email = notify_email
             if not rerun_email:
                 prev_notif = get_report_notification_status(group_id)

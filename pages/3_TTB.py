@@ -860,7 +860,8 @@ if run:
     if not employee_id.strip():
         note.error("Please enter Employee ID.")
         st.stop()
-    effective_report_style = org_settings.get("report_style") if org_settings else "full"
+    # Page policy: TTB always uses simple report style.
+    effective_report_style = "simple"
     effective_report_format = org_settings.get("report_format") if org_settings else "docx"
     enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
     enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
@@ -1118,7 +1119,7 @@ if skeleton_ready and not th_report_ready:
     if st.button("Re-run report generation", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            rerun_style = get_report_style_for_group(group_id)
+            rerun_style = "simple"
             rerun_format = get_report_format_for_group(group_id)
             rerun_email = notify_email
             if not rerun_email:

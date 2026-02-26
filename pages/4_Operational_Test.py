@@ -467,7 +467,7 @@ if run:
         "analysis_mode": "real",
         "sample_fps": 5,
         "max_frames": 300,
-        "report_style": "operation_test",
+        "report_style": "full",
         "report_format": "pdf",
         "notify_email": notify_email.strip(),
         "enterprise_folder": "operation_test",

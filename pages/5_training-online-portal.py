@@ -510,10 +510,9 @@ def enqueue_report_only_job(
     if not s3_key_exists(input_key):
         raise RuntimeError(f"Input video not found for group_id={group_id}")
 
-    style_name = str(report_style or "").strip().lower()
-    force_operation_test = style_name.startswith("operation_test")
-    forced_languages = ["th", "en"] if force_operation_test else ["th"]
-    forced_format = "pdf" if force_operation_test else report_format
+    # Training portal always keeps TH+EN reports for this page workflow.
+    forced_languages = ["th", "en"]
+    forced_format = report_format
     created_at = utc_now_iso()
     job_report = {
         "job_id": new_job_id(),
@@ -875,8 +874,8 @@ if run:
     if not employee_id.strip():
         note.error("กรุณากรอกชื่อที่ใช้ในการรายงานผล")
         st.stop()
-    # Force Training-online-portal to use the compact operation-test template.
-    effective_report_style = "operation_test"
+    # Page policy: non-TTB pages use full report style.
+    effective_report_style = "full"
     # For this page, lock output to PDF + both TH/EN to match required template.
     effective_report_format = "pdf"
     # Training-online-portal requirement: always enqueue dots + skeleton.
@@ -1196,7 +1195,7 @@ if videos_ready and not th_report_ready:
     if st.button("สั่งสร้างรายงานใหม่", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            rerun_style = "operation_test"
+            rerun_style = "full"
             rerun_format = "pdf"
             rerun_email = notify_email
             if not rerun_email:
@@ -1225,7 +1224,7 @@ if dots_ready or skeleton_ready or th_report_ready or en_report_ready:
     if st.button("ส่งอีเมลผลลัพธ์ซ้ำ (รวม Dots/Skeleton)", width="content"):
         try:
             resend_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            resend_style = "operation_test"
+            resend_style = "full"
             resend_format = "pdf"
             resend_email = notify_email
             if not resend_email:

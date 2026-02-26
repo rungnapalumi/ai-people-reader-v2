@@ -1137,7 +1137,7 @@ def build_docx_report(
     is_thai = (lang == "th")
     
     en_operation_title = "Movement in Communication\nwith AI People Reader Report" if is_operation_test and (not is_thai) else "Character Analysis Report"
-    th_operation_title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader" if is_operation_test and is_thai else "รายงานการวิเคราะห์การนำเสนอ"
+    th_operation_title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader"
     texts = {
         "title": th_operation_title if is_thai else en_operation_title,
         "client_name": "ชื่อลูกค้า:" if is_thai else "Client Name:",
@@ -1294,15 +1294,23 @@ def build_docx_report(
     # PAGE 1: Cover + First Impression (Eye Contact start)
     # ============================================================
     
-    # Title section - reduced spacing after header
+    compact_thai_first_page = bool(is_thai)
+
+    # Title section spacing after header:
+    # keep Thai cover slightly higher while preserving existing spacing for EN.
     doc.add_paragraph()
-    doc.add_paragraph()
-    
+    if not compact_thai_first_page:
+        doc.add_paragraph()
+
     # Title
     title = doc.add_paragraph(texts["title"])
-    title.runs[0].font.size = Pt(20)
+    title.runs[0].font.size = Pt(18 if compact_thai_first_page else 20)
     title.runs[0].font.bold = True
-    doc.add_paragraph()
+    title.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.paragraph_format.space_before = Pt(0)
+    title.paragraph_format.space_after = Pt(6 if compact_thai_first_page else 12)
+    if not compact_thai_first_page:
+        doc.add_paragraph()
     
     # Client info
     analysis_date_display = _date_th_display(report.analysis_date) if is_thai else _date_en_display(report.analysis_date)
@@ -1313,7 +1321,8 @@ def build_docx_report(
     video_info = doc.add_paragraph(texts["video_info"])
     video_info.runs[0].bold = True
     doc.add_paragraph(f"{texts['duration']} {report.video_length_str}")
-    doc.add_paragraph()
+    if not compact_thai_first_page:
+        doc.add_paragraph()
     
     # Detailed Analysis header
     detailed = doc.add_paragraph(texts["detailed_analysis"])
@@ -2025,16 +2034,24 @@ def build_pdf_report(
             (effort_title, graph1_path),
             (shape_title, graph2_path),
         ]
+        graph_title_style = ParagraphStyle(
+            name="GraphTitleStyle",
+            parent=TITLE_STYLE,
+            fontSize=max(16, int(TITLE_STYLE.fontSize) - 1),
+            leading=max(22, int(TITLE_STYLE.leading) - 2),
+            spaceAfter=8,
+        )
         for idx, (graph_title, graph_path) in enumerate(graph_specs):
             c.showPage()
             draw_header_footer()
-            y = top_content_y
-            write_paragraph_block(graph_title, TITLE_STYLE, indent=0, extra_gap=10)
+            # Keep graph title closer to the header area so the top whitespace is not excessive.
+            y = min(height - 66, top_content_y + 34)
+            write_paragraph_block(graph_title, graph_title_style, indent=0, extra_gap=0)
             if graph_path and os.path.exists(graph_path):
                 try:
                     # Keep graph just below the heading while preserving safe footer space.
                     graph_bottom_y = footer_img_y + footer_img_h + 20
-                    graph_top_y = y - 14
+                    graph_top_y = y - 4
                     graph_height = max(220, graph_top_y - graph_bottom_y)
                     c.drawImage(
                         graph_path,
@@ -2220,7 +2237,7 @@ def build_pdf_report(
 
     if is_operation_test:
         if is_thai:
-            title = "รายงานการวิเคราะห์การนำเสนอ"
+            title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader"
             detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ"
             first_impression_label = "1. ความประทับใจแรกพบ (First Impression)"
         elif lang_name == "th":
@@ -2232,7 +2249,7 @@ def build_pdf_report(
             detailed_analysis_label = "Detailed Analysis"
             first_impression_label = "1. First impression"
     else:
-        title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report"
+        title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader" if is_thai else "Character Analysis Report"
         detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ" if is_thai else "Detailed Analysis"
         first_impression_label = "1. ความประทับใจแรกพบ (First Impression)" if is_thai else "1. First impression"
     eye_label = "การสบตา" if is_thai else "Eye Contact"
@@ -2414,16 +2431,22 @@ def build_pdf_report(
             write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=6, bullet_text="•")
             write_paragraph_block(f"ระดับ: {engaging_scale}", LEVEL_BULLET_STYLE, extra_gap=4)
 
+            # Requested TH layout: keep section 2 on page 1 and move sections 3-4 to page 2,
+            # so the first graph page (Efforts) starts on page 3.
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+
             write_paragraph_block("3. ความมั่นใจ:", SECTION_STYLE, extra_gap=0)
-            write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=6, bullet_text="•")
-            write_bullet("ความมีสมาธิ", indent=28, space_after=6, bullet_text="•")
-            write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=6, bullet_text="•")
-            write_paragraph_block(f"ระดับ: {confidence_scale}", LEVEL_BULLET_STYLE, extra_gap=4)
+            write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=4, bullet_text="•")
+            write_bullet("ความมีสมาธิ", indent=28, space_after=4, bullet_text="•")
+            write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=4, bullet_text="•")
+            write_paragraph_block(f"ระดับ: {confidence_scale}", LEVEL_BULLET_STYLE, extra_gap=2)
 
             write_paragraph_block("4. ความเป็นผู้นำและความดูมีอำนาจ:", SECTION_STYLE, extra_gap=0)
-            write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=6, bullet_text="•")
-            write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=6, bullet_text="•")
-            write_paragraph_block(f"ระดับ: {authority_scale}", LEVEL_BULLET_STYLE, extra_gap=4)
+            write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=4, bullet_text="•")
+            write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=4, bullet_text="•")
+            write_paragraph_block(f"ระดับ: {authority_scale}", LEVEL_BULLET_STYLE, extra_gap=2)
         else:
             if thai_font_fallback and lang_name == "th":
                 write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
