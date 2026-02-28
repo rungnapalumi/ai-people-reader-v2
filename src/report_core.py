@@ -1303,9 +1303,9 @@ def build_docx_report(
     # Same compact first page spacing for both Thai and English (match Thai layout).
     compact_thai_first_page = True
 
-    # Title section spacing: operation_test — push title down for balanced layout.
+    # Title section spacing: operation_test — moderate top space (half of previous).
     if is_operation_test:
-        for _ in range(5):
+        for _ in range(2):
             doc.add_paragraph()
     else:
         doc.add_paragraph()
@@ -1388,9 +1388,9 @@ def build_docx_report(
 
     # PAGE BREAK TO PAGE 2
     doc.add_page_break()
-    # Page 2 top spacing: operation_test — push section 2 down for balanced layout.
+    # Page 2 top spacing: operation_test — moderate (half of previous).
     if is_operation_test:
-        for _ in range(4):
+        for _ in range(2):
             doc.add_paragraph()
     else:
         doc.add_paragraph()

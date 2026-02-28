@@ -159,7 +159,7 @@ s3 = boto3.client(
 ses = boto3.client("ses", region_name=SES_REGION)
 
 def log_ses_runtime_context() -> None:
-    """Log actual runtime sender context to avoid env/account confusion."""
+    """Log actual runtime sender context. Non-blocking: SES permission errors are logged but do not affect worker."""
     try:
         sts = boto3.client("sts")
         account_id = sts.get_caller_identity().get("Account", "unknown")
@@ -174,13 +174,13 @@ def log_ses_runtime_context() -> None:
         prod_enabled = str(acc.get("ProductionAccessEnabled"))
         sending_enabled = str(acc.get("SendingEnabled"))
     except Exception as e:
-        prod_enabled = f"unknown ({e})"
+        # IAM may lack ses:GetAccount — this does NOT block report generation.
+        logger.warning("[email_context] SES GetAccount skipped (no ses:GetAccount permission): %s", type(e).__name__)
 
     logger.info(
-        "[email_context] aws_account=%s ses_region=%s aws_region=%s ses_from=%s production=%s sending=%s",
+        "[email_context] aws_account=%s ses_region=%s ses_from=%s production=%s sending=%s",
         account_id,
         SES_REGION,
-        AWS_REGION,
         SES_FROM_EMAIL or "(empty)",
         prod_enabled,
         sending_enabled,
