@@ -55,7 +55,7 @@ BANNER_PATHS = [
 def render_banner() -> None:
     for path in BANNER_PATHS:
         if os.path.exists(path):
-            st.image(path, use_column_width=True)
+            st.image(path, use_container_width=True)
             return
 
 

@@ -1303,11 +1303,14 @@ def build_docx_report(
     # Same compact first page spacing for both Thai and English (match Thai layout).
     compact_thai_first_page = True
 
-    # Title section spacing after header:
-    # keep Thai cover slightly higher while preserving existing spacing for EN.
-    doc.add_paragraph()
-    if not compact_thai_first_page:
+    # Title section spacing: operation_test — push title down for balanced layout.
+    if is_operation_test:
+        for _ in range(5):
+            doc.add_paragraph()
+    else:
         doc.add_paragraph()
+        if not compact_thai_first_page:
+            doc.add_paragraph()
 
     # Title
     title = doc.add_paragraph(texts["title"])
@@ -1385,8 +1388,12 @@ def build_docx_report(
 
     # PAGE BREAK TO PAGE 2
     doc.add_page_break()
-    # Add one extra line of top spacing on the next page.
-    doc.add_paragraph()
+    # Page 2 top spacing: operation_test — push section 2 down for balanced layout.
+    if is_operation_test:
+        for _ in range(4):
+            doc.add_paragraph()
+    else:
+        doc.add_paragraph()
     
     # ============================================================
     # PAGE 2: Engaging & Connecting + Confidence
@@ -1457,11 +1464,13 @@ def build_docx_report(
         # PAGE 4: Effort Motion Detection Results
         # ============================================================
         
-        # Spacing after header (same as page 1)
-        doc.add_paragraph()
-        doc.add_paragraph()
-        doc.add_paragraph()
-        doc.add_paragraph()
+        # Spacing: operation_test — less top space so title sits higher.
+        if is_operation_test:
+            doc.add_paragraph()
+            doc.add_paragraph()
+        else:
+            for _ in range(4):
+                doc.add_paragraph()
         
         # Title
         title4 = doc.add_paragraph(texts["effort_title"])
@@ -1480,11 +1489,13 @@ def build_docx_report(
         # PAGE 5: Shape Motion Detection Results
         # ============================================================
         
-        # Spacing after header (same as page 1)
-        doc.add_paragraph()
-        doc.add_paragraph()
-        doc.add_paragraph()
-        doc.add_paragraph()
+        # Spacing: operation_test — less top space so title sits higher.
+        if is_operation_test:
+            doc.add_paragraph()
+            doc.add_paragraph()
+        else:
+            for _ in range(4):
+                doc.add_paragraph()
         
         # Title
         title5 = doc.add_paragraph(texts["shape_title"])
@@ -2061,8 +2072,8 @@ def build_pdf_report(
         for idx, (graph_title, graph_path) in enumerate(graph_specs):
             c.showPage()
             draw_header_footer()
-            # Keep graph title closer to the header area so the top whitespace is not excessive.
-            y = min(height - 66, top_content_y + 34)
+            # Title higher on page (closer to header) for balanced layout.
+            y = min(height - 50, top_content_y + 50)
             write_paragraph_block(graph_title, graph_title_style, indent=0, extra_gap=0)
             if graph_path and os.path.exists(graph_path):
                 try:
