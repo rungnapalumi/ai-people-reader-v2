@@ -863,7 +863,6 @@ st.caption("หากอัปโหลดล้มเหลวหรือข�
 
 run = st.button("🎬 เริ่มวิเคราะห์", type="primary", width="stretch")
 st.caption(SUPPORT_CONTACT_TEXT)
-st.caption("หมายเหตุ: SkillLane ส่งรายงานเป็น Word (DOCX) ชั่วคราว โดยงด PDF ชั่วคราว")
 
 has_identity_input = bool(employee_id.strip() and notify_email)
 identity_verified = False
