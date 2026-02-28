@@ -39,6 +39,7 @@ JOBS_PROCESSING_PREFIX = "jobs/processing/"
 JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_FAILED_PREFIX = "jobs/failed/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
+JOBS_OUTPUT_PREFIX = "jobs/output/groups/"
 OPERATION_TEST_RECIPIENTS = [
     "rungnapa@imagematters.at",
     "alisa@imagematters.at",
@@ -54,7 +55,7 @@ BANNER_PATHS = [
 def render_banner() -> None:
     for path in BANNER_PATHS:
         if os.path.exists(path):
-            st.image(path, width="stretch")
+            st.image(path, use_column_width=True)
             return
 
 
@@ -145,10 +146,41 @@ def presigned_get_url(key: str, expires: int = 3600, filename: Optional[str] = N
     return s3.generate_presigned_url("get_object", Params=params, ExpiresIn=expires)
 
 
-def enqueue_report_job(job: Dict[str, Any]) -> str:
+def enqueue_job(job: Dict[str, Any]) -> str:
+    """Enqueue any job (dots, skeleton, report) to pending queue."""
     key = f"{JOBS_PENDING_PREFIX}{job['job_id']}.json"
     s3_put_json(key, job)
     return key
+
+
+def build_output_keys(group_id: str) -> Dict[str, str]:
+    base = f"{JOBS_OUTPUT_PREFIX}{group_id}/"
+    return {
+        "dots_video": base + "dots.mp4",
+        "skeleton_video": base + "skeleton.mp4",
+    }
+
+
+def find_dots_skeleton_keys(group_id: str) -> Dict[str, str]:
+    """Find dots.mp4 and skeleton.mp4 under group output paths."""
+    found: Dict[str, str] = {}
+    prefixes = [
+        f"{JOBS_OUTPUT_PREFIX}{group_id}/",
+        f"{JOBS_GROUP_PREFIX}{group_id}/",
+    ]
+    for prefix in prefixes:
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = str(item.get("Key") or "")
+                    if key.endswith("dots.mp4") and not found.get("dots_video"):
+                        found["dots_video"] = key
+                    if key.endswith("skeleton.mp4") and not found.get("skeleton_video"):
+                        found["skeleton_video"] = key
+        except Exception:
+            pass
+    return found
 
 
 def is_valid_email_format(value: str) -> bool:
@@ -231,6 +263,13 @@ def get_pdf_keys_from_job(job: Dict[str, Any]) -> Dict[str, str]:
     return {"TH": th_pdf, "EN": en_pdf}
 
 
+def get_docx_keys_from_job(job: Dict[str, Any]) -> Dict[str, str]:
+    reports = (job.get("outputs") or {}).get("reports") or {}
+    th_docx = ((reports.get("TH") or {}).get("docx_key") or "").strip()
+    en_docx = ((reports.get("EN") or {}).get("docx_key") or "").strip()
+    return {"TH": th_docx, "EN": en_docx}
+
+
 def get_latest_finished_operation_test_job(group_id: str) -> Dict[str, Any]:
     latest_job: Dict[str, Any] = {}
     latest_ts = 0.0
@@ -308,6 +347,32 @@ def find_latest_group_pdf_key(group_id: str) -> str:
     return latest_key
 
 
+def find_docx_keys_from_finished_jobs(group_id: str) -> Dict[str, str]:
+    result: Dict[str, str] = {"TH": "", "EN": ""}
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=JOBS_FINISHED_PREFIX):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                payload = s3_read_json(key) or {}
+                if str(payload.get("group_id") or "").strip() != group_id:
+                    continue
+                reports = (payload.get("outputs") or {}).get("reports") or {}
+                th_docx = ((reports.get("TH") or {}).get("docx_key") or "").strip()
+                en_docx = ((reports.get("EN") or {}).get("docx_key") or "").strip()
+                if th_docx:
+                    result["TH"] = th_docx
+                if en_docx:
+                    result["EN"] = en_docx
+                if result["TH"] and result["EN"]:
+                    return result
+    except Exception:
+        pass
+    return result
+
+
 def find_pdf_key_from_finished_jobs(group_id: str) -> str:
     latest_key = ""
     latest_ts = 0.0
@@ -377,8 +442,7 @@ ensure_session_defaults()
 render_banner()
 
 st.markdown("# Operational Test")
-st.caption("Upload one video to analyze First Impression only: Eye Contact, Uprightness, and Stance.")
-st.caption("Result format: PDF only.")
+st.caption("Select specific functions to test. Useful when debugging — run only what you need.")
 manual_group_id = st.text_input(
     "Check result by Group ID (optional)",
     value=read_group_id_from_url(),
@@ -405,9 +469,20 @@ else:
     selected_recipients = OPERATION_TEST_RECIPIENTS[:]
 notify_email = ",".join(selected_recipients)
 
+st.markdown("### Functions to test")
+st.caption("เลือกฟังก์ชันที่ต้องการทดสอบ (เลือกได้หลายอัน) — ไม่ต้องรันทุกอย่าง")
+enable_dots = st.checkbox("Dots video", value=False, help="Generate dots overlay video only")
+enable_skeleton = st.checkbox("Skeleton video", value=False, help="Generate skeleton overlay video only")
+enable_th_report = st.checkbox("Thai report (PDF)", value=False, help="Generate Thai report PDF only")
+enable_en_report = st.checkbox("English report (PDF)", value=False, help="Generate English report PDF only")
+enable_th_docx = st.checkbox("Thai report (DOCX)", value=False, help="Generate Thai report DOCX only")
+enable_en_docx = st.checkbox("English report (DOCX)", value=False, help="Generate English report DOCX only")
+
+# If no report selected, show report language as fallback for when user selects report later
 st.markdown("### Report Language")
+st.caption("ใช้เมื่อเลือก Thai/English report (PDF หรือ DOCX) ด้านบน")
 language_mode = st.radio(
-    "Choose report language",
+    "Choose report language (when report is selected)",
     options=["Thai only", "English only", "Thai + English"],
     horizontal=True,
     index=2,
@@ -426,7 +501,7 @@ uploaded = st.file_uploader(
     key=f"operation_test_uploader_{st.session_state['operation_test_upload_nonce']}",
 )
 
-run = st.button("Analyze First Impression", type="primary", width="stretch")
+run = st.button("Run selected functions", type="primary", width="stretch")
 st.caption(SUPPORT_CONTACT_TEXT)
 notice = st.empty()
 
@@ -434,13 +509,35 @@ if run:
     if not uploaded:
         notice.error("Please upload a video first.")
         st.stop()
-    if not selected_recipients:
-        notice.error("Please select at least one recipient email.")
+    if not (enable_dots or enable_skeleton or enable_th_report or enable_en_report or enable_th_docx or enable_en_docx):
+        notice.error("Please select at least one function to test.")
         st.stop()
 
-    base_user = safe_slug(name or selected_recipients[0] or "user", fallback="user")
+    report_pdf_languages = []
+    if enable_th_report and enable_en_report:
+        report_pdf_languages = selected_languages
+    elif enable_th_report:
+        report_pdf_languages = ["th"]
+    elif enable_en_report:
+        report_pdf_languages = ["en"]
+
+    report_docx_languages = []
+    if enable_th_docx and enable_en_docx:
+        report_docx_languages = selected_languages
+    elif enable_th_docx:
+        report_docx_languages = ["th"]
+    elif enable_en_docx:
+        report_docx_languages = ["en"]
+
+    if (enable_th_report or enable_en_report or enable_th_docx or enable_en_docx) and not selected_recipients:
+        notice.error("Please select at least one recipient email for report.")
+        st.stop()
+
+    base_user = safe_slug(name or (selected_recipients[0] if selected_recipients else "user"), fallback="user")
     group_id = f"{new_group_id()}__{base_user}"
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+    outputs = build_output_keys(group_id)
+    created_at = utc_now_iso()
 
     try:
         s3_upload_stream(
@@ -453,29 +550,82 @@ if run:
         st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
-    report_job = {
-        "job_id": new_job_id(),
-        "group_id": group_id,
-        "created_at": utc_now_iso(),
-        "status": "pending",
-        "mode": "report",
-        "input_key": input_key,
-        "client_name": (name or "Anonymous").strip() or "Anonymous",
-        "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": selected_languages,
-        "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
-        "analysis_mode": "real",
-        "sample_fps": 5,
-        "max_frames": 300,
-        "report_style": "full",
-        "report_format": "pdf",
-        "notify_email": notify_email.strip(),
-        "enterprise_folder": "operation_test",
-        "expect_dots": False,
-    }
-
+    queued: list[str] = []
     try:
-        enqueue_key = enqueue_report_job(report_job)
+        if enable_dots:
+            job_dots = {
+                "job_id": new_job_id(),
+                "group_id": group_id,
+                "created_at": created_at,
+                "status": "pending",
+                "mode": "dots",
+                "input_key": input_key,
+                "output_key": outputs["dots_video"],
+                "user_name": (name or "Anonymous").strip() or "Anonymous",
+            }
+            enqueue_job(job_dots)
+            queued.append("dots")
+        if enable_skeleton:
+            job_skeleton = {
+                "job_id": new_job_id(),
+                "group_id": group_id,
+                "created_at": created_at,
+                "status": "pending",
+                "mode": "skeleton",
+                "input_key": input_key,
+                "output_key": outputs["skeleton_video"],
+                "user_name": (name or "Anonymous").strip() or "Anonymous",
+            }
+            enqueue_job(job_skeleton)
+            queued.append("skeleton")
+        if report_pdf_languages:
+            report_job = {
+                "job_id": new_job_id(),
+                "group_id": group_id,
+                "created_at": created_at,
+                "status": "pending",
+                "mode": "report",
+                "input_key": input_key,
+                "client_name": (name or "").strip(),
+                "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+                "languages": report_pdf_languages,
+                "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
+                "analysis_mode": "real",
+                "sample_fps": 5,
+                "max_frames": 300,
+                "report_style": "full",
+                "report_format": "pdf",
+                "notify_email": notify_email.strip(),
+                "enterprise_folder": "operation_test",
+                "expect_dots": enable_dots,
+                "expect_skeleton": enable_skeleton,
+            }
+            enqueue_job(report_job)
+            queued.append("report_pdf")
+        if report_docx_languages:
+            report_job = {
+                "job_id": new_job_id(),
+                "group_id": group_id,
+                "created_at": created_at,
+                "status": "pending",
+                "mode": "report",
+                "input_key": input_key,
+                "client_name": (name or "").strip(),
+                "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+                "languages": report_docx_languages,
+                "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
+                "analysis_mode": "real",
+                "sample_fps": 5,
+                "max_frames": 300,
+                "report_style": "full",
+                "report_format": "docx",
+                "notify_email": notify_email.strip(),
+                "enterprise_folder": "operation_test",
+                "expect_dots": enable_dots,
+                "expect_skeleton": enable_skeleton,
+            }
+            enqueue_job(report_job)
+            queued.append("report_docx")
     except Exception as e:
         notice.error(f"Enqueue job failed: {format_submit_error_message(e)}")
         st.warning(SUPPORT_CONTACT_TEXT)
@@ -483,10 +633,9 @@ if run:
 
     st.session_state["operation_test_group_id"] = group_id
     st.session_state["operation_test_upload_nonce"] = int(st.session_state.get("operation_test_upload_nonce") or 0) + 1
+    st.session_state["operation_test_queued"] = queued
     persist_group_id_to_url(group_id)
-    notice.success("Submit to the worker. Load for the next vdo.")
-    st.caption(f"group_id = {group_id}")
-    st.caption(f"Queued job key: {enqueue_key}")
+    notice.success(f"Queued: {', '.join(queued)}. group_id = {group_id}")
     st.rerun()
 
 active_group_id = manual_group_id or st.session_state.get("operation_test_group_id") or read_group_id_from_url()
@@ -498,22 +647,25 @@ if active_group_id:
     st.caption(f"Group: `{active_group_id}`")
 
     latest_job = get_latest_operation_test_job(active_group_id)
-    if not latest_job:
-        st.info("Waiting for job registration. Please refresh in a moment.")
-        st.stop()
+    queued_funcs = st.session_state.get("operation_test_queued") or []
+    has_report_queued = "report_pdf" in queued_funcs or "report_docx" in queued_funcs
+    has_video_queued = "dots" in queued_funcs or "skeleton" in queued_funcs
 
-    job_key = str(latest_job.get("_job_bucket_key") or "")
-    status = get_job_status_from_key(job_key)
+    if not latest_job and not has_video_queued:
+        st.info("No report job found for this group. If you ran dots/skeleton only, check below.")
 
-    st.markdown(f"**Job status:** `{status}`")
+    if latest_job:
+        job_key = str(latest_job.get("_job_bucket_key") or "")
+        status = get_job_status_from_key(job_key)
+        st.markdown(f"**Report job status:** `{status}`")
     if st.button("Refresh Result", width="content"):
         st.rerun()
-    notification = latest_job.get("notification") or {}
+    notification = (latest_job or {}).get("notification") or {}
     notification_status = str(notification.get("status") or "").strip()
     if notification_status:
         st.caption(f"Email status: `{notification_status}`")
 
-    summary = latest_job.get("first_impression_summary") or {}
+    summary = (latest_job or {}).get("first_impression_summary") or {}
     if isinstance(summary, dict) and summary:
         st.markdown("### First Impression (ต่ำ / กลาง / สูง)")
         c1, c2, c3 = st.columns(3)
@@ -524,25 +676,75 @@ if active_group_id:
         c2.metric("Uprightness", prettify_level(up.get("level")))
         c3.metric("Stance", prettify_level(stance.get("level")))
 
-    pdf_keys = get_pdf_keys_from_job(latest_job)
+    pdf_keys = get_pdf_keys_from_job(latest_job or {})
+    docx_keys = get_docx_keys_from_job(latest_job or {})
     pdf_key = pdf_keys.get("TH") or pdf_keys.get("EN") or ""
-    if not pdf_key:
-        finished_job = get_latest_finished_operation_test_job(active_group_id)
+    finished_job = get_latest_finished_operation_test_job(active_group_id)
+    if finished_job:
         pdf_keys = get_pdf_keys_from_job(finished_job)
-        pdf_key = pdf_keys.get("TH") or pdf_keys.get("EN") or ""
-        if finished_job:
-            notif = (finished_job.get("notification") or {})
-            notif_status = str(notif.get("status") or "").strip()
-            if notif_status:
-                st.caption(f"Email status: `{notif_status}`")
+        docx_keys = get_docx_keys_from_job(finished_job)
+        pdf_key = pdf_key or pdf_keys.get("TH") or pdf_keys.get("EN") or ""
+        notif = (finished_job.get("notification") or {})
+        notif_status = str(notif.get("status") or "").strip()
+        if notif_status:
+            st.caption(f"Email status: `{notif_status}`")
     if not pdf_key:
         pdf_key = find_pdf_key_from_finished_jobs(active_group_id)
+    if not docx_keys.get("TH") and not docx_keys.get("EN"):
+        found_docx = find_docx_keys_from_finished_jobs(active_group_id)
+        docx_keys = found_docx
     failed_job = get_latest_failed_operation_test_job(active_group_id)
     failed_error = str((failed_job or {}).get("error") or "").strip()
     if failed_error:
         st.error(f"Latest failed error: {failed_error}")
     if not pdf_key:
         pdf_key = find_latest_group_pdf_key(active_group_id)
+
+    # Dots & Skeleton downloads
+    queued_funcs = st.session_state.get("operation_test_queued") or []
+    outputs = build_output_keys(active_group_id)
+    found_videos = find_dots_skeleton_keys(active_group_id)
+    dots_key = outputs.get("dots_video", "") or found_videos.get("dots_video", "")
+    skel_key = outputs.get("skeleton_video", "") or found_videos.get("skeleton_video", "")
+    if dots_key or skel_key:
+        st.markdown("### Dots & Skeleton videos")
+        if dots_key and s3_key_exists(dots_key):
+            st.link_button(
+                "Download Dots video",
+                presigned_get_url(dots_key, expires=3600, filename="dots.mp4"),
+                width="stretch",
+            )
+        elif "dots" in queued_funcs:
+            st.caption("Dots: processing...")
+        if skel_key and s3_key_exists(skel_key):
+            st.link_button(
+                "Download Skeleton video",
+                presigned_get_url(skel_key, expires=3600, filename="skeleton.mp4"),
+                width="stretch",
+            )
+        elif "skeleton" in queued_funcs:
+            st.caption("Skeleton: processing...")
+        st.divider()
+
+    th_docx = (docx_keys.get("TH") or "").strip()
+    en_docx = (docx_keys.get("EN") or "").strip()
+    th_docx_ready = bool(th_docx) and s3_key_exists(th_docx)
+    en_docx_ready = bool(en_docx) and s3_key_exists(en_docx)
+    if th_docx_ready or en_docx_ready:
+        st.markdown("### DOCX reports")
+        if th_docx_ready:
+            st.link_button(
+                "Download Operational Test DOCX (TH)",
+                presigned_get_url(th_docx, expires=3600, filename="operational_test_report_th.docx"),
+                width="stretch",
+            )
+        if en_docx_ready:
+            st.link_button(
+                "Download Operational Test DOCX (EN)",
+                presigned_get_url(en_docx, expires=3600, filename="operational_test_report_en.docx"),
+                width="stretch",
+            )
+        st.divider()
 
     if pdf_key and s3_key_exists(pdf_key):
         st.success("PDF is ready.")
@@ -571,7 +773,7 @@ if active_group_id:
                 width="stretch",
             )
             st.code(pdf_key, language="text")
-    elif status == "failed":
+    elif (latest_job and get_job_status_from_key(str(latest_job.get("_job_bucket_key") or "")) == "failed") or failed_error:
         st.error("Analysis failed. Please upload again and retry.")
     else:
         st.info("Processing. PDF is not ready yet. Refresh this page shortly.")

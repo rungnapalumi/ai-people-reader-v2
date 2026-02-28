@@ -214,7 +214,7 @@ def is_blocked_typo_domain(value: str) -> bool:
 def render_top_banner() -> None:
     for path in BANNER_PATH_CANDIDATES:
         if os.path.exists(path):
-            st.image(path, width="stretch")
+            st.image(path, use_column_width=True)
             return
 
 

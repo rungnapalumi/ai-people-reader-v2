@@ -1151,16 +1151,16 @@ def build_docx_report(
         "stance": "การยืนและการวางเท้า (Stance)" if is_thai else "Stance (Lower-Body Stability & Grounding)",
         "impact_clients": "ผลกระทบ:" if is_thai else "Impact:",
         "engaging": "2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_thai else "2. Engaging & Connecting:",
-        "approachability": "• ความเป็นกันเอง" if is_thai else "▪ Approachability",
-        "relatability": "• ความเข้าถึงได้" if is_thai else "▪ Relatability",
-        "engagement": "• การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_thai else "▪ Engagement, connect and build instant rapport with team",
+        "approachability": "• ความเป็นกันเอง" if is_thai else "• Approachability",
+        "relatability": "• ความเข้าถึงได้" if is_thai else "• Relatability",
+        "engagement": "• การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_thai else "• Engagement, connect and build instant rapport with team",
         "confidence": "3. ความมั่นใจ:" if is_thai else "3. Confidence:",
-        "optimistic": "• บุคลิกภาพเชิงบวก" if is_thai else "▪ Optimistic Presence",
-        "focus": "• ความมีสมาธิ" if is_thai else "▪ Focus",
-        "persuade": "• ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_thai else "▪ Ability to persuade and stand one's ground, in order to convince others.",
+        "optimistic": "• บุคลิกภาพเชิงบวก" if is_thai else "• Optimistic Presence",
+        "focus": "• ความมีสมาธิ" if is_thai else "• Focus",
+        "persuade": "• ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_thai else "• Ability to persuade and stand one's ground, in order to convince others.",
         "authority": "4.  ความเป็นผู้นำ (Authority):" if is_thai else "4. Authority:",
-        "importance": "• แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_thai else "▪ Showing sense of importance and urgency in subject matter",
-        "pressing": "• ผลักดันให้เกิดการลงมือทำ" if is_thai else "▪ Pressing for action",
+        "importance": "• แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_thai else "• Showing sense of importance and urgency in subject matter",
+        "pressing": "• ผลักดันให้เกิดการลงมือทำ" if is_thai else "• Pressing for action",
         "scale": "ระดับ:" if is_thai else "Scale:",
         "description": "คำอธิบาย: ตรวจพบ" if is_thai else "Description: Detected",
         "indicators": "การเคลื่อนไหวเชิงบวก" if is_thai else "positive indicators out of",
@@ -1240,8 +1240,8 @@ def build_docx_report(
                 pf.line_spacing = 1.1
                 continue
 
-            # Bullets use explicit "•" in content; keep unified compact rhythm.
-            if t.startswith("•"):
+            # Bullets: List Bullet style or explicit "•"/"▪" in content; keep unified compact rhythm.
+            if getattr(p.style, "name", "") == "List Bullet" or t.startswith("•") or t.startswith("▪"):
                 pf.space_before = Pt(0)
                 pf.space_after = Pt(6)
                 pf.line_spacing = 1.2
@@ -1253,21 +1253,27 @@ def build_docx_report(
                 pf.space_after = Pt(0)
                 continue
 
-    def _apply_th_bullet_layout(paragraph) -> None:
-        if (not is_thai) or (paragraph is None):
+    def _apply_bullet_layout(paragraph) -> None:
+        if paragraph is None:
             return
-        # Keep Thai bullet marker slightly outdented while body text starts at a fixed column.
+        # Same layout for TH & EN: match Thai (reference format).
         pf = paragraph.paragraph_format
         pf.left_indent = Pt(28)
         pf.first_line_indent = Pt(-14)
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(4)
+        pf.line_spacing = 1.15
 
-    def _apply_th_scale_layout(paragraph) -> None:
-        if (not is_thai) or (paragraph is None):
+    def _apply_scale_layout(paragraph) -> None:
+        if paragraph is None:
             return
-        # Align "ระดับ:" with the first character column of bullet body text.
+        # Same layout for TH & EN: match Thai.
         pf = paragraph.paragraph_format
         pf.left_indent = Pt(28)
         pf.first_line_indent = Pt(0)
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(6)
+        pf.line_spacing = 1.15
     
     # Add header and footer images to all pages
     section = doc.sections[0]
@@ -1294,7 +1300,8 @@ def build_docx_report(
     # PAGE 1: Cover + First Impression (Eye Contact start)
     # ============================================================
     
-    compact_thai_first_page = bool(is_thai)
+    # Same compact first page spacing for both Thai and English (match Thai layout).
+    compact_thai_first_page = True
 
     # Title section spacing after header:
     # keep Thai cover slightly higher while preserving existing spacing for EN.
@@ -1328,9 +1335,11 @@ def build_docx_report(
     detailed = doc.add_paragraph(texts["detailed_analysis"])
     detailed.runs[0].bold = True
     
-    # Section 1: First impression
+    # Section 1: First impression (same spacing TH & EN)
     section1 = doc.add_paragraph(texts["first_impression"])
     section1.runs[0].bold = True
+    section1.paragraph_format.space_before = Pt(10)
+    section1.paragraph_format.space_after = Pt(4)
     
     # First Impression - compact level format (High/Moderate/Low or สูง/กลาง/ต่ำ)
     if report.first_impression:
@@ -1343,29 +1352,31 @@ def build_docx_report(
         up_level = "-" if is_thai else "-"
         st_level = "-" if is_thai else "-"
 
-    eye_bullet = doc.add_paragraph(("▪ การสบตา (Eye Contact)" if is_thai else "▪ Eye Contact"))
-    _apply_th_bullet_layout(eye_bullet)
+    eye_bullet = doc.add_paragraph(("• การสบตา (Eye Contact)" if is_thai else "• Eye Contact"))
+    _apply_bullet_layout(eye_bullet)
     lvl1_text = f"{texts['scale']} {eye_level}"
     lvl1 = doc.add_paragraph(lvl1_text)
     lvl1.runs[0].bold = True
-    _apply_th_scale_layout(lvl1)
+    _apply_scale_layout(lvl1)
 
-    upright_bullet = doc.add_paragraph(("▪ ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "▪ Uprightness"))
-    _apply_th_bullet_layout(upright_bullet)
+    upright_bullet = doc.add_paragraph(("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness"))
+    _apply_bullet_layout(upright_bullet)
     lvl2_text = f"{texts['scale']} {up_level}"
     lvl2 = doc.add_paragraph(lvl2_text)
     lvl2.runs[0].bold = True
-    _apply_th_scale_layout(lvl2)
+    _apply_scale_layout(lvl2)
 
-    stance_bullet = doc.add_paragraph(("▪ การยืนและการวางเท้า (Stance)" if is_thai else "▪ Stance"))
-    _apply_th_bullet_layout(stance_bullet)
+    stance_bullet = doc.add_paragraph(("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance"))
+    _apply_bullet_layout(stance_bullet)
     lvl3_text = f"{texts['scale']} {st_level}"
     lvl3 = doc.add_paragraph(lvl3_text)
     lvl3.runs[0].bold = True
-    _apply_th_scale_layout(lvl3)
+    _apply_scale_layout(lvl3)
 
     remark = doc.add_paragraph("หมายเหตุ" if is_thai else "Remark")
     remark.runs[0].bold = True
+    remark.paragraph_format.space_before = Pt(8)
+    remark.paragraph_format.space_after = Pt(2)
     doc.add_paragraph(
         "ความรู้สึกแรกพบมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน โดยพิจารณาจากภาพรวม การสบตา ความตั้งตรง และการยืนวางเท้า ก่อนเข้าสู่การวิเคราะห์เชิงพฤติกรรมในส่วนถัดไป"
         if is_thai
@@ -1385,15 +1396,17 @@ def build_docx_report(
     engaging_cat = report.categories[0]
     section2 = doc.add_paragraph(texts["engaging"])
     section2.runs[0].bold = True
+    section2.paragraph_format.space_before = Pt(14)
+    section2.paragraph_format.space_after = Pt(4)
     p_approach = doc.add_paragraph(texts["approachability"])
-    _apply_th_bullet_layout(p_approach)
+    _apply_bullet_layout(p_approach)
     p_relate = doc.add_paragraph(texts["relatability"])
-    _apply_th_bullet_layout(p_relate)
+    _apply_bullet_layout(p_relate)
     p_engage = doc.add_paragraph(texts["engagement"])
-    _apply_th_bullet_layout(p_engage)
+    _apply_bullet_layout(p_engage)
     scale_para1 = doc.add_paragraph(f"{texts['scale']} {engaging_cat.scale.capitalize()}")
     scale_para1.runs[0].bold = True
-    _apply_th_scale_layout(scale_para1)
+    _apply_scale_layout(scale_para1)
     
     doc.add_paragraph()
     doc.add_paragraph()
@@ -1402,15 +1415,17 @@ def build_docx_report(
     confidence_cat = report.categories[1]
     section3 = doc.add_paragraph(texts["confidence"])
     section3.runs[0].bold = True
+    section3.paragraph_format.space_before = Pt(14)
+    section3.paragraph_format.space_after = Pt(4)
     p_opt = doc.add_paragraph(texts["optimistic"])
-    _apply_th_bullet_layout(p_opt)
+    _apply_bullet_layout(p_opt)
     p_focus = doc.add_paragraph(texts["focus"])
-    _apply_th_bullet_layout(p_focus)
+    _apply_bullet_layout(p_focus)
     p_persuade = doc.add_paragraph(texts["persuade"])
-    _apply_th_bullet_layout(p_persuade)
+    _apply_bullet_layout(p_persuade)
     scale_para2 = doc.add_paragraph(f"{texts['scale']} {confidence_cat.scale.capitalize()}")
     scale_para2.runs[0].bold = True
-    _apply_th_scale_layout(scale_para2)
+    _apply_scale_layout(scale_para2)
     
     # Keep spacing between Section 3 and Section 4 similar to Section 2 and 3
     doc.add_paragraph()
@@ -1424,13 +1439,15 @@ def build_docx_report(
     authority_cat = report.categories[2]
     section4 = doc.add_paragraph(texts["authority"])
     section4.runs[0].bold = True
+    section4.paragraph_format.space_before = Pt(14)
+    section4.paragraph_format.space_after = Pt(4)
     p_importance = doc.add_paragraph(texts["importance"])
-    _apply_th_bullet_layout(p_importance)
+    _apply_bullet_layout(p_importance)
     p_pressing = doc.add_paragraph(texts["pressing"])
-    _apply_th_bullet_layout(p_pressing)
+    _apply_bullet_layout(p_pressing)
     scale_para3 = doc.add_paragraph(f"{texts['scale']} {authority_cat.scale.capitalize()}")
     scale_para3.runs[0].bold = True
-    _apply_th_scale_layout(scale_para3)
+    _apply_scale_layout(scale_para3)
 
     if not is_simple:
         # PAGE BREAK TO PAGE 4
@@ -2344,19 +2361,19 @@ def build_pdf_report(
         if is_operation_test:
             if is_thai:
                 write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
-                write_paragraph_block(f"▪ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block(f"▪ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.upright_pct, metric='uprightness')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block(f"▪ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.stance_stability, metric='stance')}",
                     LEVEL_STYLE,
@@ -2364,36 +2381,43 @@ def build_pdf_report(
                 )
             else:
                 write_paragraph_block("1. First impression", SECTION_STYLE, extra_gap=0)
-                write_paragraph_block("▪ Eye Contact", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Eye Contact", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block("▪ Uprightness", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Uprightness", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block("▪ Stance", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Stance", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}",
                     LEVEL_STYLE,
                     extra_gap=8,
                 )
         else:
+            # Compact format (match Thai layout) for non-operation_test
             write_line(first_impression_label, size=12, bold=True, gap=18)
-            eye_lines = generate_eye_contact_text_th(fi.eye_contact_pct) if is_thai else generate_eye_contact_text(fi.eye_contact_pct)
-            up_lines = generate_uprightness_text_th(fi.upright_pct) if is_thai else generate_uprightness_text(fi.upright_pct)
-            st_lines = generate_stance_text_th(fi.stance_stability) if is_thai else generate_stance_text(fi.stance_stability)
-
-            write_line(eye_label, bold=True, gap=16)
-            write_block(eye_lines, gap=14)
-            write_line(upright_label, bold=True, gap=16)
-            write_block(up_lines, gap=14)
-            write_line(stance_label, bold=True, gap=16)
-            write_block(st_lines, gap=14)
+            eye_level = _first_impression_level_th(fi.eye_contact_pct, "eye_contact") if is_thai else _first_impression_level(fi.eye_contact_pct, "eye_contact")
+            up_level = _first_impression_level_th(fi.upright_pct, "uprightness") if is_thai else _first_impression_level(fi.upright_pct, "uprightness")
+            st_level = _first_impression_level_th(fi.stance_stability, "stance") if is_thai else _first_impression_level(fi.stance_stability, "stance")
+            write_line(f"• {eye_label}" if is_thai else "• Eye Contact", gap=14)
+            write_line(f"{'ระดับ' if is_thai else 'Scale'}: {eye_level}", bold=True, gap=14)
+            write_line(f"• {upright_label}" if is_thai else "• Uprightness", gap=14)
+            write_line(f"{'ระดับ' if is_thai else 'Scale'}: {up_level}", bold=True, gap=14)
+            write_line(f"• {stance_label}" if is_thai else "• Stance", gap=14)
+            write_line(f"{'ระดับ' if is_thai else 'Scale'}: {st_level}", bold=True, gap=14)
+            write_line("หมายเหตุ" if is_thai else "Remark", bold=True, gap=14)
+            remark_text = (
+                "ความรู้สึกแรกพบมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน โดยพิจารณาจากภาพรวม การสบตา ความตั้งตรง และการยืนวางเท้า ก่อนเข้าสู่การวิเคราะห์เชิงพฤติกรรมในส่วนถัดไป"
+                if is_thai
+                else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
+            )
+            write_line(remark_text, gap=18)
     else:
         write_line(first_impression_label, size=12, bold=True, gap=18)
         write_line("- Not available", gap=20)
@@ -2460,18 +2484,21 @@ def build_pdf_report(
                     return "Low"
                 return "-"
 
-            en_section_gap = 16
-            en_item_gap = 14
-            en_scale_gap = 14
+            # Match Thai spacing: section 2 uses space_after=6, sections 3-4 use space_after=4
+            en_section_gap = 6
+            en_section2_item_gap = 6
+            en_section2_scale_gap = 4
+            en_section34_item_gap = 4
+            en_section34_scale_gap = 2
 
-            write_line("", gap=8)
-            write_line("Note", bold=True, gap=en_item_gap)
+            write_line("", gap=6)
+            write_line("Note", bold=True, gap=en_section2_item_gap)
             write_line(
                 "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception.",
-                gap=en_item_gap,
+                gap=en_section2_item_gap,
             )
             write_line("2. Engaging & Connecting:", size=12, bold=True, gap=en_section_gap)
-            write_line_indented("▪ Approachability.", indent=28, gap=en_item_gap)
+            write_line_indented("• Approachability.", indent=28, gap=en_section2_item_gap)
 
             # Keep section 2 on page 1; do not force a page break after the first bullet.
             write_line("", gap=2)
@@ -2480,9 +2507,9 @@ def build_pdf_report(
             confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line_indented("▪ Relatability.", indent=28, gap=en_item_gap)
-            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=en_item_gap)
-            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=en_scale_gap)
+            write_line_indented("• Relatability.", indent=28, gap=en_section2_item_gap)
+            write_line_indented("• Engagement, connect and build instant rapport with team.", indent=28, gap=en_section2_item_gap)
+            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=en_section2_scale_gap)
 
             # Requested EN layout: page 1 ends after section 2, sections 3-4 on page 2.
             c.showPage()
@@ -2490,15 +2517,15 @@ def build_pdf_report(
             y = top_content_y
 
             write_line("3. Confidence:", size=12, bold=True, gap=en_section_gap)
-            write_line_indented("▪ Optimistic Presence.", indent=28, gap=en_item_gap)
-            write_line_indented("▪ Focus.", indent=28, gap=en_item_gap)
-            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_item_gap)
-            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=en_scale_gap)
+            write_line_indented("• Optimistic Presence.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("• Focus.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("• Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_section34_item_gap)
+            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
 
             write_line("4. Authority:", size=12, bold=True, gap=en_section_gap)
-            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_item_gap)
-            write_line_indented("▪ Pressing for action.", indent=28, gap=en_item_gap)
-            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_scale_gap)
+            write_line_indented("• Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("• Pressing for action.", indent=28, gap=en_section34_item_gap)
+            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
         append_graph_pages_for_operation_test()
         c.save()
         return

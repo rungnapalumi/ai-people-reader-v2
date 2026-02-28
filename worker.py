@@ -1,5 +1,8 @@
 import os
 import io
+
+from dotenv import load_dotenv
+load_dotenv()
 import json
 import time
 import math

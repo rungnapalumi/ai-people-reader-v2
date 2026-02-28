@@ -24,6 +24,9 @@
 import os
 import io
 import json
+
+from dotenv import load_dotenv
+load_dotenv()
 import time
 import logging
 import tempfile
@@ -958,6 +961,13 @@ def generate_reports_for_lang(
     """
     analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     client_name = str(job.get("client_name") or "").strip()
+    if not client_name or client_name.lower() == "anonymous":
+        input_key = str(job.get("input_key") or "").strip()
+        if input_key:
+            base = os.path.basename(input_key)
+            client_name = (os.path.splitext(base)[0] or base).strip()
+        if not client_name:
+            client_name = os.path.splitext(os.path.basename(video_path))[0] or "video"
 
     duration_str = format_seconds_to_mmss(float(result.get("duration_seconds") or get_video_duration_seconds(video_path)))
     total = int(result.get("total_indicators") or 0) or 1

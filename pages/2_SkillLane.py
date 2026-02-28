@@ -24,8 +24,10 @@ import uuid
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 import streamlit as st
+import streamlit.components.v1 as components
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
@@ -224,7 +226,7 @@ def is_blocked_typo_domain(value: str) -> bool:
 def render_top_banner() -> None:
     for path in BANNER_PATH_CANDIDATES:
         if os.path.exists(path):
-            st.image(path, width="stretch")
+            st.image(path, use_column_width=True)
             return
 
 
@@ -309,6 +311,19 @@ def presigned_get_url(key: str, expires: int = 3600, filename: Optional[str] = N
     return s3.generate_presigned_url(
         ClientMethod="get_object",
         Params=params,
+        ExpiresIn=expires,
+    )
+
+
+def presigned_put_url(key: str, content_type: str = "video/mp4", expires: int = 3600) -> str:
+    """Generate presigned PUT URL for direct browser-to-S3 upload (skips server)."""
+    return s3.generate_presigned_url(
+        ClientMethod="put_object",
+        Params={
+            "Bucket": AWS_BUCKET,
+            "Key": key,
+            "ContentType": content_type,
+        },
         ExpiresIn=expires,
     )
 
@@ -726,6 +741,86 @@ def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
         return {"report_en_docx": "", "report_th_docx": "", "report_en_pdf": "", "report_th_pdf": ""}
 
 
+def _direct_upload_html(
+    presigned_url: str,
+    group_id: str,
+    notify_email: str,
+    employee_id: str,
+    content_type: str = "video/mp4",
+) -> str:
+    """HTML/JS for direct browser-to-S3 upload with progress bar."""
+    redirect_params = (
+        f"group_id={quote(group_id)}"
+        f"&upload_done=1"
+        f"&notify_email={quote(notify_email)}"
+        f"&employee_id={quote(employee_id)}"
+    )
+    return f"""
+<div style="font-family: inherit; color: #e6d9c8;">
+  <p style="margin-bottom: 12px;">เลือกวิดีโอเพื่ออัปโหลดตรงไปยัง S3 (ไม่ผ่านเซิร์ฟเวอร์ — เร็วกว่า)</p>
+  <input type="file" id="videoInput" accept="video/mp4,video/quicktime,video/x-m4v,video/webm,.mp4,.mov,.m4v,.webm" style="margin-bottom: 12px; color: #e6d9c8;" />
+  <div id="progressWrap" style="display: none; margin: 12px 0;">
+    <div style="background: #3a332d; border-radius: 8px; overflow: hidden; height: 24px;">
+      <div id="progressBar" style="background: linear-gradient(180deg, #c9a67a, #b48d5f); height: 100%; width: 0%%; transition: width 0.2s;"></div>
+    </div>
+    <p id="progressText" style="margin-top: 6px; font-size: 14px;">0%%</p>
+  </div>
+  <p id="statusText" style="margin-top: 8px; font-size: 14px;"></p>
+</div>
+<script>
+(function() {{
+  var input = document.getElementById('videoInput');
+  var progressWrap = document.getElementById('progressWrap');
+  var progressBar = document.getElementById('progressBar');
+  var progressText = document.getElementById('progressText');
+  var statusText = document.getElementById('statusText');
+
+  input.addEventListener('change', function() {{
+    var file = input.files[0];
+    if (!file) return;
+
+    progressWrap.style.display = 'block';
+    progressBar.style.width = '0%';
+    progressText.textContent = '0%';
+    statusText.textContent = 'กำลังอัปโหลด...';
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('PUT', '{presigned_url}');
+    xhr.setRequestHeader('Content-Type', '{content_type}');
+
+    xhr.upload.addEventListener('progress', function(e) {{
+      if (e.lengthComputable) {{
+        var pct = Math.round((e.loaded / e.total) * 100);
+        progressBar.style.width = pct + '%';
+        progressText.textContent = pct + '%';
+      }}
+    }});
+
+    xhr.onload = function() {{
+      if (xhr.status >= 200 && xhr.status < 300) {{
+        progressBar.style.width = '100%';
+        progressText.textContent = '100%';
+        statusText.textContent = 'อัปโหลดสำเร็จ! กำลังส่งงาน...';
+        var qs = '{redirect_params}';
+        window.top.location.search = qs;
+      }} else {{
+        statusText.textContent = 'อัปโหลดล้มเหลว (รหัส: ' + xhr.status + ')';
+        statusText.style.color = '#e74c3c';
+      }}
+    }};
+
+    xhr.onerror = function() {{
+      statusText.textContent = 'เกิดข้อผิดพลาดในการอัปโหลด';
+      statusText.style.color = '#e74c3c';
+    }};
+
+    xhr.send(file);
+  }});
+}})();
+</script>
+"""
+
+
 def ensure_session_defaults() -> None:
     if "last_group_id" not in st.session_state:
         st.session_state["last_group_id"] = ""
@@ -854,15 +949,85 @@ employee_id = st.text_input(
 )
 org_settings = get_org_settings(enterprise_folder)
 
+# -------------------------
+# Direct S3 upload (browser -> S3, skips server for speed)
+# -------------------------
+use_direct_upload = True
+if use_direct_upload:
+    if st.session_state.get("direct_upload_ready"):
+        presigned = st.session_state.get("direct_upload_presigned_url", "")
+        gid = st.session_state.get("direct_upload_group_id", "")
+        nem = st.session_state.get("direct_upload_notify_email", "")
+        eid = st.session_state.get("direct_upload_employee_id", "")
+        if presigned and gid:
+            st.caption("อัปโหลดตรงไปยัง S3 (เร็วกว่า ไม่ผ่านเซิร์ฟเวอร์)")
+            components.html(
+                _direct_upload_html(presigned, gid, nem, eid),
+                height=220,
+                scrolling=False,
+            )
+            if st.button("← กลับ", key="direct_upload_back"):
+                for k in ("direct_upload_ready", "direct_upload_presigned_url", "direct_upload_group_id",
+                          "direct_upload_notify_email", "direct_upload_employee_id", "direct_upload_enterprise_folder"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+            st.caption(SUPPORT_CONTACT_TEXT)
+            st.stop()
+    upload_clicked = st.button("📤 เลือกวิดีโอและอัปโหลด", type="primary", width="stretch", key="upload_video_btn")
+    st.caption("อัปโหลดตรงไปยัง S3 — เร็วกว่าแบบเดิม (หากอัปโหลดล้มเหลว ให้ใช้แบบสำรองด้านล่าง)")
+else:
+    upload_clicked = False
+
 uploaded = st.file_uploader(
-    "วิดีโอ (MP4/MOV/M4V/WEBM)",
+    "วิดีโอ (MP4/MOV/M4V/WEBM) — แบบสำรอง",
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
+    key="skilllane_file_uploader",
 )
 st.caption("หากอัปโหลดล้มเหลวหรือขึ้นสถานะ 400 กรุณา upload วีดีโอใหม่")
 
-run = st.button("🎬 เริ่มวิเคราะห์", type="primary", width="stretch")
-st.caption(SUPPORT_CONTACT_TEXT)
+run = st.button("🎬 เริ่มวิเคราะห์", type="primary", width="stretch", key="run_analyze")
+if use_direct_upload:
+    st.caption("หรือใช้แบบสำรอง: เลือกไฟล์ด้านบนแล้วกดปุ่มนี้")
+    st.caption(SUPPORT_CONTACT_TEXT)
+
+# Handle "Upload Video" click -> prepare direct upload
+if use_direct_upload and upload_clicked:
+    if not notify_email:
+        st.error("กรุณากรอกอีเมลผู้ใช้งาน")
+    elif (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
+        st.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
+    elif not employee_id.strip():
+        st.error("กรุณากรอกชื่อที่ใช้ในการรายงานผล")
+    else:
+        base_user = safe_slug(user_name, fallback="user")
+        group_id = f"{new_group_id()}__{base_user}"
+        input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+        presigned_url = presigned_put_url(input_key, content_type="video/mp4", expires=3600)
+        st.session_state["direct_upload_ready"] = True
+        st.session_state["direct_upload_presigned_url"] = presigned_url
+        st.session_state["direct_upload_group_id"] = group_id
+        st.session_state["direct_upload_input_key"] = input_key
+        st.session_state["direct_upload_notify_email"] = notify_email
+        st.session_state["direct_upload_employee_id"] = employee_id
+        st.session_state["direct_upload_enterprise_folder"] = enterprise_folder
+        st.session_state["direct_upload_user_name"] = user_name
+        st.rerun()
+
+# Handle redirect after direct upload (upload_done=1)
+upload_done = str(st.query_params.get("upload_done", "") or "").strip() == "1"
+url_upload_group = str(st.query_params.get("group_id", "") or "").strip()
+url_upload_notify = str(st.query_params.get("notify_email", "") or "").strip()
+url_upload_employee = str(st.query_params.get("employee_id", "") or "").strip()
+if upload_done and url_upload_group and url_upload_notify and url_upload_employee:
+    run = True
+    group_id = url_upload_group
+    notify_email = url_upload_notify
+    employee_id = url_upload_employee
+    user_name = url_upload_notify
+    enterprise_folder = "SkillLane"
+    uploaded = None
+    org_settings = get_org_settings(enterprise_folder)
 
 has_identity_input = bool(employee_id.strip() and notify_email)
 identity_verified = False
@@ -887,8 +1052,9 @@ note = st.empty()
 # Submit jobs
 # -------------------------
 if run:
-    if not uploaded:
-        note.error("กรุณา upload วีดีโอใหม่")
+    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4" if upload_done else None
+    if not upload_done and not uploaded:
+        note.error("กรุณา upload วีดีโอใหม่ หรือกด 'เลือกวิดีโอและอัปโหลด'")
         st.stop()
     if not notify_email:
         note.error("กรุณากรอกอีเมลผู้ใช้งาน")
@@ -916,20 +1082,26 @@ if run:
         note.error("องค์กรนี้ยังไม่ได้เปิดการส่งออกผลลัพธ์ใดๆ กรุณาตั้งค่าจากหน้า Admin ก่อน")
         st.stop()
 
-    base_user = safe_slug(user_name, fallback="user")
-    group_id = f"{new_group_id()}__{base_user}"
-    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+    if not upload_done:
+        base_user = safe_slug(user_name, fallback="user")
+        group_id = f"{new_group_id()}__{base_user}"
+        input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
 
-    try:
-        s3_upload_stream(
-            key=input_key,
-            file_obj=uploaded,
-            content_type=guess_content_type(uploaded.name or "input.mp4"),
-        )
-    except Exception as e:
-        note.error(f"อัปโหลดไป S3 ไม่สำเร็จ: {format_submit_error_message(e)}")
-        st.warning(SUPPORT_CONTACT_TEXT)
-        st.stop()
+        try:
+            s3_upload_stream(
+                key=input_key,
+                file_obj=uploaded,
+                content_type=guess_content_type(uploaded.name or "input.mp4"),
+            )
+        except Exception as e:
+            note.error(f"อัปโหลดไป S3 ไม่สำเร็จ: {format_submit_error_message(e)}")
+            st.warning(SUPPORT_CONTACT_TEXT)
+            st.stop()
+    else:
+        input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+        if not s3_key_exists(input_key):
+            note.error("ไม่พบวิดีโอใน S3 กรุณาอัปโหลดใหม่อีกครั้ง")
+            st.stop()
 
     outputs = build_output_keys(group_id)
     created_at = utc_now_iso()
@@ -1019,6 +1191,14 @@ if run:
         f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
     )
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
+
+    if upload_done:
+        try:
+            for p in ("upload_done", "notify_email", "employee_id"):
+                if p in st.query_params:
+                    del st.query_params[p]
+        except Exception:
+            pass
 
 # Keep showing the latest submitted group in this session even before ownership index catches up.
 if not active_group_id:

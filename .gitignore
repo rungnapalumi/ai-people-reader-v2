@@ -7,6 +7,10 @@ __pycache__/
 *.pyc
 *.pyo
 
+# ---- Secrets ----
+.env
+.env.local
+
 # ---- Virtual env ----
 .venv/
 venv/
