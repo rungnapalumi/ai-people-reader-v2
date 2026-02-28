@@ -1253,27 +1253,32 @@ def build_docx_report(
                 pf.space_after = Pt(0)
                 continue
 
+    def _strip_bullet(text: str) -> str:
+        """Remove leading bullet (•) for use with List Bullet style."""
+        s = str(text or "").strip()
+        if s.startswith("•"):
+            return s[1:].lstrip()
+        return s
+
     def _apply_bullet_layout(paragraph) -> None:
         if paragraph is None:
             return
-        # Same layout for TH & EN: match Thai (reference format).
         pf = paragraph.paragraph_format
         pf.left_indent = Pt(28)
         pf.first_line_indent = Pt(-14)
         pf.space_before = Pt(0)
-        pf.space_after = Pt(4)
-        pf.line_spacing = 1.15
+        pf.space_after = Pt(6 if not is_thai else 4)  # EN: more space between lines
+        pf.line_spacing = 1.25 if not is_thai else 1.15
 
-    def _apply_scale_layout(paragraph) -> None:
+    def _apply_scale_layout(paragraph, left_indent_pt: float = 28) -> None:
         if paragraph is None:
             return
-        # Same layout for TH & EN: match Thai.
         pf = paragraph.paragraph_format
-        pf.left_indent = Pt(28)
+        pf.left_indent = Pt(left_indent_pt)
         pf.first_line_indent = Pt(0)
         pf.space_before = Pt(0)
-        pf.space_after = Pt(6)
-        pf.line_spacing = 1.15
+        pf.space_after = Pt(8 if not is_thai else 6)  # EN: more space between lines
+        pf.line_spacing = 1.25 if not is_thai else 1.15
     
     # Add header and footer images to all pages
     section = doc.sections[0]
@@ -1324,6 +1329,8 @@ def build_docx_report(
     
     # Client info
     analysis_date_display = _date_th_display(report.analysis_date) if is_thai else _date_en_display(report.analysis_date)
+    if not is_thai:
+        doc.add_paragraph()  # EN: extra line before Client Name
     doc.add_paragraph(f"{texts['client_name']}  {report.client_name}")
     doc.add_paragraph(f"{texts['analysis_date']}  {analysis_date_display}")
     
@@ -1355,21 +1362,30 @@ def build_docx_report(
         up_level = "-" if is_thai else "-"
         st_level = "-" if is_thai else "-"
 
-    eye_bullet = doc.add_paragraph(("• การสบตา (Eye Contact)" if is_thai else "• Eye Contact"))
+    eye_bullet = doc.add_paragraph(
+        _strip_bullet("• การสบตา (Eye Contact)" if is_thai else "• Eye Contact"),
+        style="List Bullet",
+    )
     _apply_bullet_layout(eye_bullet)
     lvl1_text = f"{texts['scale']} {eye_level}"
     lvl1 = doc.add_paragraph(lvl1_text)
     lvl1.runs[0].bold = True
     _apply_scale_layout(lvl1)
 
-    upright_bullet = doc.add_paragraph(("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness"))
+    upright_bullet = doc.add_paragraph(
+        _strip_bullet("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness"),
+        style="List Bullet",
+    )
     _apply_bullet_layout(upright_bullet)
     lvl2_text = f"{texts['scale']} {up_level}"
     lvl2 = doc.add_paragraph(lvl2_text)
     lvl2.runs[0].bold = True
     _apply_scale_layout(lvl2)
 
-    stance_bullet = doc.add_paragraph(("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance"))
+    stance_bullet = doc.add_paragraph(
+        _strip_bullet("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance"),
+        style="List Bullet",
+    )
     _apply_bullet_layout(stance_bullet)
     lvl3_text = f"{texts['scale']} {st_level}"
     lvl3 = doc.add_paragraph(lvl3_text)
@@ -1400,20 +1416,22 @@ def build_docx_report(
     # ============================================================
     
     # Section 2: Engaging & Connecting
+    if not is_thai:
+        doc.add_paragraph()  # EN: extra line before section 2
     engaging_cat = report.categories[0]
     section2 = doc.add_paragraph(texts["engaging"])
     section2.runs[0].bold = True
     section2.paragraph_format.space_before = Pt(14)
     section2.paragraph_format.space_after = Pt(4)
-    p_approach = doc.add_paragraph(texts["approachability"])
+    p_approach = doc.add_paragraph(_strip_bullet(texts["approachability"]), style="List Bullet")
     _apply_bullet_layout(p_approach)
-    p_relate = doc.add_paragraph(texts["relatability"])
+    p_relate = doc.add_paragraph(_strip_bullet(texts["relatability"]), style="List Bullet")
     _apply_bullet_layout(p_relate)
-    p_engage = doc.add_paragraph(texts["engagement"])
+    p_engage = doc.add_paragraph(_strip_bullet(texts["engagement"]), style="List Bullet")
     _apply_bullet_layout(p_engage)
     scale_para1 = doc.add_paragraph(f"{texts['scale']} {engaging_cat.scale.capitalize()}")
     scale_para1.runs[0].bold = True
-    _apply_scale_layout(scale_para1)
+    _apply_scale_layout(scale_para1, left_indent_pt=36 if not is_thai else 28)  # EN: align with section 1
     
     doc.add_paragraph()
     doc.add_paragraph()
@@ -1424,19 +1442,19 @@ def build_docx_report(
     section3.runs[0].bold = True
     section3.paragraph_format.space_before = Pt(14)
     section3.paragraph_format.space_after = Pt(4)
-    p_opt = doc.add_paragraph(texts["optimistic"])
+    p_opt = doc.add_paragraph(_strip_bullet(texts["optimistic"]), style="List Bullet")
     _apply_bullet_layout(p_opt)
-    p_focus = doc.add_paragraph(texts["focus"])
+    p_focus = doc.add_paragraph(_strip_bullet(texts["focus"]), style="List Bullet")
     _apply_bullet_layout(p_focus)
-    p_persuade = doc.add_paragraph(texts["persuade"])
+    p_persuade = doc.add_paragraph(_strip_bullet(texts["persuade"]), style="List Bullet")
     _apply_bullet_layout(p_persuade)
     scale_para2 = doc.add_paragraph(f"{texts['scale']} {confidence_cat.scale.capitalize()}")
     scale_para2.runs[0].bold = True
-    _apply_scale_layout(scale_para2)
+    _apply_scale_layout(scale_para2, left_indent_pt=36 if not is_thai else 28)  # EN: align with section 1 Scale
     
-    # Keep spacing between Section 3 and Section 4 similar to Section 2 and 3
-    doc.add_paragraph()
-    doc.add_paragraph()
+    # Spacing between Section 3 and Section 4 — EN: more space for visual balance
+    for _ in range(3 if not is_thai else 2):
+        doc.add_paragraph()
     
     # ============================================================
     # Section 4: Authority (same page as Section 3)
@@ -1446,15 +1464,15 @@ def build_docx_report(
     authority_cat = report.categories[2]
     section4 = doc.add_paragraph(texts["authority"])
     section4.runs[0].bold = True
-    section4.paragraph_format.space_before = Pt(14)
+    section4.paragraph_format.space_before = Pt(22 if not is_thai else 14)  # EN: more space from section 3
     section4.paragraph_format.space_after = Pt(4)
-    p_importance = doc.add_paragraph(texts["importance"])
+    p_importance = doc.add_paragraph(_strip_bullet(texts["importance"]), style="List Bullet")
     _apply_bullet_layout(p_importance)
-    p_pressing = doc.add_paragraph(texts["pressing"])
+    p_pressing = doc.add_paragraph(_strip_bullet(texts["pressing"]), style="List Bullet")
     _apply_bullet_layout(p_pressing)
     scale_para3 = doc.add_paragraph(f"{texts['scale']} {authority_cat.scale.capitalize()}")
     scale_para3.runs[0].bold = True
-    _apply_scale_layout(scale_para3)
+    _apply_scale_layout(scale_para3, left_indent_pt=36 if not is_thai else 28)  # EN: align with section 1 Scale
 
     if not is_simple:
         # PAGE BREAK TO PAGE 4
@@ -1464,10 +1482,10 @@ def build_docx_report(
         # PAGE 4: Effort Motion Detection Results
         # ============================================================
         
-        # Spacing: operation_test — less top space so title sits higher.
+        # Spacing: operation_test — EN: more top space to match PDF; TH: compact.
         if is_operation_test:
-            doc.add_paragraph()
-            doc.add_paragraph()
+            for _ in range(4 if not is_thai else 2):
+                doc.add_paragraph()
         else:
             for _ in range(4):
                 doc.add_paragraph()
@@ -1489,10 +1507,10 @@ def build_docx_report(
         # PAGE 5: Shape Motion Detection Results
         # ============================================================
         
-        # Spacing: operation_test — less top space so title sits higher.
+        # Spacing: operation_test — EN: more top space to match PDF; TH: compact.
         if is_operation_test:
-            doc.add_paragraph()
-            doc.add_paragraph()
+            for _ in range(4 if not is_thai else 2):
+                doc.add_paragraph()
         else:
             for _ in range(4):
                 doc.add_paragraph()
@@ -2072,8 +2090,11 @@ def build_pdf_report(
         for idx, (graph_title, graph_path) in enumerate(graph_specs):
             c.showPage()
             draw_header_footer()
-            # Title higher on page (closer to header) for balanced layout.
-            y = min(height - 50, top_content_y + 50)
+            # EN: move title and graph down to match Word report; TH: keep balanced layout.
+            if not is_thai:
+                y = top_content_y - 55  # More top space: title and graph lower
+            else:
+                y = min(height - 50, top_content_y + 50)
             write_paragraph_block(graph_title, graph_title_style, indent=0, extra_gap=0)
             if graph_path and os.path.exists(graph_path):
                 try:
