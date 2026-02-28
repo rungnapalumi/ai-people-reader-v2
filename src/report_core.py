@@ -1392,6 +1392,8 @@ def build_docx_report(
     lvl3.runs[0].bold = True
     _apply_scale_layout(lvl3)
 
+    if not is_thai:
+        doc.add_paragraph()  # EN: extra line before Remark
     remark = doc.add_paragraph("หมายเหตุ" if is_thai else "Remark")
     remark.runs[0].bold = True
     remark.paragraph_format.space_before = Pt(8)
@@ -1415,9 +1417,7 @@ def build_docx_report(
     # PAGE 2: Engaging & Connecting + Confidence
     # ============================================================
     
-    # Section 2: Engaging & Connecting
-    if not is_thai:
-        doc.add_paragraph()  # EN: extra line before section 2
+    # Section 2: Engaging & Connecting (EN: no extra line — moved up 1)
     engaging_cat = report.categories[0]
     section2 = doc.add_paragraph(texts["engaging"])
     section2.runs[0].bold = True
@@ -2354,6 +2354,8 @@ def build_pdf_report(
         write_kv_line("วันที่วิเคราะห์:", display_date, size=14, value_indent=118, gap_after=21)
     else:
         write_paragraph_block(title, TITLE_STYLE, indent=0, extra_gap=0)
+        if not is_thai:
+            write_line("", gap=14)  # EN: extra line before Client Name
         write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
         write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {display_date}")
     duration_label = _duration_th_text(report.video_length_str) if is_thai else report.video_length_str
@@ -2516,12 +2518,12 @@ def build_pdf_report(
                     return "Low"
                 return "-"
 
-            # Match Thai spacing: section 2 uses space_after=6, sections 3-4 use space_after=4
-            en_section_gap = 6
-            en_section2_item_gap = 6
-            en_section2_scale_gap = 4
-            en_section34_item_gap = 4
-            en_section34_scale_gap = 2
+            # EN PDF: more space between lines (text was too dense)
+            en_section_gap = 8
+            en_section2_item_gap = 10
+            en_section2_scale_gap = 8
+            en_section34_item_gap = 10
+            en_section34_scale_gap = 8
 
             write_line("", gap=6)
             write_line("Note", bold=True, gap=en_section2_item_gap)
@@ -2541,7 +2543,7 @@ def build_pdf_report(
 
             write_line_indented("• Relatability.", indent=28, gap=en_section2_item_gap)
             write_line_indented("• Engagement, connect and build instant rapport with team.", indent=28, gap=en_section2_item_gap)
-            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=en_section2_scale_gap)
+            write_line_indented(f"Scale: {engaging_scale}", indent=30, bold=True, gap=en_section2_scale_gap)  # 30 = match section 1
 
             # Requested EN layout: page 1 ends after section 2, sections 3-4 on page 2.
             c.showPage()
@@ -2552,12 +2554,12 @@ def build_pdf_report(
             write_line_indented("• Optimistic Presence.", indent=28, gap=en_section34_item_gap)
             write_line_indented("• Focus.", indent=28, gap=en_section34_item_gap)
             write_line_indented("• Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_section34_item_gap)
-            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+            write_line_indented(f"Scale: {confidence_scale}", indent=30, bold=True, gap=en_section34_scale_gap)  # 30 = match section 1
 
             write_line("4. Authority:", size=12, bold=True, gap=en_section_gap)
             write_line_indented("• Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
             write_line_indented("• Pressing for action.", indent=28, gap=en_section34_item_gap)
-            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+            write_line_indented(f"Scale: {authority_scale}", indent=30, bold=True, gap=en_section34_scale_gap)  # 30 = match section 1
         append_graph_pages_for_operation_test()
         c.save()
         return
