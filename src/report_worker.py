@@ -1552,16 +1552,18 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
     return analyze_video_placeholder(video_path=video_path, seed=42)
 
 
+# Cap High/สูง to Moderate/กลาง for this period (matches report_core.CAP_HIGH_TO_MODERATE)
 def _first_impression_level(value: float, metric: str = "") -> str:
     score = float(value or 0.0)
-    name = str(metric or "").strip().lower()
-    if name == "eye_contact":
-        return "high"
     if score >= 70.0:
-        return "high"
-    if score >= 40.0:
+        raw = "high"
+    elif score >= 40.0:
+        raw = "moderate"
+    else:
+        raw = "low"
+    if raw == "high":
         return "moderate"
-    return "low"
+    return raw
 
 
 def generate_reports_for_lang(

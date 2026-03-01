@@ -1,4 +1,7 @@
 # report_core.py — shared report logic for report generation
+# TEMPORARY: Cap High/สูง to Moderate/กลาง for all categories in reports
+CAP_HIGH_TO_MODERATE = True
+
 import os
 import io
 import math
@@ -44,6 +47,28 @@ class FirstImpressionData:
     eye_contact_pct: float
     upright_pct: float
     stance_stability: float
+
+def _cap_high_to_moderate(level: str, is_thai: bool) -> str:
+    """Cap High/สูง to Moderate/กลาง when CAP_HIGH_TO_MODERATE is True."""
+    if not CAP_HIGH_TO_MODERATE:
+        return level
+    s = str(level or "").strip().lower()
+    if s.startswith("high") or s == "สูง":
+        return "กลาง" if is_thai else "Moderate"
+    return level
+
+
+def _display_scale(scale: str, is_thai: bool) -> str:
+    """Convert scale for display and cap High/สูง to Moderate/กลาง."""
+    s = str(scale or "").strip().lower()
+    if s.startswith("high"):
+        return "กลาง" if is_thai else "Moderate"
+    if s.startswith("moderate"):
+        return "กลาง" if is_thai else "Moderate"
+    if s.startswith("low"):
+        return "ต่ำ" if is_thai else "Low"
+    return "-"
+
 
 @dataclass
 class CategoryResult:
@@ -1204,20 +1229,19 @@ def build_docx_report(
         return raw
 
     def _fi_level_en(value: float, metric: str = "") -> str:
-        # Requested default: eye contact should be High.
-        if str(metric or "").strip().lower() == "eye_contact":
-            return "High"
         v = float(value or 0.0)
         if v >= 75.0:
-            return "High"
-        if v >= 40.0:
-            return "Moderate"
-        return "Low"
+            raw = "High"
+        elif v >= 40.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+        return _cap_high_to_moderate(raw, is_thai=False)
 
     def _fi_level_th(value: float, metric: str = "") -> str:
         lv = _fi_level_en(value, metric=metric).lower()
         if lv.startswith("high"):
-            return "สูง"
+            return "กลาง" if CAP_HIGH_TO_MODERATE else "สูง"
         if lv.startswith("moderate"):
             return "กลาง"
         return "ต่ำ"
@@ -1429,7 +1453,7 @@ def build_docx_report(
     _apply_bullet_layout(p_relate)
     p_engage = doc.add_paragraph(_strip_bullet(texts["engagement"]), style="List Bullet")
     _apply_bullet_layout(p_engage)
-    scale_para1 = doc.add_paragraph(f"{texts['scale']} {engaging_cat.scale.capitalize()}")
+    scale_para1 = doc.add_paragraph(f"{texts['scale']} {_display_scale(engaging_cat.scale, is_thai)}")
     scale_para1.runs[0].bold = True
     _apply_scale_layout(scale_para1, left_indent_pt=36 if not is_thai else 28)  # EN: align with section 1
     
@@ -1448,7 +1472,7 @@ def build_docx_report(
     _apply_bullet_layout(p_focus)
     p_persuade = doc.add_paragraph(_strip_bullet(texts["persuade"]), style="List Bullet")
     _apply_bullet_layout(p_persuade)
-    scale_para2 = doc.add_paragraph(f"{texts['scale']} {confidence_cat.scale.capitalize()}")
+    scale_para2 = doc.add_paragraph(f"{texts['scale']} {_display_scale(confidence_cat.scale, is_thai)}")
     scale_para2.runs[0].bold = True
     _apply_scale_layout(scale_para2, left_indent_pt=36 if not is_thai else 28)  # EN: align with section 1 Scale
     
@@ -1470,7 +1494,7 @@ def build_docx_report(
     _apply_bullet_layout(p_importance)
     p_pressing = doc.add_paragraph(_strip_bullet(texts["pressing"]), style="List Bullet")
     _apply_bullet_layout(p_pressing)
-    scale_para3 = doc.add_paragraph(f"{texts['scale']} {authority_cat.scale.capitalize()}")
+    scale_para3 = doc.add_paragraph(f"{texts['scale']} {_display_scale(authority_cat.scale, is_thai)}")
     scale_para3.runs[0].bold = True
     _apply_scale_layout(scale_para3, left_indent_pt=36 if not is_thai else 28)  # EN: align with section 1 Scale
 
@@ -2370,19 +2394,18 @@ def build_pdf_report(
 
     def _first_impression_level(value: float, metric: str = "") -> str:
         v = float(value or 0.0)
-        name = str(metric or "").strip().lower()
-        if name == "eye_contact":
-            return "High"
         if v >= 70.0:
-            return "High"
-        if v >= 40.0:
-            return "Moderate"
-        return "Low"
+            raw = "High"
+        elif v >= 40.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+        return _cap_high_to_moderate(raw, is_thai=False)
 
     def _first_impression_level_th(value: float, metric: str = "") -> str:
         level_en = _first_impression_level(value, metric=metric).strip().lower()
         if level_en.startswith("high"):
-            return "สูง"
+            return "กลาง" if CAP_HIGH_TO_MODERATE else "สูง"
         if level_en.startswith("moderate"):
             return "กลาง"
         if level_en.startswith("low"):
@@ -2459,14 +2482,7 @@ def build_pdf_report(
     if is_operation_test:
         if is_thai:
             def _scale_th(scale: str) -> str:
-                s = str(scale or "").strip().lower()
-                if s.startswith("high"):
-                    return "สูง"
-                if s.startswith("moderate"):
-                    return "กลาง"
-                if s.startswith("low"):
-                    return "ต่ำ"
-                return "-"
+                return _display_scale(scale, is_thai=True)
 
             write_paragraph_block("", SUBITEM_STYLE, extra_gap=0)
             write_paragraph_block("หมายเหตุ", SECTION_STYLE, extra_gap=0)
@@ -2509,14 +2525,7 @@ def build_pdf_report(
             if thai_font_fallback and lang_name == "th":
                 write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
             def _scale_en(scale: str) -> str:
-                s = str(scale or "").strip().lower()
-                if s.startswith("high"):
-                    return "High"
-                if s.startswith("moderate"):
-                    return "Moderate"
-                if s.startswith("low"):
-                    return "Low"
-                return "-"
+                return _display_scale(scale, is_thai=False)
 
             # EN PDF: more space between lines (text was too dense)
             en_section_gap = 8
@@ -2568,7 +2577,7 @@ def build_pdf_report(
     for idx, cat in enumerate(report.categories[:3]):
         write_line(category_labels[idx], size=12, bold=True, gap=18)
         write_line(
-            f"{'ระดับ' if is_thai else 'Scale'}: {cat.scale.capitalize()}",
+            f"{'ระดับ' if is_thai else 'Scale'}: {_display_scale(cat.scale, is_thai)}",
             bold=True,
             gap=16,
         )
