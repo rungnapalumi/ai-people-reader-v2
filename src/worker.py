@@ -481,6 +481,20 @@ def _lm_to_px(lm, w: int, h: int) -> Tuple[int, int]:
     return int(lm.x * w), int(lm.y * h)
 
 
+def _frame_for_pose(frame: np.ndarray, max_width: int = 640) -> np.ndarray:
+    """
+    Downscale frame for MediaPipe inference to reduce CPU cost.
+    Keep aspect ratio so normalized landmark coordinates remain consistent.
+    """
+    if frame is None:
+        return frame
+    h, w = frame.shape[:2]
+    if w <= max_width or max_width <= 0:
+        return frame
+    new_h = max(1, int(round(h * (float(max_width) / float(w)))))
+    return cv2.resize(frame, (max_width, new_h), interpolation=cv2.INTER_AREA)
+
+
 def generate_dots_video(input_path: str, out_path: str) -> None:
     """Generate dot motion video with white dots on black background - matches original implementation"""
     cap = open_video(input_path)
@@ -492,21 +506,30 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
     
     dot_size = 5  # 5 pixels as per user requirement
 
+    # Process fewer frames for pose inference and reuse latest landmarks.
+    process_every_n = 2 if fps >= 20 else 1
+    last_landmarks = None
+
     with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
+        frame_idx = 0
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
+            frame_idx += 1
 
             # Create black background (key difference from old code)
             output = np.zeros((h, w, 3), dtype=np.uint8)
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(rgb)
+            if frame_idx % process_every_n == 0:
+                pose_frame = _frame_for_pose(frame, max_width=640)
+                rgb = cv2.cvtColor(pose_frame, cv2.COLOR_BGR2RGB)
+                res = pose.process(rgb)
+                last_landmarks = res.pose_landmarks.landmark if res.pose_landmarks else None
 
-            if res.pose_landmarks:
+            if last_landmarks:
                 # Draw ALL landmarks (not just subset) - matching original code
-                for lm in res.pose_landmarks.landmark:
+                for lm in last_landmarks:
                     cx, cy = int(lm.x * w), int(lm.y * h)
                     
                     # Ensure coordinates are within bounds
@@ -534,17 +557,26 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
+    # Process fewer frames for pose inference and reuse latest landmarks.
+    process_every_n = 2 if fps >= 20 else 1
+    last_landmarks = None
+
     with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
+        frame_idx = 0
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
+            frame_idx += 1
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(rgb)
+            if frame_idx % process_every_n == 0:
+                pose_frame = _frame_for_pose(frame, max_width=640)
+                rgb = cv2.cvtColor(pose_frame, cv2.COLOR_BGR2RGB)
+                res = pose.process(rgb)
+                last_landmarks = res.pose_landmarks.landmark if res.pose_landmarks else None
 
-            if res.pose_landmarks:
-                lms = res.pose_landmarks.landmark
+            if last_landmarks:
+                lms = last_landmarks
 
                 # draw edges
                 for a, b in SKELETON_EDGES:

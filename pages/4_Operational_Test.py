@@ -562,6 +562,7 @@ if run:
                 "input_key": input_key,
                 "output_key": outputs["dots_video"],
                 "user_name": (name or "Anonymous").strip() or "Anonymous",
+                "notify_email": notify_email.strip(),
             }
             enqueue_job(job_dots)
             queued.append("dots")
@@ -575,6 +576,7 @@ if run:
                 "input_key": input_key,
                 "output_key": outputs["skeleton_video"],
                 "user_name": (name or "Anonymous").strip() or "Anonymous",
+                "notify_email": notify_email.strip(),
             }
             enqueue_job(job_skeleton)
             queued.append("skeleton")
