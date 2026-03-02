@@ -801,7 +801,7 @@ def _direct_upload_html(
         progressBar.style.width = '100%';
         progressText.textContent = '100%';
         statusText.textContent = 'อัปโหลดสำเร็จ! กำลังส่งงาน...';
-        var qs = '{redirect_params}';
+        var qs = '{redirect_params}' + '&uploaded_file=' + encodeURIComponent(file.name || 'input.mp4');
         window.top.location.search = qs;
       }} else {{
         statusText.textContent = 'อัปโหลดล้มเหลว (รหัส: ' + xhr.status + ')';
@@ -949,12 +949,15 @@ employee_id = st.text_input(
 )
 org_settings = get_org_settings(enterprise_folder)
 
+# Read direct-upload callback flags before rendering upload widget.
+upload_done = str(st.query_params.get("upload_done", "") or "").strip() == "1"
+
 # -------------------------
 # Direct S3 upload (browser -> S3, skips server for speed)
 # -------------------------
 use_direct_upload = True
 if use_direct_upload:
-    if st.session_state.get("direct_upload_ready"):
+    if st.session_state.get("direct_upload_ready") and not upload_done:
         presigned = st.session_state.get("direct_upload_presigned_url", "")
         gid = st.session_state.get("direct_upload_group_id", "")
         nem = st.session_state.get("direct_upload_notify_email", "")
@@ -1015,11 +1018,22 @@ if use_direct_upload and upload_clicked:
         st.rerun()
 
 # Handle redirect after direct upload (upload_done=1)
-upload_done = str(st.query_params.get("upload_done", "") or "").strip() == "1"
 url_upload_group = str(st.query_params.get("group_id", "") or "").strip()
 url_upload_notify = str(st.query_params.get("notify_email", "") or "").strip()
 url_upload_employee = str(st.query_params.get("employee_id", "") or "").strip()
+url_upload_filename = str(st.query_params.get("uploaded_file", "") or "").strip()
 if upload_done and url_upload_group and url_upload_notify and url_upload_employee:
+    for k in (
+        "direct_upload_ready",
+        "direct_upload_presigned_url",
+        "direct_upload_group_id",
+        "direct_upload_input_key",
+        "direct_upload_notify_email",
+        "direct_upload_employee_id",
+        "direct_upload_enterprise_folder",
+        "direct_upload_user_name",
+    ):
+        st.session_state.pop(k, None)
     run = True
     group_id = url_upload_group
     notify_email = url_upload_notify
@@ -1027,6 +1041,8 @@ if upload_done and url_upload_group and url_upload_notify and url_upload_employe
     user_name = url_upload_notify
     enterprise_folder = "SkillLane"
     uploaded = None
+    if url_upload_filename:
+        st.session_state["last_uploaded_filename"] = url_upload_filename
     org_settings = get_org_settings(enterprise_folder)
 
 has_identity_input = bool(employee_id.strip() and notify_email)
@@ -1052,6 +1068,7 @@ note = st.empty()
 # Submit jobs
 # -------------------------
 if run:
+    uploaded_filename_for_status = ""
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4" if upload_done else None
     if not upload_done and not uploaded:
         note.error("กรุณา upload วีดีโอใหม่ หรือกด 'เลือกวิดีโอและอัปโหลด'")
@@ -1086,12 +1103,13 @@ if run:
         base_user = safe_slug(user_name, fallback="user")
         group_id = f"{new_group_id()}__{base_user}"
         input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+        uploaded_filename_for_status = str((uploaded.name if uploaded is not None else "") or "input.mp4")
 
         try:
             s3_upload_stream(
                 key=input_key,
                 file_obj=uploaded,
-                content_type=guess_content_type(uploaded.name or "input.mp4"),
+                content_type=guess_content_type(uploaded_filename_for_status),
             )
         except Exception as e:
             note.error(f"อัปโหลดไป S3 ไม่สำเร็จ: {format_submit_error_message(e)}")
@@ -1099,6 +1117,11 @@ if run:
             st.stop()
     else:
         input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+        uploaded_filename_for_status = str(
+            st.session_state.get("last_uploaded_filename")
+            or url_upload_filename
+            or "input.mp4"
+        )
         if not s3_key_exists(input_key):
             note.error("ไม่พบวิดีโอใน S3 กรุณาอัปโหลดใหม่อีกครั้ง")
             st.stop()
@@ -1185,16 +1208,20 @@ if run:
     st.session_state["last_outputs"] = outputs
     st.session_state["last_jobs"] = queued_job_ids
     st.session_state["last_job_json_keys"] = queued_job_keys
+    st.session_state["last_uploaded_filename"] = uploaded_filename_for_status
 
     note.success(
         f"ส่งงานเรียบร้อย! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
         f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
     )
+    if uploaded_filename_for_status:
+        st.success(f"Uploaded to S3: {uploaded_filename_for_status}")
+    st.caption(f"Group ID: `{group_id}`")
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 
     if upload_done:
         try:
-            for p in ("upload_done", "notify_email", "employee_id"):
+            for p in ("upload_done", "notify_email", "employee_id", "uploaded_file"):
                 if p in st.query_params:
                     del st.query_params[p]
         except Exception:
