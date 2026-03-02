@@ -962,6 +962,7 @@ if use_direct_upload:
         gid = st.session_state.get("direct_upload_group_id", "")
         nem = st.session_state.get("direct_upload_notify_email", "")
         eid = st.session_state.get("direct_upload_employee_id", "")
+        ikey = st.session_state.get("direct_upload_input_key", "")
         if presigned and gid:
             st.caption("อัปโหลดตรงไปยัง S3 (เร็วกว่า ไม่ผ่านเซิร์ฟเวอร์)")
             components.html(
@@ -969,6 +970,12 @@ if use_direct_upload:
                 height=220,
                 scrolling=False,
             )
+            if st.button("✅ อัปโหลดเสร็จแล้ว - ส่งงานต่อ", key="direct_upload_continue"):
+                if ikey and s3_key_exists(str(ikey)):
+                    st.session_state["direct_upload_done_manual"] = True
+                    st.rerun()
+                else:
+                    st.warning("ยังไม่พบไฟล์ใน S3 กรุณารอสักครู่แล้วกดปุ่มนี้อีกครั้ง")
             if st.button("← กลับ", key="direct_upload_back"):
                 for k in ("direct_upload_ready", "direct_upload_presigned_url", "direct_upload_group_id",
                           "direct_upload_notify_email", "direct_upload_employee_id", "direct_upload_enterprise_folder"):
@@ -1022,6 +1029,12 @@ url_upload_group = str(st.query_params.get("group_id", "") or "").strip()
 url_upload_notify = str(st.query_params.get("notify_email", "") or "").strip()
 url_upload_employee = str(st.query_params.get("employee_id", "") or "").strip()
 url_upload_filename = str(st.query_params.get("uploaded_file", "") or "").strip()
+manual_direct_done = bool(st.session_state.pop("direct_upload_done_manual", False))
+if manual_direct_done and not upload_done:
+    upload_done = True
+    url_upload_group = str(st.session_state.get("direct_upload_group_id") or "").strip()
+    url_upload_notify = str(st.session_state.get("direct_upload_notify_email") or "").strip()
+    url_upload_employee = str(st.session_state.get("direct_upload_employee_id") or "").strip()
 if upload_done and url_upload_group and url_upload_notify and url_upload_employee:
     for k in (
         "direct_upload_ready",
