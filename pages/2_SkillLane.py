@@ -447,7 +447,7 @@ def save_employee_registry(
     s3_put_json(key, payload)
 
 
-def normalize_email(value: str) -> str:
+def normalize_email(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
@@ -802,7 +802,8 @@ def _direct_upload_html(
         progressText.textContent = '100%';
         statusText.textContent = 'อัปโหลดสำเร็จ! กำลังส่งงาน...';
         var qs = '{redirect_params}' + '&uploaded_file=' + encodeURIComponent(file.name || 'input.mp4');
-        window.top.location.search = qs;
+        // Always return to app root to avoid broken /SkillLane subpath requests.
+        window.top.location.href = window.top.location.origin + '/?' + qs;
       }} else {{
         statusText.textContent = 'อัปโหลดล้มเหลว (รหัส: ' + xhr.status + ')';
         statusText.style.color = '#e74c3c';
