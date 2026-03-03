@@ -24,6 +24,7 @@
 import os
 import io
 import json
+import base64
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -96,6 +97,7 @@ EMERGENCY_THAI_DOCX_FALLBACK = str(
 THAI_PDF_VIA_DOCX = str(os.getenv("THAI_PDF_VIA_DOCX", "true")).strip().lower() in ("1", "true", "yes", "on")
 PDF_VIA_DOCX_FOR_ALL_LANGS = str(os.getenv("PDF_VIA_DOCX_FOR_ALL_LANGS", "true")).strip().lower() in ("1", "true", "yes", "on")
 DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("DOCX_TO_PDF_TIMEOUT_SECONDS", "180"))
+PDF_VIA_HTML_FIRST = str(os.getenv("PDF_VIA_HTML_FIRST", "true")).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_CAPTURE = str(os.getenv("THAI_PDF_IMAGE_CAPTURE", "true")).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
 THAI_PDF_IMAGE_CAPTURE_STRICT = str(
@@ -471,6 +473,188 @@ def convert_docx_bytes_to_pdf_bytes(docx_bytes: bytes, filename_stem: str = "rep
         if not os.path.exists(pdf_path):
             raise RuntimeError("LibreOffice conversion succeeded but PDF output not found")
 
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        if not pdf_bytes:
+            raise RuntimeError("Converted PDF is empty")
+        return pdf_bytes
+
+
+def _image_data_uri(path: str) -> str:
+    if not path or (not os.path.exists(path)):
+        return ""
+    ext = os.path.splitext(path)[1].lower().lstrip(".") or "png"
+    mime = "image/png" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+    with open(path, "rb") as f:
+        raw = f.read()
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _scale_display_for_lang(scale: str, lang_code: str) -> str:
+    s = str(scale or "").strip().lower()
+    is_th = str(lang_code or "").strip().lower().startswith("th")
+    # Temporary policy alignment: high -> moderate/กลาง
+    if s.startswith("high"):
+        return "กลาง" if is_th else "Moderate"
+    if s.startswith("moderate"):
+        return "กลาง" if is_th else "Moderate"
+    if s.startswith("low"):
+        return "ต่ำ" if is_th else "Low"
+    return "-"
+
+
+def build_html_report_file(
+    report: ReportData,
+    out_html_path: str,
+    graph1_path: str,
+    graph2_path: str,
+    lang_code: str,
+    report_style: str = "full",
+) -> None:
+    """Build a simple HTML report that can be converted to PDF."""
+    is_th = str(lang_code or "").strip().lower().startswith("th")
+    style = str(report_style or "").strip().lower()
+    is_operation_test = style.startswith("operation_test")
+    title = (
+        "รายงานการวิเคราะห์การนำเสนอด้วยการเคลื่อนไหว กับ AI People Reader"
+        if is_th
+        else "Movement in Communication with AI People Reader Report"
+    )
+    date_label = "วันที่วิเคราะห์" if is_th else "Analysis Date"
+    client_label = "ชื่อลูกค้า" if is_th else "Client Name"
+    duration_label = "ระยะเวลา" if is_th else "Duration"
+    detailed_label = "รายละเอียดการวิเคราะห์" if is_th else "Detailed Analysis"
+    note_label = "หมายเหตุ" if is_th else "Note"
+    scale_label = "ระดับ" if is_th else "Scale"
+
+    fi = report.first_impression
+    if fi:
+        eye_lv = _scale_display_for_lang(_first_impression_level(fi.eye_contact_pct, "eye_contact"), lang_code)
+        up_lv = _scale_display_for_lang(_first_impression_level(fi.upright_pct, "uprightness"), lang_code)
+        st_lv = _scale_display_for_lang(_first_impression_level(fi.stance_stability, "stance"), lang_code)
+    else:
+        eye_lv = up_lv = st_lv = "-"
+
+    g1 = _image_data_uri(graph1_path)
+    g2 = _image_data_uri(graph2_path)
+    remark_text = (
+        "ความรู้สึกที่เกิดจากความประทับใจแรกพบนั้นเป็นสิ่งที่มนุษย์หลีกเลี่ยงไม่ได้ และมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน"
+        if is_th
+        else "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception."
+    )
+
+    def cat_scale(i: int) -> str:
+        if i < len(report.categories):
+            return _scale_display_for_lang(report.categories[i].scale, lang_code)
+        return "-"
+
+    # Keep HTML simple and deterministic for LibreOffice conversion.
+    html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page {{ size: A4; margin: 22mm 16mm 18mm 16mm; }}
+    body {{ font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #111; }}
+    h1 {{ font-size: 28px; margin: 0 0 24px; color: #b24b45; text-align: center; }}
+    h2 {{ font-size: 22px; margin: 0 0 14px; }}
+    h3 {{ font-size: 18px; margin: 14px 0 8px; }}
+    .meta {{ margin: 3px 0; }}
+    .section {{ margin-top: 12px; }}
+    .scale {{ margin-left: 26px; font-weight: 700; margin-bottom: 8px; }}
+    .graph {{ margin-top: 14px; page-break-before: always; }}
+    .graph img {{ width: 100%; height: auto; }}
+  </style>
+</head>
+<body>
+  <h1>PEOPLE READER</h1>
+  <h2>{escape(title)}</h2>
+  <div class="meta"><b>{escape(client_label)}:</b> {escape(str(report.client_name or '-'))}</div>
+  <div class="meta"><b>{escape(date_label)}:</b> {escape(str(report.analysis_date or '-'))}</div>
+  <div class="meta"><b>{escape(duration_label)}:</b> {escape(str(report.video_length_str or '-'))}</div>
+  <h3>{escape(detailed_label)}</h3>
+  <div class="section">
+    <b>{"1. ความประทับใจแรกพบ" if is_th else "1. First impression"}</b>
+    <ul>
+      <li>{"การสบตา (Eye Contact)" if is_th else "Eye Contact"}</li>
+    </ul>
+    <div class="scale">{escape(scale_label)}: {escape(eye_lv)}</div>
+    <ul>
+      <li>{"ความตั้งตรงของร่างกาย (Uprightness)" if is_th else "Uprightness"}</li>
+    </ul>
+    <div class="scale">{escape(scale_label)}: {escape(up_lv)}</div>
+    <ul>
+      <li>{"การยืนและการวางเท้า (Stance)" if is_th else "Stance"}</li>
+    </ul>
+    <div class="scale">{escape(scale_label)}: {escape(st_lv)}</div>
+    <div><b>{escape(note_label)}</b></div>
+    <div>{escape(remark_text)}</div>
+  </div>
+  <div class="section">
+    <b>{"2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_th else "2. Engaging & Connecting"}</b>
+    <ul>
+      <li>{"ความเป็นกันเอง" if is_th else "Approachability"}</li>
+      <li>{"ความเข้าถึงได้" if is_th else "Relatability"}</li>
+      <li>{"การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_th else "Engagement, connect and build instant rapport with team"}</li>
+    </ul>
+    <div class="scale">{escape(scale_label)}: {escape(cat_scale(0))}</div>
+    <b>{"3. ความมั่นใจ" if is_th else "3. Confidence"}</b>
+    <ul>
+      <li>{"บุคลิกภาพเชิงบวก" if is_th else "Optimistic Presence"}</li>
+      <li>{"ความมีสมาธิ" if is_th else "Focus"}</li>
+      <li>{"ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_th else "Ability to persuade and stand one's ground, in order to convince others."}</li>
+    </ul>
+    <div class="scale">{escape(scale_label)}: {escape(cat_scale(1))}</div>
+    <b>{"4. ความเป็นผู้นำและความดูมีอำนาจ" if is_th else "4. Authority"}</b>
+    <ul>
+      <li>{"แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_th else "Showing sense of importance and urgency in subject matter"}</li>
+      <li>{"ผลักดันให้เกิดการลงมือทำ" if is_th else "Pressing for action"}</li>
+    </ul>
+    <div class="scale">{escape(scale_label)}: {escape(cat_scale(2))}</div>
+  </div>
+  {f'<div class="graph"><h3>{"ผลการวิเคราะห์ Effort" if is_th else "Effort Motion Detection Results"}</h3><img src="{g1}" /></div>' if (is_operation_test and g1) else ''}
+  {f'<div class="graph"><h3>{"ผลการวิเคราะห์ Shape" if is_th else "Shape Motion Detection Results"}</h3><img src="{g2}" /></div>' if (is_operation_test and g2) else ''}
+</body>
+</html>
+"""
+    with open(out_html_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+
+def convert_html_file_to_pdf_bytes(html_path: str, filename_stem: str = "report") -> bytes:
+    """Convert HTML file to PDF via LibreOffice."""
+    if not html_path or (not os.path.exists(html_path)):
+        raise RuntimeError("HTML file not found for PDF conversion")
+    lo_bin = _find_libreoffice_bin()
+    if not lo_bin:
+        raise RuntimeError("LibreOffice binary not found (expected libreoffice/soffice)")
+
+    with tempfile.TemporaryDirectory(prefix="html2pdf_") as td:
+        input_path = os.path.join(td, f"{filename_stem}.html")
+        expected_pdf_path = os.path.join(td, f"{filename_stem}.pdf")
+        shutil.copyfile(html_path, input_path)
+        cmd = [
+            lo_bin,
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            td,
+            input_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=DOCX_TO_PDF_TIMEOUT_SECONDS)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"LibreOffice HTML->PDF failed rc={proc.returncode} err={err[:500]}")
+        pdf_path = expected_pdf_path
+        if not os.path.exists(pdf_path):
+            cands = [p for p in os.listdir(td) if p.lower().endswith(".pdf")]
+            if cands:
+                pdf_path = os.path.join(td, cands[0])
+        if not os.path.exists(pdf_path):
+            raise RuntimeError("HTML->PDF conversion succeeded but PDF output not found")
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
         if not pdf_bytes:
@@ -1661,9 +1845,40 @@ def generate_reports_for_lang(
     # PDF (file -> bytes) only when requested by job format.
     pdf_bytes = None
     pdf_out_path = ""
+    html_out_path = ""
     if wants_pdf:
+        # Build HTML first so we can keep it for debug/preview and optionally convert to PDF.
+        html_out_path = os.path.join(
+            out_dir,
+            f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.html",
+        )
+        try:
+            build_html_report_file(
+                report=report,
+                out_html_path=html_out_path,
+                graph1_path=graph1_path,
+                graph2_path=graph2_path,
+                lang_code=lang_code,
+                report_style=report_style,
+            )
+        except Exception as e:
+            logger.warning("[pdf] html build failed for lang=%s: %s", lang_code, e)
+            html_out_path = ""
+
+        if PDF_VIA_HTML_FIRST:
+            if html_out_path:
+                try:
+                    pdf_bytes = convert_html_file_to_pdf_bytes(
+                        html_path=html_out_path,
+                        filename_stem=f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}",
+                    )
+                    logger.info("[pdf] generated via html->pdf conversion lang=%s", lang_code)
+                except Exception as e:
+                    logger.warning("[pdf] html->pdf conversion failed for lang=%s: %s", lang_code, e)
+                    pdf_bytes = None
+
         use_docx_to_pdf = bool(PDF_VIA_DOCX_FOR_ALL_LANGS or (lang_code == "th" and THAI_PDF_VIA_DOCX))
-        if use_docx_to_pdf:
+        if (not pdf_bytes) and use_docx_to_pdf:
             try:
                 pdf_bytes = convert_docx_bytes_to_pdf_bytes(
                     docx_bytes,
@@ -1696,6 +1911,7 @@ def generate_reports_for_lang(
         "graph1_path": graph1_path,
         "graph2_path": graph2_path,
         "pdf_out_path": pdf_out_path,
+        "html_out_path": html_out_path,
     }
     first_impression_summary = {
         "eye_contact": {
@@ -1806,6 +2022,14 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
 
+            # Upload HTML (when generated) for debug/preview.
+            html_key = None
+            html_path = str(local_paths.get("html_out_path") or "").strip()
+            if html_path and os.path.exists(html_path):
+                html_name = os.path.basename(html_path)
+                html_key = f"{output_prefix}/{html_name}"
+                upload_file(html_path, html_key, "text/html; charset=utf-8")
+
             # Upload PDF when requested and not overridden by Thai fallback.
             pdf_key = None
             pdf_render_mode = "disabled"
@@ -1859,6 +2083,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             outputs["graphs"][lang_code.upper()] = {"graph1_key": g1_key, "graph2_key": g2_key}
             outputs["reports"][lang_code.upper()] = {
                 "docx_key": docx_key,
+                "html_key": html_key,
                 "pdf_key": pdf_key,
                 "pdf_render_mode": pdf_render_mode,
             }

@@ -951,13 +951,14 @@ org_settings = get_org_settings(enterprise_folder)
 
 # Read direct-upload callback flags before rendering upload widget.
 upload_done = str(st.query_params.get("upload_done", "") or "").strip() == "1"
+manual_direct_done = bool(st.session_state.pop("direct_upload_done_manual", False))
 
 # -------------------------
 # Direct S3 upload (browser -> S3, skips server for speed)
 # -------------------------
 use_direct_upload = True
 if use_direct_upload:
-    if st.session_state.get("direct_upload_ready") and not upload_done:
+    if st.session_state.get("direct_upload_ready") and not upload_done and not manual_direct_done:
         presigned = st.session_state.get("direct_upload_presigned_url", "")
         gid = st.session_state.get("direct_upload_group_id", "")
         nem = st.session_state.get("direct_upload_notify_email", "")
@@ -1029,7 +1030,6 @@ url_upload_group = str(st.query_params.get("group_id", "") or "").strip()
 url_upload_notify = str(st.query_params.get("notify_email", "") or "").strip()
 url_upload_employee = str(st.query_params.get("employee_id", "") or "").strip()
 url_upload_filename = str(st.query_params.get("uploaded_file", "") or "").strip()
-manual_direct_done = bool(st.session_state.pop("direct_upload_done_manual", False))
 if manual_direct_done and not upload_done:
     upload_done = True
     url_upload_group = str(st.session_state.get("direct_upload_group_id") or "").strip()
