@@ -346,7 +346,7 @@ def save_employee_registry(
     s3_put_json(key, payload)
 
 
-def normalize_email(value: str) -> str:
+def normalize_email(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
@@ -1082,6 +1082,28 @@ en_report_ready = bool(en_key) and s3_key_exists(en_key)
 th_report_ready = bool(th_key) and s3_key_exists(th_key)
 primary_done = th_report_ready
 
+# Show ready artifacts immediately without waiting for all outputs.
+ready_now = []
+if th_report_ready and th_key:
+    ready_now.append(("Report TH", th_key, th_name))
+if en_report_ready and en_key:
+    ready_now.append(("Report EN", en_key, en_name))
+if skeleton_ready:
+    ready_now.append(("Skeleton video", outputs.get("skeleton_video", ""), "skeleton.mp4"))
+
+st.divider()
+st.subheader("Ready to Download Now")
+if st.button("Refresh output status", key="ttb_refresh_ready_downloads", width="content"):
+    st.rerun()
+if ready_now:
+    for label, key, filename in ready_now:
+        url = presigned_get_url(key, expires=3600, filename=filename)
+        st.success(f"✅ {label} ready")
+        st.link_button(f"Download {label}", url, width="stretch")
+else:
+    st.info("No files are ready yet. Files will appear here immediately when each one is done.")
+st.caption("Each file appears as soon as it is ready. No need to wait for all outputs.")
+
 st.divider()
 st.subheader("Processing Status")
 status_items = [
@@ -1104,10 +1126,10 @@ if th_report_ready and en_report_ready and skeleton_ready:
     next_step = "Download files below. Email delivery (report/skeleton) should complete shortly."
 elif th_report_ready:
     current_step = "Primary result is ready: Report TH."
-    next_step = "Job is complete. Report EN and skeleton can arrive later by email."
+    next_step = "Other files (EN/Skeleton) will appear for download immediately when each one is done."
 else:
     current_step = "Generating Report TH."
-    next_step = "Please wait for Thai report completion (primary milestone)."
+    next_step = "Download buttons will appear immediately once each file is ready."
 
 st.info(f"Current step: {current_step}")
 st.caption(f"Next step: {next_step}")

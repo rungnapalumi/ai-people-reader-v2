@@ -748,27 +748,57 @@ if active_group_id:
             )
         st.divider()
 
+    th_pdf_key = (pdf_keys.get("TH") or "").strip()
+    en_pdf_key = (pdf_keys.get("EN") or "").strip()
+    th_pdf_ready = bool(th_pdf_key) and s3_key_exists(th_pdf_key)
+    en_pdf_ready = bool(en_pdf_key) and s3_key_exists(en_pdf_key)
+    generic_pdf_ready = bool(pdf_key) and s3_key_exists(pdf_key)
+
+    ready_now = []
+    if dots_key and s3_key_exists(dots_key):
+        ready_now.append(("Dots video", dots_key, "dots.mp4"))
+    if skel_key and s3_key_exists(skel_key):
+        ready_now.append(("Skeleton video", skel_key, "skeleton.mp4"))
+    if th_docx_ready:
+        ready_now.append(("Operational Test DOCX (TH)", th_docx, "operational_test_report_th.docx"))
+    if en_docx_ready:
+        ready_now.append(("Operational Test DOCX (EN)", en_docx, "operational_test_report_en.docx"))
+    if th_pdf_ready:
+        ready_now.append(("Operational Test PDF (TH)", th_pdf_key, "operational_test_report_th.pdf"))
+    if en_pdf_ready:
+        ready_now.append(("Operational Test PDF (EN)", en_pdf_key, "operational_test_report_en.pdf"))
+    if generic_pdf_ready and (not th_pdf_ready) and (not en_pdf_ready):
+        ready_now.append(("Operational Test PDF", pdf_key, "operational_test_report.pdf"))
+
+    st.markdown("### Ready to Download Now")
+    if st.button("Refresh output status", key="operation_test_refresh_ready_downloads", width="content"):
+        st.rerun()
+    if ready_now:
+        for label, key, filename in ready_now:
+            st.success(f"✅ {label} ready")
+            st.link_button(label, presigned_get_url(key, expires=3600, filename=filename), width="stretch")
+    else:
+        st.info("No files are ready yet. Files will appear here immediately when each one is done.")
+    st.caption("Each file appears as soon as it is ready. No need to wait for all outputs.")
+    st.divider()
+
     if pdf_key and s3_key_exists(pdf_key):
         st.success("PDF is ready.")
-        th_key = (pdf_keys.get("TH") or "").strip()
-        en_key = (pdf_keys.get("EN") or "").strip()
-        th_ready = bool(th_key) and s3_key_exists(th_key)
-        en_ready = bool(en_key) and s3_key_exists(en_key)
-        if th_ready:
+        if th_pdf_ready:
             st.link_button(
                 "Download Operational Test PDF (TH)",
-                presigned_get_url(th_key, expires=3600, filename="operational_test_report_th.pdf"),
+                presigned_get_url(th_pdf_key, expires=3600, filename="operational_test_report_th.pdf"),
                 width="stretch",
             )
-            st.code(th_key, language="text")
-        if en_ready:
+            st.code(th_pdf_key, language="text")
+        if en_pdf_ready:
             st.link_button(
                 "Download Operational Test PDF (EN)",
-                presigned_get_url(en_key, expires=3600, filename="operational_test_report_en.pdf"),
+                presigned_get_url(en_pdf_key, expires=3600, filename="operational_test_report_en.pdf"),
                 width="stretch",
             )
-            st.code(en_key, language="text")
-        if (not th_ready) and (not en_ready):
+            st.code(en_pdf_key, language="text")
+        if (not th_pdf_ready) and (not en_pdf_ready):
             st.link_button(
                 "Download Operational Test PDF",
                 presigned_get_url(pdf_key, expires=3600, filename="operational_test_report.pdf"),

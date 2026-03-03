@@ -1394,6 +1394,30 @@ en_report_ready = bool(en_key) and s3_key_exists(en_key)
 th_report_ready = bool(th_key) and s3_key_exists(th_key)
 primary_done = th_report_ready
 
+# Show ready artifacts immediately without waiting for all outputs.
+ready_now = []
+if th_report_ready and th_key:
+    ready_now.append(("รายงาน TH", th_key, th_name))
+if en_report_ready and en_key:
+    ready_now.append(("รายงาน EN", en_key, en_name))
+if dots_ready:
+    ready_now.append(("วิดีโอ Dots", outputs.get("dots_video", ""), "dots.mp4"))
+if skeleton_ready:
+    ready_now.append(("วิดีโอ Skeleton", outputs.get("skeleton_video", ""), "skeleton.mp4"))
+
+st.divider()
+st.subheader("พร้อมดาวน์โหลดตอนนี้")
+if st.button("รีเฟรชสถานะผลลัพธ์", key="refresh_ready_downloads", width="content"):
+    st.rerun()
+if ready_now:
+    for label, key, filename in ready_now:
+        url = presigned_get_url(key, expires=3600, filename=filename)
+        st.success(f"✅ {label} พร้อมแล้ว")
+        st.link_button(f"ดาวน์โหลด {label}", url, width="stretch")
+else:
+    st.info("ยังไม่มีไฟล์ที่พร้อมดาวน์โหลดตอนนี้ ระบบจะทยอยขึ้นให้ทันทีเมื่อไฟล์นั้นเสร็จ")
+st.caption("ถ้าไฟล์ไหนพร้อม จะขึ้นให้ก่อนทันที ไม่ต้องรอ Report และ Video ให้เสร็จพร้อมกัน")
+
 st.divider()
 st.markdown("## ข้อแนะนำในการอัดวีดีโอ")
 st.markdown(
@@ -1439,10 +1463,10 @@ if th_report_ready and dots_ready and skeleton_ready and en_report_ready:
     next_step = "ดาวน์โหลดวิดีโอ/รายงานด้านล่างได้เลย ระบบจะส่งอีเมลครบในไม่ช้า"
 elif th_report_ready:
     current_step = "ผลลัพธ์หลักพร้อมแล้ว: รายงานภาษาไทย"
-    next_step = "งานเสร็จแล้ว รายงาน EN และ dots จะส่งตามทางอีเมลภายหลัง"
+    next_step = "ไฟล์อื่น (EN/Dots/Skeleton) จะทยอยพร้อมและดาวน์โหลดได้ทันทีที่เสร็จ"
 else:
     current_step = "กำลังสร้างรายงานภาษาไทย"
-    next_step = "กรุณารอให้รายงานภาษาไทยเสร็จ (หลัก)"
+    next_step = "ระบบจะโชว์ปุ่มดาวน์โหลดทันทีเมื่อแต่ละไฟล์พร้อม"
 
 st.info(f"ขั้นตอนปัจจุบัน: {current_step}")
 st.caption(f"ขั้นตอนถัดไป: {next_step}")
