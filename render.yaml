@@ -17,7 +17,7 @@ services:
     runtime: python
     region: singapore
     plan: starter
-    buildCommand: pip install --upgrade pip && pip install "setuptools>=65.0.0" "wheel>=0.38.0" && pip cache purge && pip install --no-cache-dir -r worker_report_requirements.txt
+    buildCommand: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y chromium libreoffice libreoffice-writer fonts-noto-core fonts-noto-ui-core fonts-thai-tlwg && pip install --upgrade pip && pip install "setuptools>=65.0.0" "wheel>=0.38.0" && pip cache purge && pip install --no-cache-dir -r worker_report_requirements.txt
     startCommand: python src/report_worker.py
     envVars:
       - key: PYTHON_VERSION

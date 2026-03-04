@@ -110,6 +110,10 @@ THAI_CAPTURE_FROM_DOCX_DIRECT = str(
     os.getenv("THAI_CAPTURE_FROM_DOCX_DIRECT", "true")
 ).strip().lower() in ("1", "true", "yes", "on")
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
+PROCESSING_STALE_MINUTES = int(os.getenv("PROCESSING_STALE_MINUTES", "20"))
+PROCESSING_RECOVERY_MAX_ITEMS = int(os.getenv("PROCESSING_RECOVERY_MAX_ITEMS", "50"))
+PROCESSING_RECOVERY_INTERVAL_SECONDS = int(os.getenv("PROCESSING_RECOVERY_INTERVAL_SECONDS", "60"))
+IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
@@ -744,6 +748,7 @@ def convert_html_file_to_pdf_bytes(html_path: str, filename_stem: str = "report"
     - libreoffice: LibreOffice only
     """
     engine = HTML_PDF_ENGINE if HTML_PDF_ENGINE in ("auto", "chrome", "libreoffice") else "auto"
+    logger.info("[pdf] html_to_pdf engine=%s file=%s", engine, os.path.basename(html_path or ""))
     if engine == "chrome":
         return _convert_html_to_pdf_via_chrome(html_path, filename_stem)
     if engine == "libreoffice":
@@ -1722,6 +1727,95 @@ def list_pending_json_keys() -> Iterable[str]:
                 yield k
 
 
+def list_processing_json_items() -> Iterable[Dict[str, Any]]:
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PROCESSING_PREFIX):
+        for item in page.get("Contents", []):
+            k = str(item.get("Key") or "")
+            if k.endswith(".json"):
+                yield item
+
+
+def recover_stale_processing_jobs() -> int:
+    """
+    On startup, move stale jobs from processing -> pending so they can be retried.
+    A job is stale when its last activity timestamp is older than PROCESSING_STALE_MINUTES.
+    """
+    stale_minutes = max(1, int(PROCESSING_STALE_MINUTES or 0))
+    max_items = max(1, int(PROCESSING_RECOVERY_MAX_ITEMS or 1))
+    cutoff_seconds = stale_minutes * 60.0
+    now = datetime.now(timezone.utc)
+    recovered = 0
+
+    logger.info(
+        "[startup_recovery] scanning processing jobs stale_minutes=%s max_items=%s",
+        stale_minutes,
+        max_items,
+    )
+
+    for item in list_processing_json_items():
+        if recovered >= max_items:
+            break
+        key = str(item.get("Key") or "").strip()
+        if not key:
+            continue
+        try:
+            job = s3_get_json(key, log_key=False)
+        except Exception as e:
+            logger.warning("[startup_recovery] skip unreadable key=%s err=%s", key, e)
+            continue
+
+        mode = str(job.get("mode") or "").strip().lower()
+        if mode not in ("report", "report_th_en", "report_generator"):
+            continue
+
+        # Prefer explicit timestamps from payload, fallback to S3 last modified.
+        last_dt = (
+            parse_iso_datetime_utc(job.get("updated_at"))
+            or parse_iso_datetime_utc(job.get("created_at"))
+        )
+        if last_dt is None:
+            last_mod = item.get("LastModified")
+            if isinstance(last_mod, datetime):
+                if last_mod.tzinfo is None:
+                    last_mod = last_mod.replace(tzinfo=timezone.utc)
+                last_dt = last_mod.astimezone(timezone.utc)
+        if last_dt is None:
+            logger.warning("[startup_recovery] skip key=%s reason=no_timestamp", key)
+            continue
+
+        age_seconds = (now - last_dt).total_seconds()
+        if age_seconds < cutoff_seconds:
+            continue
+
+        job_id = str(job.get("job_id") or "").strip()
+        group_id = str(job.get("group_id") or "").strip()
+        pending_key = f"{PENDING_PREFIX}/{job_id}.json" if job_id else key.replace("/processing/", "/pending/")
+        recovered_job = update_status(job, "pending", error=None)
+        recovered_job["recovered_from_processing_at"] = utc_now_iso()
+        recovered_job["recovered_from_processing_key"] = key
+        move_json(key, pending_key, recovered_job)
+        recovered += 1
+        logger.warning(
+            "[startup_recovery] requeued stale job_id=%s group_id=%s age_seconds=%.0f from=%s to=%s",
+            job_id,
+            group_id,
+            age_seconds,
+            key,
+            pending_key,
+        )
+
+    logger.info("[startup_recovery] completed recovered=%s", recovered)
+    return recovered
+
+
+def count_processing_jobs() -> int:
+    total = 0
+    for _ in list_processing_json_items():
+        total += 1
+    return total
+
+
 def find_one_pending_job_key() -> Optional[str]:
     picked_key: Optional[str] = None
     picked_priority = -1
@@ -2432,18 +2526,52 @@ def main() -> None:
     logger.info("Using bucket: %s", AWS_BUCKET)
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)
+    logger.info(
+        "PDF config   : via_html_first=%s html_engine=%s thai_image_capture=%s thai_docx_direct=%s",
+        PDF_VIA_HTML_FIRST,
+        HTML_PDF_ENGINE,
+        THAI_PDF_IMAGE_CAPTURE,
+        THAI_CAPTURE_FROM_DOCX_DIRECT,
+    )
+    logger.info(
+        "Recovery cfg : processing_stale_minutes=%s processing_recovery_max_items=%s",
+        PROCESSING_STALE_MINUTES,
+        PROCESSING_RECOVERY_MAX_ITEMS,
+    )
+    logger.info(
+        "Loop cfg     : recovery_interval_seconds=%s idle_heartbeat_seconds=%s",
+        PROCESSING_RECOVERY_INTERVAL_SECONDS,
+        IDLE_HEARTBEAT_SECONDS,
+    )
     log_ses_runtime_context()
     log_smtp_runtime_context()
+    recover_stale_processing_jobs()
+    last_recovery_ts = time.time()
+    last_heartbeat_ts = time.time()
 
     while True:
         try:
+            now_ts = time.time()
+            if now_ts - last_recovery_ts >= max(10, PROCESSING_RECOVERY_INTERVAL_SECONDS):
+                recover_stale_processing_jobs()
+                last_recovery_ts = now_ts
+
             # Prioritize report generation first to avoid email_pending backlog starving new results.
             job_key = find_one_pending_job_key()
             if job_key:
                 process_job(job_key)
+                last_heartbeat_ts = time.time()
                 if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB > 0:
                     process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB)
             else:
+                if now_ts - last_heartbeat_ts >= max(10, IDLE_HEARTBEAT_SECONDS):
+                    processing_count = count_processing_jobs()
+                    logger.info(
+                        "[heartbeat] worker_alive pending=0 processing=%s poll_interval=%ss",
+                        processing_count,
+                        POLL_INTERVAL,
+                    )
+                    last_heartbeat_ts = now_ts
                 if ENABLE_EMAIL_NOTIFICATIONS:
                     process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE)
                 time.sleep(POLL_INTERVAL)
