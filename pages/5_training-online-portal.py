@@ -857,11 +857,8 @@ if notify_email:
         st.warning("กรุณาตรวจสอบ e-mail ให้ถูกต้องอีกครั้ง (Please check your e-mail format).")
     elif is_blocked_typo_domain(notify_email):
         st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
-employee_id = st.text_input(
-    "ชื่อที่ใช้ในการรายงานผล",
-    value="",
-    placeholder="e.g., คุณสมชาย / Somchai",
-)
+# Email-only flow: reuse email as stable identity key.
+employee_id = notify_email
 org_settings = get_org_settings(enterprise_folder)
 
 uploaded = st.file_uploader(
@@ -926,9 +923,6 @@ if run:
         st.stop()
     if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
         note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
-        st.stop()
-    if not employee_id.strip():
-        note.error("กรุณากรอกชื่อที่ใช้ในการรายงานผล")
         st.stop()
     # Page policy: non-TTB pages use full report style.
     effective_report_style = "full"
@@ -1099,7 +1093,7 @@ if group_id:
         outputs["report_th_pdf"] = report_outputs["report_th_pdf"]
 else:
     if has_identity_input and not identity_verified:
-        st.caption("กรุณากรอก Employee ID / อีเมล / รหัสผ่าน ให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
+        st.caption("กรุณากรอกอีเมลให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
     else:
         st.caption("ยังไม่พบ group_id ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
     # Show guidance/tutorial immediately even before a group_id exists.

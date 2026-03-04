@@ -844,11 +844,8 @@ if notify_email:
         st.warning("กรุณาตรวจสอบ e-mail ให้ถูกต้องอีกครั้ง (Please check your e-mail format).")
     elif is_blocked_typo_domain(notify_email):
         st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
-employee_id = st.text_input(
-    "Employee ID",
-    value="",
-    placeholder="e.g., EMP001",
-)
+# Email-only flow: reuse email as stable identity key.
+employee_id = notify_email
 org_settings = get_org_settings(enterprise_folder)
 
 uploaded = st.file_uploader(
@@ -912,9 +909,6 @@ if run:
         st.stop()
     if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
         note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
-        st.stop()
-    if not employee_id.strip():
-        note.error("Please enter Employee ID.")
         st.stop()
     # Page policy: TTB always uses simple report style.
     effective_report_style = "simple"
@@ -1079,7 +1073,7 @@ if group_id:
         outputs["report_th_pdf"] = report_outputs["report_th_pdf"]
 else:
     if has_identity_input and not identity_verified:
-        st.caption("Please enter the correct Employee ID / Email / Password to view only your own jobs.")
+        st.caption("Please enter the correct email to view only your own jobs.")
     else:
         st.caption("No accessible group_id for this account yet. Upload a video and click **Run Analysis**.")
     st.stop()

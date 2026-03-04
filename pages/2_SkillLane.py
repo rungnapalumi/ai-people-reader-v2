@@ -978,11 +978,8 @@ if notify_email:
         st.warning("กรุณาตรวจสอบ e-mail ให้ถูกต้องอีกครั้ง (Please check your e-mail format).")
     elif is_blocked_typo_domain(notify_email):
         st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
-employee_id = st.text_input(
-    "ชื่อที่ใช้ในการรายงานผล",
-    value="",
-    placeholder="e.g., คุณสมชาย / Somchai",
-)
+# Email-only flow: reuse email as stable identity key.
+employee_id = notify_email
 org_settings = get_org_settings(enterprise_folder)
 
 # Read direct-upload callback flags before rendering upload widget.
@@ -1086,8 +1083,6 @@ if use_direct_upload and upload_clicked:
         st.error("กรุณากรอกอีเมลผู้ใช้งาน")
     elif (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
         st.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
-    elif not employee_id.strip():
-        st.error("กรุณากรอกชื่อที่ใช้ในการรายงานผล")
     else:
         base_user = safe_slug(user_name, fallback="user")
         group_id = f"{new_group_id()}__{base_user}"
@@ -1113,7 +1108,22 @@ if manual_direct_done and not upload_done:
     url_upload_group = str(st.session_state.get("direct_upload_group_id") or "").strip()
     url_upload_notify = str(st.session_state.get("direct_upload_notify_email") or "").strip()
     url_upload_employee = str(st.session_state.get("direct_upload_employee_id") or "").strip()
-if upload_done and url_upload_group and url_upload_notify and url_upload_employee:
+# Fallback from current form/session when callback query params are incomplete.
+if upload_done and url_upload_group:
+    if not url_upload_notify:
+        url_upload_notify = str(
+            st.session_state.get("direct_upload_notify_email")
+            or notify_email
+            or ""
+        ).strip()
+    if not url_upload_employee:
+        url_upload_employee = str(
+            st.session_state.get("direct_upload_employee_id")
+            or employee_id
+            or ""
+        ).strip()
+
+if upload_done and url_upload_group:
     for k in (
         "direct_upload_ready",
         "direct_upload_presigned_url",
@@ -1135,6 +1145,8 @@ if upload_done and url_upload_group and url_upload_notify and url_upload_employe
     if url_upload_filename:
         st.session_state["last_uploaded_filename"] = url_upload_filename
     org_settings = get_org_settings(enterprise_folder)
+elif upload_done and (not url_upload_group):
+    st.error("อัปโหลดสำเร็จแต่ไม่พบ group_id สำหรับส่งงานต่อ กรุณากดอัปโหลดใหม่อีกครั้ง")
 
 has_identity_input = bool(employee_id.strip() and notify_email)
 identity_verified = False
@@ -1177,9 +1189,6 @@ if run:
         st.stop()
     if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
         note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
-        st.stop()
-    if not employee_id.strip():
-        note.error("กรุณากรอกชื่อที่ใช้ในการรายงานผล")
         st.stop()
     # Page policy: SkillLane always uses full report style.
     effective_report_style = "full"
@@ -1324,7 +1333,7 @@ if run:
 
     if upload_done:
         try:
-            for p in ("upload_done", "notify_email", "employee_id", "uploaded_file"):
+            for p in ("upload_done", "notify_email", "uploaded_file"):
                 if p in st.query_params:
                     del st.query_params[p]
         except Exception:
@@ -1383,7 +1392,7 @@ if group_id:
         outputs["report_th_pdf"] = report_outputs["report_th_pdf"]
 else:
     if has_identity_input and not identity_verified:
-        st.caption("กรุณากรอก Employee ID และอีเมลให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
+        st.caption("กรุณากรอกอีเมลให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
     else:
         st.caption("ยังไม่พบ group_id ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
     st.divider()
