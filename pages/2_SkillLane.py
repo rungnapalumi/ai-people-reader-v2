@@ -22,6 +22,7 @@ import os
 import json
 import uuid
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -336,11 +337,20 @@ def enqueue_legacy_job(job: Dict[str, Any]) -> str:
 
 
 def verify_pending_jobs_exist(keys: List[str]) -> List[str]:
-    missing: List[str] = []
-    for key in keys:
-        if not s3_key_exists(key):
-            missing.append(key)
-    return missing
+    retries = int(os.getenv("PENDING_VERIFY_RETRIES", "5") or "5")
+    delay_seconds = float(os.getenv("PENDING_VERIFY_DELAY_SECONDS", "0.5") or "0.5")
+    pending = list(keys)
+    for attempt in range(max(1, retries)):
+        missing: List[str] = []
+        for key in pending:
+            if not s3_key_exists(key):
+                missing.append(key)
+        if not missing:
+            return []
+        pending = missing
+        if attempt < retries - 1:
+            time.sleep(delay_seconds)
+    return pending
 
 
 def safe_slug(text: str, fallback: str = "user") -> str:
@@ -1012,6 +1022,39 @@ manual_direct_done = bool(st.session_state.pop("direct_upload_done_manual", Fals
 direct_ready = bool(st.session_state.get("direct_upload_ready"))
 last_group_hint = str(st.session_state.get("last_group_id") or "").strip()
 
+# Local-safe upload mode:
+# - auto: enable direct upload on Render, disable on local/dev by default.
+# - on/off: force behavior via env.
+direct_upload_mode = str(os.getenv("SKILLLANE_DIRECT_UPLOAD_MODE", "auto") or "auto").strip().lower()
+if direct_upload_mode in ("on", "true", "1", "yes"):
+    use_direct_upload = True
+elif direct_upload_mode in ("off", "false", "0", "no"):
+    use_direct_upload = False
+else:
+    is_render_runtime = bool(
+        os.getenv("RENDER")
+        or os.getenv("RENDER_SERVICE_ID")
+        or os.getenv("RENDER_EXTERNAL_URL")
+    )
+    use_direct_upload = is_render_runtime
+
+# If direct mode is disabled (e.g., local), clear stale direct-upload state.
+if not use_direct_upload:
+    for _k in (
+        "direct_upload_ready",
+        "direct_upload_presigned_url",
+        "direct_upload_group_id",
+        "direct_upload_input_key",
+        "direct_upload_notify_email",
+        "direct_upload_employee_id",
+        "direct_upload_enterprise_folder",
+        "direct_upload_user_name",
+    ):
+        st.session_state.pop(_k, None)
+    direct_ready = False
+    upload_done = False
+    manual_direct_done = False
+
 # Auto-recovery: if browser callback/redirect fails but file is already in S3,
 # continue enqueue flow automatically from session state.
 if direct_ready and (not upload_done) and (not manual_direct_done):
@@ -1032,12 +1075,14 @@ elif upload_done or manual_direct_done:
 elif last_group_hint:
     st.caption(f"งานล่าสุด: `{last_group_hint}` (สามารถเลื่อนลงไปดูผลลัพธ์/ดาวน์โหลดได้)")
 else:
-    st.caption("ยังไม่เริ่มอัปโหลด กรุณากดปุ่ม 'เลือกวิดีโอและอัปโหลด'")
+    if use_direct_upload:
+        st.caption("ยังไม่เริ่มอัปโหลด กรุณากดปุ่ม 'เลือกวิดีโอและอัปโหลด'")
+    else:
+        st.caption("โหมด local: ใช้อัปโหลดแบบสำรองด้านล่าง แล้วกด 'เริ่มวิเคราะห์'")
 
 # -------------------------
 # Direct S3 upload (browser -> S3, skips server for speed)
 # -------------------------
-use_direct_upload = True
 if use_direct_upload:
     if direct_ready and not upload_done and not manual_direct_done:
         presigned = st.session_state.get("direct_upload_presigned_url", "")
@@ -1087,6 +1132,7 @@ if use_direct_upload:
     st.caption("อัปโหลดตรงไปยัง S3 — เร็วกว่าแบบเดิม (หากอัปโหลดล้มเหลว ให้ใช้แบบสำรองด้านล่าง)")
 else:
     upload_clicked = False
+    st.info("Local mode: ปิด direct-to-S3 ชั่วคราว เพื่อเลี่ยงปัญหา CORS/อัปโหลดค้าง")
 
 uploaded = st.file_uploader(
     "วิดีโอ (MP4/MOV/M4V/WEBM) — แบบสำรอง",

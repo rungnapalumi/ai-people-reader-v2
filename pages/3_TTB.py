@@ -22,6 +22,7 @@ import os
 import json
 import uuid
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -312,11 +313,20 @@ def enqueue_legacy_job(job: Dict[str, Any]) -> str:
 
 
 def verify_pending_jobs_exist(keys: List[str]) -> List[str]:
-    missing: List[str] = []
-    for key in keys:
-        if not s3_key_exists(key):
-            missing.append(key)
-    return missing
+    retries = int(os.getenv("PENDING_VERIFY_RETRIES", "5") or "5")
+    delay_seconds = float(os.getenv("PENDING_VERIFY_DELAY_SECONDS", "0.5") or "0.5")
+    pending = list(keys)
+    for attempt in range(max(1, retries)):
+        missing: List[str] = []
+        for key in pending:
+            if not s3_key_exists(key):
+                missing.append(key)
+        if not missing:
+            return []
+        pending = missing
+        if attempt < retries - 1:
+            time.sleep(delay_seconds)
+    return pending
 
 
 def safe_slug(text: str, fallback: str = "user") -> str:
