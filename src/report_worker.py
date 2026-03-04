@@ -1842,28 +1842,29 @@ def generate_reports_for_lang(
     if not docx_bytes:
         raise RuntimeError("DOCX generation produced empty output")
 
-    # PDF (file -> bytes) only when requested by job format.
+    # Build HTML for every report job (docx/pdf) so UI can always offer
+    # debug/preview download and operators can inspect layout issues quickly.
     pdf_bytes = None
     pdf_out_path = ""
-    html_out_path = ""
-    if wants_pdf:
-        # Build HTML first so we can keep it for debug/preview and optionally convert to PDF.
-        html_out_path = os.path.join(
-            out_dir,
-            f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.html",
+    html_out_path = os.path.join(
+        out_dir,
+        f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.html",
+    )
+    try:
+        build_html_report_file(
+            report=report,
+            out_html_path=html_out_path,
+            graph1_path=graph1_path,
+            graph2_path=graph2_path,
+            lang_code=lang_code,
+            report_style=report_style,
         )
-        try:
-            build_html_report_file(
-                report=report,
-                out_html_path=html_out_path,
-                graph1_path=graph1_path,
-                graph2_path=graph2_path,
-                lang_code=lang_code,
-                report_style=report_style,
-            )
-        except Exception as e:
-            logger.warning("[pdf] html build failed for lang=%s: %s", lang_code, e)
-            html_out_path = ""
+    except Exception as e:
+        logger.warning("[report] html build failed for lang=%s: %s", lang_code, e)
+        html_out_path = ""
+
+    # PDF (file -> bytes) only when requested by job format.
+    if wants_pdf:
 
         if PDF_VIA_HTML_FIRST:
             if html_out_path:

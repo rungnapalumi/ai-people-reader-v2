@@ -1001,6 +1001,7 @@ if use_direct_upload:
         eid = st.session_state.get("direct_upload_employee_id", "")
         ikey = st.session_state.get("direct_upload_input_key", "")
         if presigned and gid:
+            st.info("กำลังรออัปโหลดไฟล์ไป S3: เลือกไฟล์ในกรอบด้านล่าง แล้วรอจนเสร็จ จากนั้นกดปุ่มส่งงานต่อ")
             st.caption("อัปโหลดตรงไปยัง S3 (เร็วกว่า ไม่ผ่านเซิร์ฟเวอร์)")
             components.html(
                 _direct_upload_html(presigned, gid, nem, eid),
@@ -1019,8 +1020,25 @@ if use_direct_upload:
                     st.session_state.pop(k, None)
                 st.rerun()
             st.caption(SUPPORT_CONTACT_TEXT)
-            st.stop()
-    upload_clicked = st.button("📤 เลือกวิดีโอและอัปโหลด", type="primary", width="stretch", key="upload_video_btn")
+            upload_clicked = False
+        else:
+            st.error("ไม่สามารถเตรียมลิงก์อัปโหลดได้ กรุณากดปุ่มอัปโหลดใหม่อีกครั้ง")
+            if st.button("ล้างสถานะอัปโหลดแล้วเริ่มใหม่", key="reset_direct_upload_state"):
+                for k in (
+                    "direct_upload_ready",
+                    "direct_upload_presigned_url",
+                    "direct_upload_group_id",
+                    "direct_upload_input_key",
+                    "direct_upload_notify_email",
+                    "direct_upload_employee_id",
+                    "direct_upload_enterprise_folder",
+                    "direct_upload_user_name",
+                ):
+                    st.session_state.pop(k, None)
+                st.rerun()
+            upload_clicked = False
+    else:
+        upload_clicked = st.button("📤 เลือกวิดีโอและอัปโหลด", type="primary", width="stretch", key="upload_video_btn")
     st.caption("อัปโหลดตรงไปยัง S3 — เร็วกว่าแบบเดิม (หากอัปโหลดล้มเหลว ให้ใช้แบบสำรองด้านล่าง)")
 else:
     upload_clicked = False
@@ -1143,8 +1161,10 @@ if run:
     effective_report_style = "full"
     # Temporary policy for SkillLane: always deliver Word first and disable PDF jobs.
     effective_report_format = "docx"
-    enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
-    enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
+    # SkillLane page policy: always enqueue TH+EN report jobs.
+    # Admin toggles can still control optional video outputs, but report should always run.
+    enable_report_th = True
+    enable_report_en = True
     enable_skeleton = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
     enable_dots = bool(org_settings.get("enable_dots", True)) if org_settings else True
     report_languages = []
