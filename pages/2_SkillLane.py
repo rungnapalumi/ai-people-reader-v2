@@ -988,13 +988,37 @@ org_settings = get_org_settings(enterprise_folder)
 # Read direct-upload callback flags before rendering upload widget.
 upload_done = str(st.query_params.get("upload_done", "") or "").strip() == "1"
 manual_direct_done = bool(st.session_state.pop("direct_upload_done_manual", False))
+direct_ready = bool(st.session_state.get("direct_upload_ready"))
+last_group_hint = str(st.session_state.get("last_group_id") or "").strip()
+
+# Auto-recovery: if browser callback/redirect fails but file is already in S3,
+# continue enqueue flow automatically from session state.
+if direct_ready and (not upload_done) and (not manual_direct_done):
+    pending_input_key = str(st.session_state.get("direct_upload_input_key") or "").strip()
+    if pending_input_key:
+        try:
+            if s3_key_exists(pending_input_key):
+                manual_direct_done = True
+        except Exception:
+            pass
+
+# Always show visible status so users know current step.
+st.markdown("### สถานะการอัปโหลด/ส่งงาน")
+if direct_ready and not upload_done and not manual_direct_done:
+    st.info("กำลังรออัปโหลดไฟล์ไป S3: กรุณาเลือกไฟล์ในกล่องอัปโหลดด้านล่าง แล้วกดส่งงานต่อเมื่ออัปโหลดเสร็จ")
+elif upload_done or manual_direct_done:
+    st.success("อัปโหลดไป S3 สำเร็จแล้ว กำลังส่งงานเข้าคิววิเคราะห์...")
+elif last_group_hint:
+    st.caption(f"งานล่าสุด: `{last_group_hint}` (สามารถเลื่อนลงไปดูผลลัพธ์/ดาวน์โหลดได้)")
+else:
+    st.caption("ยังไม่เริ่มอัปโหลด กรุณากดปุ่ม 'เลือกวิดีโอและอัปโหลด'")
 
 # -------------------------
 # Direct S3 upload (browser -> S3, skips server for speed)
 # -------------------------
 use_direct_upload = True
 if use_direct_upload:
-    if st.session_state.get("direct_upload_ready") and not upload_done and not manual_direct_done:
+    if direct_ready and not upload_done and not manual_direct_done:
         presigned = st.session_state.get("direct_upload_presigned_url", "")
         gid = st.session_state.get("direct_upload_group_id", "")
         nem = st.session_state.get("direct_upload_notify_email", "")

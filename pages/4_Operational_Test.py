@@ -512,6 +512,19 @@ run = st.button("Run selected functions", type="primary", width="stretch")
 st.caption(SUPPORT_CONTACT_TEXT)
 notice = st.empty()
 
+op_group_hint = str(manual_group_id or st.session_state.get("operation_test_group_id") or read_group_id_from_url() or "").strip()
+st.markdown("### สถานะการอัปโหลด/ส่งงาน")
+if run and not uploaded:
+    st.warning("ยังไม่ได้เลือกไฟล์วิดีโอ กรุณาเลือกไฟล์ก่อนกด Run selected functions")
+elif run and uploaded is not None:
+    st.info("กำลังตรวจสอบฟังก์ชันที่เลือกและส่งงานเข้าคิว...")
+elif uploaded is not None:
+    st.info("เลือกไฟล์แล้ว กด Run selected functions เพื่อเริ่มทำงาน")
+elif op_group_hint:
+    st.caption(f"งานล่าสุด: `{op_group_hint}` (เลื่อนลงไปดูผลลัพธ์/ดาวน์โหลดได้)")
+else:
+    st.caption("ยังไม่เริ่มอัปโหลด กรุณาเลือกไฟล์และกด Run selected functions")
+
 if run:
     if not uploaded:
         notice.error("Please upload a video first.")

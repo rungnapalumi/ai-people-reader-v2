@@ -860,6 +860,19 @@ uploaded = st.file_uploader(
 run = st.button("🎬 Run Analysis", type="primary", width="stretch")
 st.caption(SUPPORT_CONTACT_TEXT)
 
+last_group_hint = str(st.session_state.get("last_group_id") or url_group_id or "").strip()
+st.markdown("### สถานะการอัปโหลด/ส่งงาน")
+if run and not uploaded:
+    st.warning("ยังไม่ได้เลือกไฟล์วิดีโอ กรุณาเลือกไฟล์ก่อนกด Run Analysis")
+elif run and uploaded is not None:
+    st.info("กำลังตรวจสอบข้อมูลและส่งงานเข้าคิววิเคราะห์...")
+elif uploaded is not None:
+    st.info("เลือกไฟล์แล้ว กด Run Analysis เพื่อเริ่มวิเคราะห์")
+elif last_group_hint:
+    st.caption(f"งานล่าสุด: `{last_group_hint}` (เลื่อนลงไปดูผลลัพธ์/ดาวน์โหลดได้)")
+else:
+    st.caption("ยังไม่เริ่มอัปโหลด กรุณาเลือกไฟล์และกด Run Analysis")
+
 has_identity_input = bool(employee_id.strip() and notify_email)
 identity_verified = False
 if has_identity_input:
