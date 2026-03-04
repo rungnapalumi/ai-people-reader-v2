@@ -667,7 +667,7 @@ def build_html_report_file(
     .meta {{ margin: 2px 0; }}
     .section {{ margin-top: 10px; }}
     .scale {{ margin-left: 26px; font-weight: 700; margin-bottom: 10px; }}
-    ul {{ margin-top: 6px; margin-bottom: 6px; }}
+    ul {{ margin-top: 6px; margin-bottom: 6px; list-style-type: square; }}
     li {{ margin-bottom: 4px; }}
     .graph {{ margin-top: 4px; page-break-before: always; break-before: page; }}
     .graph img {{ width: 100%; height: auto; }}

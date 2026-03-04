@@ -3,7 +3,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import boto3
 import streamlit as st
@@ -152,6 +152,14 @@ def enqueue_job(job: Dict[str, Any]) -> str:
     key = f"{JOBS_PENDING_PREFIX}{job['job_id']}.json"
     s3_put_json(key, job)
     return key
+
+
+def verify_pending_jobs_exist(keys: List[str]) -> List[str]:
+    missing: List[str] = []
+    for key in keys:
+        if not s3_key_exists(key):
+            missing.append(key)
+    return missing
 
 
 def build_output_keys(group_id: str) -> Dict[str, str]:
@@ -548,7 +556,11 @@ uploaded = st.file_uploader(
     key=f"operation_test_uploader_{st.session_state['operation_test_upload_nonce']}",
 )
 
-run = st.button("Run selected functions", type="primary", width="stretch")
+if uploaded is not None:
+    uploaded_name = str(uploaded.name or "input.mp4")
+    uploaded_size_mb = float((uploaded.size or 0) / (1024 * 1024))
+    st.caption(f"Selected file: `{uploaded_name}` ({uploaded_size_mb:.2f} MB)")
+run = st.button("Run selected functions", type="primary", width="stretch", disabled=(uploaded is None))
 st.caption(SUPPORT_CONTACT_TEXT)
 notice = st.empty()
 
@@ -629,6 +641,7 @@ if run:
         st.stop()
 
     queued: list[str] = []
+    queued_job_keys: List[str] = []
     try:
         if enable_dots:
             job_dots = {
@@ -642,7 +655,7 @@ if run:
                 "user_name": (name or "Anonymous").strip() or "Anonymous",
                 "notify_email": notify_email.strip(),
             }
-            enqueue_job(job_dots)
+            queued_job_keys.append(enqueue_job(job_dots))
             queued.append("dots")
         if enable_skeleton:
             job_skeleton = {
@@ -656,7 +669,7 @@ if run:
                 "user_name": (name or "Anonymous").strip() or "Anonymous",
                 "notify_email": notify_email.strip(),
             }
-            enqueue_job(job_skeleton)
+            queued_job_keys.append(enqueue_job(job_skeleton))
             queued.append("skeleton")
         if report_pdf_languages:
             report_job = {
@@ -680,7 +693,7 @@ if run:
                 "expect_dots": enable_dots,
                 "expect_skeleton": enable_skeleton,
             }
-            enqueue_job(report_job)
+            queued_job_keys.append(enqueue_job(report_job))
             queued.append("report_pdf")
         if report_docx_languages:
             report_job = {
@@ -704,7 +717,7 @@ if run:
                 "expect_dots": enable_dots,
                 "expect_skeleton": enable_skeleton,
             }
-            enqueue_job(report_job)
+            queued_job_keys.append(enqueue_job(report_job))
             queued.append("report_docx")
         # HTML can be selected standalone. If PDF or DOCX report job is already queued,
         # HTML will be produced from that job and no extra enqueue is needed.
@@ -730,18 +743,29 @@ if run:
                 "expect_dots": enable_dots,
                 "expect_skeleton": enable_skeleton,
             }
-            enqueue_job(report_job)
+            queued_job_keys.append(enqueue_job(report_job))
             queued.append("report_html")
     except Exception as e:
         notice.error(f"Enqueue job failed: {format_submit_error_message(e)}")
         st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
+    missing_pending = verify_pending_jobs_exist(queued_job_keys)
+    if missing_pending:
+        notice.error(
+            "Queued job verification failed: some pending job files were not found in S3.\n"
+            f"Missing keys: {', '.join(missing_pending)}"
+        )
+        st.warning(SUPPORT_CONTACT_TEXT)
+        st.stop()
+
     st.session_state["operation_test_group_id"] = group_id
     st.session_state["operation_test_upload_nonce"] = int(st.session_state.get("operation_test_upload_nonce") or 0) + 1
     st.session_state["operation_test_queued"] = queued
+    st.session_state["operation_test_queued_keys"] = queued_job_keys
     persist_group_id_to_url(group_id)
     notice.success(f"Queued: {', '.join(queued)}. group_id = {group_id}")
+    st.caption(f"Queued job keys: {', '.join(queued_job_keys)}")
     st.rerun()
 
 active_group_id = manual_group_id or st.session_state.get("operation_test_group_id") or read_group_id_from_url()

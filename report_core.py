@@ -1192,6 +1192,15 @@ def build_docx_report(
         footer_run.add_picture(footer_path, width=Inches(6.5))
         footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
+    def _strip_bullet(text: str) -> str:
+        s = str(text or "").strip()
+        if s.startswith("•") or s.startswith("▪"):
+            return s[1:].lstrip()
+        return s
+
+    def _square_bullet_text(text: str) -> str:
+        return f"▪ {_strip_bullet(text)}"
+
     def _apply_bullet_layout(paragraph) -> None:
         if paragraph is None:
             return
@@ -1234,7 +1243,9 @@ def build_docx_report(
     doc.add_paragraph(f"{texts['duration']} {report.video_length_str}")
     doc.add_paragraph()
     
-    # Detailed Analysis header
+    # Detailed Analysis header (EN: move down 1 line)
+    if not is_thai:
+        doc.add_paragraph()
     detailed = doc.add_paragraph(texts["detailed_analysis"])
     detailed.runs[0].bold = True
     
@@ -1272,21 +1283,21 @@ def build_docx_report(
         up_level = "-" if is_thai else "-"
         st_level = "-" if is_thai else "-"
 
-    eye_bullet = doc.add_paragraph(("• การสบตา (Eye Contact)" if is_thai else "• Eye Contact"))
+    eye_bullet = doc.add_paragraph(_square_bullet_text("• การสบตา (Eye Contact)" if is_thai else "• Eye Contact"))
     _apply_bullet_layout(eye_bullet)
     lvl1_text = f"{texts['scale']} {eye_level}"
     lvl1 = doc.add_paragraph(lvl1_text)
     lvl1.runs[0].bold = True
     _apply_scale_layout(lvl1)
 
-    upright_bullet = doc.add_paragraph(("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness"))
+    upright_bullet = doc.add_paragraph(_square_bullet_text("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness"))
     _apply_bullet_layout(upright_bullet)
     lvl2_text = f"{texts['scale']} {up_level}"
     lvl2 = doc.add_paragraph(lvl2_text)
     lvl2.runs[0].bold = True
     _apply_scale_layout(lvl2)
 
-    stance_bullet = doc.add_paragraph(("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance"))
+    stance_bullet = doc.add_paragraph(_square_bullet_text("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance"))
     _apply_bullet_layout(stance_bullet)
     lvl3_text = f"{texts['scale']} {st_level}"
     lvl3 = doc.add_paragraph(lvl3_text)
@@ -1312,17 +1323,25 @@ def build_docx_report(
     # PAGE 2: Engaging & Connecting + Confidence
     # ============================================================
     
-    # Section 2: Engaging & Connecting
+    # Section 2: Engaging & Connecting (EN: move down 1 line)
     engaging_cat = report.categories[0]
+    if not is_thai:
+        doc.add_paragraph()
     section2 = doc.add_paragraph(texts["engaging"])
     section2.runs[0].bold = True
     section2.paragraph_format.space_before = Pt(14)
     section2.paragraph_format.space_after = Pt(4)
-    p_approach = doc.add_paragraph(texts["approachability"])
+    # EN: move Approachability down 1 line
+    if not is_thai:
+        doc.add_paragraph()
+    p_approach = doc.add_paragraph(_square_bullet_text(texts["approachability"]))
     _apply_bullet_layout(p_approach)
-    p_relate = doc.add_paragraph(texts["relatability"])
+    p_relate = doc.add_paragraph(_square_bullet_text(texts["relatability"]))
     _apply_bullet_layout(p_relate)
-    p_engage = doc.add_paragraph(texts["engagement"])
+    # EN: move Engagement line down 1 line
+    if not is_thai:
+        doc.add_paragraph()
+    p_engage = doc.add_paragraph(_square_bullet_text(texts["engagement"]))
     _apply_bullet_layout(p_engage)
     scale_para1 = doc.add_paragraph(f"{texts['scale']} {_display_scale(engaging_cat.scale, is_thai)}")
     scale_para1.runs[0].bold = True
@@ -1339,11 +1358,11 @@ def build_docx_report(
     section3.runs[0].bold = True
     section3.paragraph_format.space_before = Pt(14)
     section3.paragraph_format.space_after = Pt(4)
-    p_opt = doc.add_paragraph(texts["optimistic"])
+    p_opt = doc.add_paragraph(_square_bullet_text(texts["optimistic"]))
     _apply_bullet_layout(p_opt)
-    p_focus = doc.add_paragraph(texts["focus"])
+    p_focus = doc.add_paragraph(_square_bullet_text(texts["focus"]))
     _apply_bullet_layout(p_focus)
-    p_persuade = doc.add_paragraph(texts["persuade"])
+    p_persuade = doc.add_paragraph(_square_bullet_text(texts["persuade"]))
     _apply_bullet_layout(p_persuade)
     scale_para2 = doc.add_paragraph(f"{texts['scale']} {_display_scale(confidence_cat.scale, is_thai)}")
     scale_para2.runs[0].bold = True
@@ -1365,9 +1384,9 @@ def build_docx_report(
     section4.runs[0].bold = True
     section4.paragraph_format.space_before = Pt(14)
     section4.paragraph_format.space_after = Pt(4)
-    p_importance = doc.add_paragraph(texts["importance"])
+    p_importance = doc.add_paragraph(_square_bullet_text(texts["importance"]))
     _apply_bullet_layout(p_importance)
-    p_pressing = doc.add_paragraph(texts["pressing"])
+    p_pressing = doc.add_paragraph(_square_bullet_text(texts["pressing"]))
     _apply_bullet_layout(p_pressing)
     scale_para3 = doc.add_paragraph(f"{texts['scale']} {_display_scale(authority_cat.scale, is_thai)}")
     scale_para3.runs[0].bold = True
