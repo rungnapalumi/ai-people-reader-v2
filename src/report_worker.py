@@ -104,6 +104,9 @@ HTML_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("HTML_TO_PDF_TIMEOUT_SECONDS", str(D
 PDF_HTML_STRICT_FOR_OPERATION_TEST = str(
     os.getenv("PDF_HTML_STRICT_FOR_OPERATION_TEST", "true")
 ).strip().lower() in ("1", "true", "yes", "on")
+DOCX_FALLBACK_ON_PDF_FAIL = str(
+    os.getenv("DOCX_FALLBACK_ON_PDF_FAIL", "true")
+).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_CAPTURE = str(os.getenv("THAI_PDF_IMAGE_CAPTURE", "true")).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
 THAI_PDF_IMAGE_CAPTURE_STRICT = str(
@@ -2331,7 +2334,11 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             # Upload only the requested output format.
             analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             docx_key = None
-            wants_docx_output = (report_format == "docx") or force_thai_docx
+            wants_docx_output = (
+                (report_format == "docx")
+                or force_thai_docx
+                or ((report_format == "pdf") and DOCX_FALLBACK_ON_PDF_FAIL)
+            )
             if wants_docx_output:
                 docx_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.docx"
                 docx_key = f"{output_prefix}/{docx_name}"
@@ -2356,7 +2363,18 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             pdf_render_mode = str(local_paths.get("pdf_generation_mode") or "disabled")
             if wants_pdf_output:
                 if not pdf_bytes:
-                    raise RuntimeError("PDF format requested but PDF generation failed")
+                    if DOCX_FALLBACK_ON_PDF_FAIL and docx_key:
+                        logger.warning(
+                            "[pdf] generation failed lang=%s; using DOCX fallback output only",
+                            lang_code,
+                        )
+                        pdf_render_mode = "docx_fallback_only"
+                        wants_pdf_output = False
+                    else:
+                        raise RuntimeError("PDF format requested but PDF generation failed")
+            if wants_pdf_output:
+                if pdf_bytes is None:
+                    raise RuntimeError("PDF format requested but PDF bytes are empty after conversion")
                 if lang_code == "th" and THAI_PDF_IMAGE_CAPTURE:
                     try:
                         if THAI_CAPTURE_FROM_DOCX_DIRECT:
@@ -2654,6 +2672,10 @@ def main() -> None:
     logger.info(
         "PDF strict   : html_strict_for_operation_test=%s",
         PDF_HTML_STRICT_FOR_OPERATION_TEST,
+    )
+    logger.info(
+        "PDF fallback : docx_fallback_on_pdf_fail=%s",
+        DOCX_FALLBACK_ON_PDF_FAIL,
     )
     logger.info(
         "Recovery cfg : processing_stale_minutes=%s processing_recovery_max_items=%s",
