@@ -270,6 +270,13 @@ def get_docx_keys_from_job(job: Dict[str, Any]) -> Dict[str, str]:
     return {"TH": th_docx, "EN": en_docx}
 
 
+def get_html_keys_from_job(job: Dict[str, Any]) -> Dict[str, str]:
+    reports = (job.get("outputs") or {}).get("reports") or {}
+    th_html = ((reports.get("TH") or {}).get("html_key") or "").strip()
+    en_html = ((reports.get("EN") or {}).get("html_key") or "").strip()
+    return {"TH": th_html, "EN": en_html}
+
+
 def get_latest_finished_operation_test_job(group_id: str) -> Dict[str, Any]:
     latest_job: Dict[str, Any] = {}
     latest_ts = 0.0
@@ -680,11 +687,13 @@ if active_group_id:
 
     pdf_keys = get_pdf_keys_from_job(latest_job or {})
     docx_keys = get_docx_keys_from_job(latest_job or {})
+    html_keys = get_html_keys_from_job(latest_job or {})
     pdf_key = pdf_keys.get("TH") or pdf_keys.get("EN") or ""
     finished_job = get_latest_finished_operation_test_job(active_group_id)
     if finished_job:
         pdf_keys = get_pdf_keys_from_job(finished_job)
         docx_keys = get_docx_keys_from_job(finished_job)
+        html_keys = get_html_keys_from_job(finished_job)
         pdf_key = pdf_key or pdf_keys.get("TH") or pdf_keys.get("EN") or ""
         notif = (finished_job.get("notification") or {})
         notif_status = str(notif.get("status") or "").strip()
@@ -748,6 +757,26 @@ if active_group_id:
             )
         st.divider()
 
+    th_html_key = (html_keys.get("TH") or "").strip()
+    en_html_key = (html_keys.get("EN") or "").strip()
+    th_html_ready = bool(th_html_key) and s3_key_exists(th_html_key)
+    en_html_ready = bool(en_html_key) and s3_key_exists(en_html_key)
+    if th_html_ready or en_html_ready:
+        st.markdown("### HTML reports (debug/preview)")
+        if th_html_ready:
+            st.link_button(
+                "Download Operational Test HTML (TH)",
+                presigned_get_url(th_html_key, expires=3600, filename="operational_test_report_th.html"),
+                width="stretch",
+            )
+        if en_html_ready:
+            st.link_button(
+                "Download Operational Test HTML (EN)",
+                presigned_get_url(en_html_key, expires=3600, filename="operational_test_report_en.html"),
+                width="stretch",
+            )
+        st.divider()
+
     th_pdf_key = (pdf_keys.get("TH") or "").strip()
     en_pdf_key = (pdf_keys.get("EN") or "").strip()
     th_pdf_ready = bool(th_pdf_key) and s3_key_exists(th_pdf_key)
@@ -769,6 +798,10 @@ if active_group_id:
         ready_now.append(("Operational Test PDF (EN)", en_pdf_key, "operational_test_report_en.pdf"))
     if generic_pdf_ready and (not th_pdf_ready) and (not en_pdf_ready):
         ready_now.append(("Operational Test PDF", pdf_key, "operational_test_report.pdf"))
+    if th_html_ready:
+        ready_now.append(("Operational Test HTML (TH)", th_html_key, "operational_test_report_th.html"))
+    if en_html_ready:
+        ready_now.append(("Operational Test HTML (EN)", en_html_key, "operational_test_report_en.html"))
 
     st.markdown("### Ready to Download Now")
     if st.button("Refresh output status", key="operation_test_refresh_ready_downloads", width="content"):

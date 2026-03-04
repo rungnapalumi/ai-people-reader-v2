@@ -605,8 +605,10 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                     job_data = json.loads(obj["Body"].read().decode("utf-8"))
                     
                     # Check if this job belongs to our group and is a report job
-                    if (job_data.get("group_id") == group_id and 
-                        job_data.get("mode") in ("report", "report_th_en", "report_generator")):
+                    if (
+                        job_data.get("group_id") == group_id
+                        and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
+                    ):
                         
                         # Extract output paths from job
                         outputs = job_data.get("outputs", {})
@@ -618,6 +620,8 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                             th_key = reports.get("TH", {}).get("docx_key", "")
                             en_pdf = reports.get("EN", {}).get("pdf_key", "")
                             th_pdf = reports.get("TH", {}).get("pdf_key", "")
+                            en_html = reports.get("EN", {}).get("html_key", "")
+                            th_html = reports.get("TH", {}).get("html_key", "")
                             if en_key:
                                 found["report_en_docx"] = en_key
                             if th_key:
@@ -626,6 +630,10 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                                 found["report_en_pdf"] = en_pdf
                             if th_pdf:
                                 found["report_th_pdf"] = th_pdf
+                            if en_html:
+                                found["report_en_html"] = en_html
+                            if th_html:
+                                found["report_th_html"] = th_html
                             if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
                                 return found
                         
@@ -642,6 +650,10 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                                 found["report_en_pdf"] = scanned["report_en_pdf"]
                             if scanned.get("report_th_pdf"):
                                 found["report_th_pdf"] = scanned["report_th_pdf"]
+                            if scanned.get("report_en_html"):
+                                found["report_en_html"] = scanned["report_en_html"]
+                            if scanned.get("report_th_html"):
+                                found["report_th_html"] = scanned["report_th_html"]
                             if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
                                 return found
             
@@ -664,6 +676,10 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
             found["report_en_pdf"] = scanned["report_en_pdf"]
         if scanned.get("report_th_pdf") and not found.get("report_th_pdf"):
             found["report_th_pdf"] = scanned["report_th_pdf"]
+        if scanned.get("report_en_html") and not found.get("report_en_html"):
+            found["report_en_html"] = scanned["report_en_html"]
+        if scanned.get("report_th_html") and not found.get("report_th_html"):
+            found["report_th_html"] = scanned["report_th_html"]
         if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
             break
 
@@ -710,7 +726,14 @@ def get_report_notification_status(group_id: str) -> Dict[str, Any]:
 def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
     """Find report files by scanning S3 with prefix"""
     try:
-        result = {"report_en_docx": "", "report_th_docx": "", "report_en_pdf": "", "report_th_pdf": ""}
+        result = {
+            "report_en_docx": "",
+            "report_th_docx": "",
+            "report_en_pdf": "",
+            "report_th_pdf": "",
+            "report_en_html": "",
+            "report_th_html": "",
+        }
         paginator = s3.get_paginator("list_objects_v2")
         
         for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
@@ -726,10 +749,22 @@ def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
                         result["report_en_pdf"] = key
                     elif "_TH.pdf" in key:
                         result["report_th_pdf"] = key
+                elif key.endswith(".html"):
+                    if "_EN.html" in key:
+                        result["report_en_html"] = key
+                    elif "_TH.html" in key:
+                        result["report_th_html"] = key
         
         return result
     except Exception:
-        return {"report_en_docx": "", "report_th_docx": "", "report_en_pdf": "", "report_th_pdf": ""}
+        return {
+            "report_en_docx": "",
+            "report_th_docx": "",
+            "report_en_pdf": "",
+            "report_th_pdf": "",
+            "report_en_html": "",
+            "report_th_html": "",
+        }
 
 
 def ensure_session_defaults() -> None:
@@ -847,14 +882,22 @@ if has_identity_input:
 candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id
 active_group_id = ""
 blocked_group_id = ""
-if candidate_group_id and identity_verified and is_group_owned_by_employee(candidate_group_id, employee_id, notify_email):
-    active_group_id = candidate_group_id
-    st.session_state["last_group_id"] = active_group_id
-    _persist_group_id_to_url(active_group_id)
-elif candidate_group_id:
-    blocked_group_id = candidate_group_id
-    st.session_state["last_group_id"] = ""
-    _persist_group_id_to_url("")
+if candidate_group_id:
+    # Keep latest session result visible even when identity fields are temporarily empty.
+    # Only block when user explicitly enters identity but ownership verification fails.
+    if has_identity_input:
+        if identity_verified and is_group_owned_by_employee(candidate_group_id, employee_id, notify_email):
+            active_group_id = candidate_group_id
+            st.session_state["last_group_id"] = active_group_id
+            _persist_group_id_to_url(active_group_id)
+        else:
+            blocked_group_id = candidate_group_id
+            st.session_state["last_group_id"] = ""
+            _persist_group_id_to_url("")
+    else:
+        active_group_id = candidate_group_id
+        st.session_state["last_group_id"] = active_group_id
+        _persist_group_id_to_url(active_group_id)
 
 note = st.empty()
 
@@ -914,6 +957,7 @@ if run:
         "output_key": outputs["dots_video"],
         "user_name": user_name or "",
         "employee_id": (employee_id or "").strip(),
+        "notify_email": notify_email,
         "employee_email": notify_email,
     }
 
@@ -927,6 +971,7 @@ if run:
         "output_key": outputs["skeleton_video"],
         "user_name": user_name or "",
         "employee_id": (employee_id or "").strip(),
+        "notify_email": notify_email,
         "employee_email": notify_email,
     }
 
@@ -1126,6 +1171,18 @@ with c2:
 
     st.markdown("**ภาษาไทย**")
     download_block(f"รายงาน TH ({th_label})", th_key, th_name)
+
+    st.markdown("**HTML (Debug/Preview)**")
+    en_html_key = str(report_outputs.get("report_en_html") or "").strip()
+    th_html_key = str(report_outputs.get("report_th_html") or "").strip()
+    if en_html_key:
+        download_block("รายงาน EN (HTML)", en_html_key, "report_en.html")
+    else:
+        st.caption("EN HTML: ยังไม่มี (จะมีเมื่อสร้างรายงานแบบ PDF)")
+    if th_html_key:
+        download_block("รายงาน TH (HTML)", th_html_key, "report_th.html")
+    else:
+        st.caption("TH HTML: ยังไม่มี (จะมีเมื่อสร้างรายงานแบบ PDF)")
 
 videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("dots_video", "")) and s3_key_exists(outputs.get("skeleton_video", ""))
 dots_ready = bool(outputs.get("dots_video")) and s3_key_exists(outputs.get("dots_video", ""))

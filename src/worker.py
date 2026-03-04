@@ -169,7 +169,7 @@ def send_mode_ready_email(job: Dict[str, Any], result: Dict[str, Any]) -> Tuple[
     mode = str(result.get("mode") or "").strip().lower()
     if mode not in ("dots", "skeleton"):
         return False, "skip_non_video_mode"
-    recipients = parse_email_list(str(job.get("notify_email") or ""))
+    recipients = parse_email_list(str(job.get("notify_email") or job.get("employee_email") or ""))
     if not recipients:
         return False, "skip_no_valid_recipients"
     output_key = str(result.get("output_key") or "").strip()
