@@ -669,34 +669,54 @@ def _convert_html_to_pdf_via_chrome(html_path: str, filename_stem: str = "report
     with tempfile.TemporaryDirectory(prefix="html2pdf_chrome_") as td:
         out_pdf_path = os.path.join(td, f"{filename_stem}.pdf")
         html_uri = Path(html_path).resolve().as_uri()
-        cmd = [
-            chrome_bin,
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--allow-file-access-from-files",
-            "--run-all-compositor-stages-before-draw",
-            "--print-to-pdf-no-header",
-            f"--print-to-pdf={out_pdf_path}",
-            html_uri,
+        attempts = [
+            [
+                "--headless=new",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--allow-file-access-from-files",
+                "--run-all-compositor-stages-before-draw",
+                "--print-to-pdf-no-header",
+                f"--print-to-pdf={out_pdf_path}",
+                html_uri,
+            ],
+            [
+                "--headless",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--allow-file-access-from-files",
+                "--no-pdf-header-footer",
+                f"--print-to-pdf={out_pdf_path}",
+                html_uri,
+            ],
         ]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=HTML_TO_PDF_TIMEOUT_SECONDS,
-        )
-        if proc.returncode != 0:
+        errors: List[str] = []
+        for idx, flags in enumerate(attempts, start=1):
+            try:
+                if os.path.exists(out_pdf_path):
+                    os.remove(out_pdf_path)
+            except Exception:
+                pass
+            cmd = [chrome_bin, *flags]
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=HTML_TO_PDF_TIMEOUT_SECONDS,
+                env={**os.environ, "HOME": td},
+            )
+            if proc.returncode == 0 and os.path.exists(out_pdf_path):
+                with open(out_pdf_path, "rb") as f:
+                    pdf_bytes = f.read()
+                if pdf_bytes:
+                    logger.info("[pdf] chrome html->pdf succeeded attempt=%s", idx)
+                    return pdf_bytes
             err = (proc.stderr or proc.stdout or "").strip()
-            raise RuntimeError(f"Chrome HTML->PDF failed rc={proc.returncode} err={err[:500]}")
-        if not os.path.exists(out_pdf_path):
-            raise RuntimeError("Chrome HTML->PDF conversion succeeded but PDF output not found")
-        with open(out_pdf_path, "rb") as f:
-            pdf_bytes = f.read()
-        if not pdf_bytes:
-            raise RuntimeError("Chrome converted PDF is empty")
-        return pdf_bytes
+            errors.append(f"attempt={idx} rc={proc.returncode} err={err[:280]}")
+        raise RuntimeError("Chrome HTML->PDF failed " + " | ".join(errors))
 
 
 def _convert_html_to_pdf_via_libreoffice(html_path: str, filename_stem: str = "report") -> bytes:
@@ -2042,6 +2062,7 @@ def generate_reports_for_lang(
     # Build HTML for every report job (docx/pdf) so UI can always offer
     # debug/preview download and operators can inspect layout issues quickly.
     pdf_bytes = None
+    pdf_generation_mode = "not_requested"
     pdf_out_path = ""
     html_out_path = os.path.join(
         out_dir,
@@ -2062,6 +2083,7 @@ def generate_reports_for_lang(
 
     # PDF (file -> bytes) only when requested by job format.
     if wants_pdf:
+        pdf_generation_mode = "requested"
 
         if PDF_VIA_HTML_FIRST:
             if html_out_path:
@@ -2071,6 +2093,7 @@ def generate_reports_for_lang(
                         filename_stem=f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}",
                     )
                     logger.info("[pdf] generated via html->pdf conversion lang=%s", lang_code)
+                    pdf_generation_mode = f"html_{HTML_PDF_ENGINE}"
                 except Exception as e:
                     logger.warning("[pdf] html->pdf conversion failed for lang=%s: %s", lang_code, e)
                     pdf_bytes = None
@@ -2083,6 +2106,7 @@ def generate_reports_for_lang(
                     filename_stem=f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}",
                 )
                 logger.info("[pdf] generated via docx->pdf conversion lang=%s", lang_code)
+                pdf_generation_mode = "docx_libreoffice"
             except Exception as e:
                 logger.warning("[pdf] docx->pdf conversion failed for lang=%s: %s", lang_code, e)
                 pdf_bytes = None
@@ -2101,6 +2125,8 @@ def generate_reports_for_lang(
                 if os.path.exists(pdf_out_path):
                     with open(pdf_out_path, "rb") as f:
                         pdf_bytes = f.read()
+                    if pdf_bytes:
+                        pdf_generation_mode = "reportlab"
             except Exception as e:
                 logger.warning("[pdf] PDF build failed for lang=%s: %s", lang_code, e)
                 pdf_bytes = None
@@ -2110,6 +2136,7 @@ def generate_reports_for_lang(
         "graph2_path": graph2_path,
         "pdf_out_path": pdf_out_path,
         "html_out_path": html_out_path,
+        "pdf_generation_mode": pdf_generation_mode,
     }
     first_impression_summary = {
         "eye_contact": {
@@ -2234,11 +2261,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
             # Upload PDF when requested and not overridden by Thai fallback.
             pdf_key = None
-            pdf_render_mode = "disabled"
+            pdf_render_mode = str(local_paths.get("pdf_generation_mode") or "disabled")
             if wants_pdf_output:
                 if not pdf_bytes:
                     raise RuntimeError("PDF format requested but PDF generation failed")
-                pdf_render_mode = "docx_or_reportlab"
                 if lang_code == "th" and THAI_PDF_IMAGE_CAPTURE:
                     try:
                         if THAI_CAPTURE_FROM_DOCX_DIRECT:

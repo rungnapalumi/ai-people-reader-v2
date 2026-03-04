@@ -145,6 +145,10 @@ def _apply_default_retreating_share(
 
 def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5, max_frames: int = 200) -> FirstImpressionData:
     """Real First Impression analysis with MediaPipe using continuous scoring."""
+    if (Pose is None) or (PoseLandmark is None) or (not callable(Pose)):
+        logger.warning("[first_impression] MediaPipe Pose unavailable; using zero fallback scores")
+        return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
