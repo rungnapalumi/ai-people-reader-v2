@@ -461,10 +461,28 @@ def _find_chrome_bin() -> str:
         "/usr/bin/google-chrome-stable",
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
+        "/opt/render/project/src/.apt/usr/bin/chromium",
+        "/opt/render/project/src/.apt/usr/bin/chromium-browser",
+        "/opt/render/project/src/.apt/usr/bin/google-chrome",
+        "/opt/render/project/src/.apt/usr/bin/google-chrome-stable",
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ):
         if os.path.exists(candidate):
             return candidate
+    # Render/buildpack fallback scan
+    try:
+        import glob
+        for pat in (
+            "/opt/render/project/src/.apt/**/chromium",
+            "/opt/render/project/src/.apt/**/chromium-browser",
+            "/opt/render/project/src/.apt/**/google-chrome",
+            "/opt/render/project/src/.apt/**/google-chrome-stable",
+        ):
+            for p in glob.glob(pat, recursive=True):
+                if os.path.isfile(p) and os.access(p, os.X_OK):
+                    return p
+    except Exception:
+        pass
     return ""
 
 
@@ -521,6 +539,17 @@ def _image_data_uri(path: str) -> str:
     with open(path, "rb") as f:
         raw = f.read()
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _brand_asset_data_uri(filename: str) -> str:
+    try:
+        root = Path(__file__).resolve().parent.parent
+        p = root / filename
+        if p.exists():
+            return _image_data_uri(str(p))
+    except Exception:
+        pass
+    return ""
 
 
 def _scale_display_for_lang(scale: str, lang_code: str) -> str:
@@ -581,77 +610,119 @@ def build_html_report_file(
             return _scale_display_for_lang(report.categories[i].scale, lang_code)
         return "-"
 
-    # Keep HTML deterministic; browser-based print (Chrome) will preserve this styling best.
+    header_img = _brand_asset_data_uri("Header.png")
+    footer_img = _brand_asset_data_uri("Footer.png")
+
+    # Layout for browser print: fixed brand header/footer + explicit page sections.
     html = f"""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
   <style>
-    @page {{ size: A4; margin: 16mm 13mm 14mm 13mm; }}
+    @page {{ size: A4; margin: 24mm 13mm 22mm 13mm; }}
     body {{
       font-family: "Noto Sans Thai", "TH Sarabun New", "Sarabun", "Tahoma", Arial, Helvetica, sans-serif;
       font-size: 13px;
-      line-height: 1.45;
+      line-height: {("1.55" if not is_th else "1.50")};
       color: #111;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
       text-rendering: geometricPrecision;
+      margin: 0;
     }}
-    h1 {{ font-size: 28px; margin: 0 0 24px; color: #b24b45; text-align: center; }}
-    h2 {{ font-size: 22px; margin: 0 0 14px; }}
-    h3 {{ font-size: 18px; margin: 14px 0 8px; }}
-    .meta {{ margin: 3px 0; }}
-    .section {{ margin-top: 12px; }}
-    .scale {{ margin-left: 26px; font-weight: 700; margin-bottom: 8px; }}
-    .graph {{ margin-top: 14px; page-break-before: always; }}
+    .page-header {{
+      position: fixed;
+      top: -16mm;
+      left: 0;
+      right: 0;
+      text-align: center;
+      height: 18mm;
+    }}
+    .page-header img {{ max-height: 16mm; width: auto; }}
+    .page-footer {{
+      position: fixed;
+      bottom: -14mm;
+      left: 0;
+      right: 0;
+      text-align: center;
+      height: 14mm;
+      font-size: 10px;
+      color: #666;
+    }}
+    .page-footer img {{ max-height: 10mm; width: auto; }}
+    .page {{
+      page-break-after: always;
+      break-after: page;
+    }}
+    .page:last-of-type {{
+      page-break-after: auto;
+      break-after: auto;
+    }}
+    h1 {{ font-size: 28px; margin: 8mm 0 12px; color: #b24b45; text-align: center; }}
+    h2 {{ font-size: 22px; margin: 0 0 12px; }}
+    h3 {{ font-size: 18px; margin: 12px 0 8px; }}
+    .meta {{ margin: 2px 0; }}
+    .section {{ margin-top: 10px; }}
+    .scale {{ margin-left: 26px; font-weight: 700; margin-bottom: 10px; }}
+    ul {{ margin-top: 6px; margin-bottom: 6px; }}
+    li {{ margin-bottom: 4px; }}
+    .graph {{ margin-top: 4px; page-break-before: always; break-before: page; }}
     .graph img {{ width: 100%; height: auto; }}
   </style>
 </head>
 <body>
-  <h1>PEOPLE READER</h1>
-  <h2>{escape(title)}</h2>
-  <div class="meta"><b>{escape(client_label)}:</b> {escape(str(report.client_name or '-'))}</div>
-  <div class="meta"><b>{escape(date_label)}:</b> {escape(str(report.analysis_date or '-'))}</div>
-  <div class="meta"><b>{escape(duration_label)}:</b> {escape(str(report.video_length_str or '-'))}</div>
-  <h3>{escape(detailed_label)}</h3>
-  <div class="section">
-    <b>{"1. ความประทับใจแรกพบ" if is_th else "1. First impression"}</b>
-    <ul>
-      <li>{"การสบตา (Eye Contact)" if is_th else "Eye Contact"}</li>
-    </ul>
-    <div class="scale">{escape(scale_label)}: {escape(eye_lv)}</div>
-    <ul>
-      <li>{"ความตั้งตรงของร่างกาย (Uprightness)" if is_th else "Uprightness"}</li>
-    </ul>
-    <div class="scale">{escape(scale_label)}: {escape(up_lv)}</div>
-    <ul>
-      <li>{"การยืนและการวางเท้า (Stance)" if is_th else "Stance"}</li>
-    </ul>
-    <div class="scale">{escape(scale_label)}: {escape(st_lv)}</div>
-    <div><b>{escape(note_label)}</b></div>
-    <div>{escape(remark_text)}</div>
+  <div class="page-header">{f'<img src="{header_img}" alt="header" />' if header_img else ''}</div>
+  <div class="page-footer">{f'<img src="{footer_img}" alt="footer" />' if footer_img else ''}</div>
+
+  <div class="page">
+    <h1>PEOPLE READER</h1>
+    <h2>{escape(title)}</h2>
+    <div class="meta"><b>{escape(client_label)}:</b> {escape(str(report.client_name or '-'))}</div>
+    <div class="meta"><b>{escape(date_label)}:</b> {escape(str(report.analysis_date or '-'))}</div>
+    <div class="meta"><b>{escape(duration_label)}:</b> {escape(str(report.video_length_str or '-'))}</div>
+    <h3>{escape(detailed_label)}</h3>
+    <div class="section">
+      <b>{"1. ความประทับใจแรกพบ" if is_th else "1. First impression"}</b>
+      <ul>
+        <li>{"การสบตา (Eye Contact)" if is_th else "Eye Contact"}</li>
+      </ul>
+      <div class="scale">{escape(scale_label)}: {escape(eye_lv)}</div>
+      <ul>
+        <li>{"ความตั้งตรงของร่างกาย (Uprightness)" if is_th else "Uprightness"}</li>
+      </ul>
+      <div class="scale">{escape(scale_label)}: {escape(up_lv)}</div>
+      <ul>
+        <li>{"การยืนและการวางเท้า (Stance)" if is_th else "Stance"}</li>
+      </ul>
+      <div class="scale">{escape(scale_label)}: {escape(st_lv)}</div>
+      <div><b>{escape(note_label)}</b></div>
+      <div>{escape(remark_text)}</div>
+    </div>
   </div>
-  <div class="section">
-    <b>{"2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_th else "2. Engaging & Connecting"}</b>
-    <ul>
-      <li>{"ความเป็นกันเอง" if is_th else "Approachability"}</li>
-      <li>{"ความเข้าถึงได้" if is_th else "Relatability"}</li>
-      <li>{"การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_th else "Engagement, connect and build instant rapport with team"}</li>
-    </ul>
-    <div class="scale">{escape(scale_label)}: {escape(cat_scale(0))}</div>
-    <b>{"3. ความมั่นใจ" if is_th else "3. Confidence"}</b>
-    <ul>
-      <li>{"บุคลิกภาพเชิงบวก" if is_th else "Optimistic Presence"}</li>
-      <li>{"ความมีสมาธิ" if is_th else "Focus"}</li>
-      <li>{"ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_th else "Ability to persuade and stand one's ground, in order to convince others."}</li>
-    </ul>
-    <div class="scale">{escape(scale_label)}: {escape(cat_scale(1))}</div>
-    <b>{"4. ความเป็นผู้นำและความดูมีอำนาจ" if is_th else "4. Authority"}</b>
-    <ul>
-      <li>{"แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_th else "Showing sense of importance and urgency in subject matter"}</li>
-      <li>{"ผลักดันให้เกิดการลงมือทำ" if is_th else "Pressing for action"}</li>
-    </ul>
-    <div class="scale">{escape(scale_label)}: {escape(cat_scale(2))}</div>
+
+  <div class="page">
+    <div class="section">
+      <b>{"2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_th else "2. Engaging & Connecting"}</b>
+      <ul>
+        <li>{"ความเป็นกันเอง" if is_th else "Approachability"}</li>
+        <li>{"ความเข้าถึงได้" if is_th else "Relatability"}</li>
+        <li>{"การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_th else "Engagement, connect and build instant rapport with team"}</li>
+      </ul>
+      <div class="scale">{escape(scale_label)}: {escape(cat_scale(0))}</div>
+      <b>{"3. ความมั่นใจ" if is_th else "3. Confidence"}</b>
+      <ul>
+        <li>{"บุคลิกภาพเชิงบวก" if is_th else "Optimistic Presence"}</li>
+        <li>{"ความมีสมาธิ" if is_th else "Focus"}</li>
+        <li>{"ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_th else "Ability to persuade and stand one's ground, in order to convince others."}</li>
+      </ul>
+      <div class="scale">{escape(scale_label)}: {escape(cat_scale(1))}</div>
+      <b>{"4. ความเป็นผู้นำและความดูมีอำนาจ" if is_th else "4. Authority"}</b>
+      <ul>
+        <li>{"แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_th else "Showing sense of importance and urgency in subject matter"}</li>
+        <li>{"ผลักดันให้เกิดการลงมือทำ" if is_th else "Pressing for action"}</li>
+      </ul>
+      <div class="scale">{escape(scale_label)}: {escape(cat_scale(2))}</div>
+    </div>
   </div>
   {f'<div class="graph"><h3>{"ผลการวิเคราะห์ Effort" if is_th else "Effort Motion Detection Results"}</h3><img src="{g1}" /></div>' if (is_operation_test and g1) else ''}
   {f'<div class="graph"><h3>{"ผลการวิเคราะห์ Shape" if is_th else "Shape Motion Detection Results"}</h3><img src="{g2}" /></div>' if (is_operation_test and g2) else ''}
@@ -668,6 +739,7 @@ def _convert_html_to_pdf_via_chrome(html_path: str, filename_stem: str = "report
     chrome_bin = _find_chrome_bin()
     if not chrome_bin:
         raise RuntimeError("Chrome/Chromium binary not found")
+    logger.info("[pdf] chrome binary=%s", chrome_bin)
 
     with tempfile.TemporaryDirectory(prefix="html2pdf_chrome_") as td:
         out_pdf_path = os.path.join(td, f"{filename_stem}.pdf")
