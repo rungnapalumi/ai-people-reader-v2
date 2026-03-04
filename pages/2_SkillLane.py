@@ -23,7 +23,7 @@ import json
 import uuid
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import streamlit as st
@@ -333,6 +333,14 @@ def enqueue_legacy_job(job: Dict[str, Any]) -> str:
     job_json_key = f"{JOBS_PENDING_PREFIX}{job_id}.json"
     s3_put_json(job_json_key, job)
     return job_json_key
+
+
+def verify_pending_jobs_exist(keys: List[str]) -> List[str]:
+    missing: List[str] = []
+    for key in keys:
+        if not s3_key_exists(key):
+            missing.append(key)
+    return missing
 
 
 def safe_slug(text: str, fallback: str = "user") -> str:
@@ -1087,8 +1095,18 @@ uploaded = st.file_uploader(
     key="skilllane_file_uploader",
 )
 st.caption("หากอัปโหลดล้มเหลวหรือขึ้นสถานะ 400 กรุณา upload วีดีโอใหม่")
+if uploaded is not None:
+    uploaded_name = str(uploaded.name or "input.mp4")
+    uploaded_size_mb = float((uploaded.size or 0) / (1024 * 1024))
+    st.caption(f"Selected file: `{uploaded_name}` ({uploaded_size_mb:.2f} MB)")
 
-run = st.button("🎬 เริ่มวิเคราะห์", type="primary", width="stretch", key="run_analyze")
+run = st.button(
+    "🎬 เริ่มวิเคราะห์",
+    type="primary",
+    width="stretch",
+    key="run_analyze",
+    disabled=(uploaded is None),
+)
 if use_direct_upload:
     st.caption("หรือใช้แบบสำรอง: เลือกไฟล์ด้านบนแล้วกดปุ่มนี้")
     st.caption(SUPPORT_CONTACT_TEXT)
@@ -1317,6 +1335,15 @@ if run:
             queued_job_ids["report"] = job_report["job_id"]
     except Exception as e:
         note.error(f"ส่งงานเข้าคิวไม่สำเร็จ: {format_submit_error_message(e)}")
+        st.warning(SUPPORT_CONTACT_TEXT)
+        st.stop()
+
+    missing_pending = verify_pending_jobs_exist(list(queued_job_keys.values()))
+    if missing_pending:
+        note.error(
+            "ระบบตรวจสอบคิวงานไม่ผ่าน: ไม่พบไฟล์งานบางรายการใน jobs/pending\n"
+            f"Missing keys: {', '.join(missing_pending)}"
+        )
         st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 

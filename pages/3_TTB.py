@@ -23,7 +23,7 @@ import json
 import uuid
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -309,6 +309,14 @@ def enqueue_legacy_job(job: Dict[str, Any]) -> str:
     job_json_key = f"{JOBS_PENDING_PREFIX}{job_id}.json"
     s3_put_json(job_json_key, job)
     return job_json_key
+
+
+def verify_pending_jobs_exist(keys: List[str]) -> List[str]:
+    missing: List[str] = []
+    for key in keys:
+        if not s3_key_exists(key):
+            missing.append(key)
+    return missing
 
 
 def safe_slug(text: str, fallback: str = "user") -> str:
@@ -870,8 +878,12 @@ uploaded = st.file_uploader(
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
 )
+if uploaded is not None:
+    uploaded_name = str(uploaded.name or "input.mp4")
+    uploaded_size_mb = float((uploaded.size or 0) / (1024 * 1024))
+    st.caption(f"Selected file: `{uploaded_name}` ({uploaded_size_mb:.2f} MB)")
 
-run = st.button("🎬 Run Analysis", type="primary", width="stretch")
+run = st.button("🎬 Run Analysis", type="primary", width="stretch", disabled=(uploaded is None))
 st.caption(SUPPORT_CONTACT_TEXT)
 
 last_group_hint = str(st.session_state.get("last_group_id") or url_group_id or "").strip()
@@ -1007,6 +1019,15 @@ if run:
         st.warning(SUPPORT_CONTACT_TEXT)
         st.stop()
 
+    missing_pending = verify_pending_jobs_exist(list(queued_job_keys.values()))
+    if missing_pending:
+        note.error(
+            "Queued job verification failed: some jobs were not found in jobs/pending.\n"
+            f"Missing keys: {', '.join(missing_pending)}"
+        )
+        st.warning(SUPPORT_CONTACT_TEXT)
+        st.stop()
+
     st.session_state["last_group_id"] = group_id
     _persist_group_id_to_url(group_id)
     active_group_id = group_id
@@ -1018,6 +1039,7 @@ if run:
         f"Submitted! submission_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
         f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
     )
+    st.caption(f"Queued job keys: {', '.join(queued_job_keys.values())}")
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 
 group_id = active_group_id
