@@ -1002,7 +1002,7 @@ if direct_ready and (not upload_done) and (not manual_direct_done):
 # Always show visible status so users know current step.
 st.markdown("### สถานะการอัปโหลด/ส่งงาน")
 if direct_ready and not upload_done and not manual_direct_done:
-    st.info("กำลังรออัปโหลดไฟล์ไป S3: กรุณาเลือกไฟล์ในกล่องอัปโหลดด้านล่าง แล้วกดส่งงานต่อเมื่ออัปโหลดเสร็จ")
+    pass
 elif upload_done or manual_direct_done:
     st.success("อัปโหลดไป S3 สำเร็จแล้ว กำลังส่งงานเข้าคิววิเคราะห์...")
 elif last_group_hint:
@@ -1157,21 +1157,10 @@ candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id
 active_group_id = ""
 blocked_group_id = ""
 if candidate_group_id:
-    # Keep latest session result visible even when identity fields are temporarily empty.
-    # Only block when user explicitly enters identity but ownership verification fails.
-    if has_identity_input:
-        if identity_verified and is_group_owned_by_employee(candidate_group_id, employee_id, notify_email):
-            active_group_id = candidate_group_id
-            st.session_state["last_group_id"] = active_group_id
-            _persist_group_id_to_url(active_group_id)
-        else:
-            blocked_group_id = candidate_group_id
-            st.session_state["last_group_id"] = ""
-            _persist_group_id_to_url("")
-    else:
-        active_group_id = candidate_group_id
-        st.session_state["last_group_id"] = active_group_id
-        _persist_group_id_to_url(active_group_id)
+    # Email-only UX: always show latest accessible group from current session/url.
+    active_group_id = candidate_group_id
+    st.session_state["last_group_id"] = active_group_id
+    _persist_group_id_to_url(active_group_id)
 
 note = st.empty()
 
@@ -1198,8 +1187,9 @@ if run:
     # Admin toggles can still control optional video outputs, but report should always run.
     enable_report_th = True
     enable_report_en = True
-    enable_skeleton = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
-    enable_dots = bool(org_settings.get("enable_dots", True)) if org_settings else True
+    # SkillLane page policy: always enqueue video outputs too.
+    enable_skeleton = True
+    enable_dots = True
     report_languages = []
     if enable_report_th:
         report_languages.append("th")
@@ -1323,12 +1313,12 @@ if run:
     st.session_state["last_uploaded_filename"] = uploaded_filename_for_status
 
     note.success(
-        f"ส่งงานเรียบร้อย! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
+        f"ส่งงานเรียบร้อย! submission_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
         f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
     )
     if uploaded_filename_for_status:
         st.success(f"Uploaded to S3: {uploaded_filename_for_status}")
-    st.caption(f"Group ID: `{group_id}`")
+    st.caption(f"Submission ID: `{group_id}`")
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 
     if upload_done:
@@ -1394,7 +1384,7 @@ else:
     if has_identity_input and not identity_verified:
         st.caption("กรุณากรอกอีเมลให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
     else:
-        st.caption("ยังไม่พบ group_id ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
+        st.caption("ยังไม่พบ Submission ID ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
     st.divider()
     st.link_button(
         "กลับไปสู่บทเรียนออนไลน์ (SkillLane)",
@@ -1403,14 +1393,14 @@ else:
     )
     st.stop()
 
-st.caption(f"กลุ่มงาน: `{group_id}`")
+st.caption(f"Submission ID: `{group_id}`")
 
-with st.expander("ตรวจสถานะ group_id นี้ (Debug)", expanded=True):
+with st.expander("ตรวจสถานะ Submission ID นี้ (Debug)", expanded=True):
     debug_group_id = st.text_input(
-        "group_id ที่ต้องการตรวจสถานะ",
+        "Submission ID ที่ต้องการตรวจสถานะ",
         value=group_id,
         key="skilllane_debug_group_id",
-        help="ตรวจว่าแต่ละ job ของ group นี้อยู่ใน pending/processing/finished/failed",
+        help="ตรวจว่าแต่ละ job ของ submission นี้อยู่ใน pending/processing/finished/failed",
     ).strip()
     if debug_group_id:
         debug_rows = list_jobs_for_group(debug_group_id)
@@ -1432,7 +1422,7 @@ with st.expander("ตรวจสถานะ group_id นี้ (Debug)", expan
             )
             st.dataframe(debug_rows, width="stretch", hide_index=True)
         else:
-            st.warning("ไม่พบ job ของ group_id นี้ในคิว pending/processing/finished/failed")
+            st.warning("ไม่พบ job ของ Submission ID นี้ในคิว pending/processing/finished/failed")
 
 
 def download_block(title: str, key: str, filename: str) -> None:

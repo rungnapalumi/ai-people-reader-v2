@@ -451,9 +451,9 @@ render_banner()
 st.markdown("# Operational Test")
 st.caption("Select specific functions to test. Useful when debugging — run only what you need.")
 manual_group_id = st.text_input(
-    "Check result by Group ID (optional)",
+    "Check result by Submission ID (optional)",
     value=read_group_id_from_url(),
-    placeholder="Paste group_id from email to fetch result on this page",
+    placeholder="Paste submission_id from email to fetch result on this page",
 ).strip()
 
 name = st.text_input("Name (optional)", value="", placeholder="e.g., John Doe")

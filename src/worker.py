@@ -902,7 +902,12 @@ def main_loop(poll_seconds: int = 3) -> None:
                 pending_job = s3_read_json(pending_key)
                 pending_mode = (pending_job.get("mode") or "").strip().lower()
                 if pending_mode in ("report", "report_th_en", "report_generator"):
-                    logging.info("Skipping pending report job %s mode=%s (reserved for report_worker)", pending_job.get("job_id"), pending_mode)
+                    logging.info(
+                        "Skipping pending report job job_id=%s group_id=%s mode=%s (reserved for report_worker)",
+                        pending_job.get("job_id"),
+                        pending_job.get("group_id"),
+                        pending_mode,
+                    )
                     continue
             except Exception as e:
                 logging.info("Skip pending key %s while peeking mode: %s", pending_key, e)
@@ -915,17 +920,22 @@ def main_loop(poll_seconds: int = 3) -> None:
             try:
                 job = s3_read_json(processing_key)
                 mode = (job.get("mode") or "").strip()
+                group_id = str(job.get("group_id") or "").strip()
                 
                 # Extra safety: keep report jobs for report_worker if one slips through.
                 if mode in ("report", "report_th_en", "report_generator"):
-                    logging.info("Skipping report mode job %s (handled by report_worker), moving back to pending", job.get("job_id"))
+                    logging.info(
+                        "Skipping report mode job job_id=%s group_id=%s (handled by report_worker), moving back to pending",
+                        job.get("job_id"),
+                        group_id,
+                    )
                     move_job(processing_key, PENDING)
                     continue
                 
                 job["status"] = "processing"
                 s3_write_json(processing_key, job)
 
-                logging.info("Processing job %s mode=%s", job.get("job_id"), mode)
+                logging.info("Processing job job_id=%s group_id=%s mode=%s", job.get("job_id"), group_id, mode)
                 result = process_job(job)
                 email_sent, email_status = send_mode_ready_email(job, result)
 
@@ -940,15 +950,21 @@ def main_loop(poll_seconds: int = 3) -> None:
                 move_job(processing_key, FINISHED)
 
                 logging.info(
-                    "Finished job %s mode=%s email_sent=%s email_status=%s",
+                    "Finished job job_id=%s group_id=%s mode=%s email_sent=%s email_status=%s",
                     job.get("job_id"),
+                    group_id,
                     mode,
                     email_sent,
                     email_status,
                 )
 
             except Exception as e:
-                logging.exception("Job failed: %s", e)
+                logging.exception(
+                    "Job failed job_id=%s group_id=%s: %s",
+                    (job.get("job_id") if isinstance(job, dict) else ""),
+                    (job.get("group_id") if isinstance(job, dict) else ""),
+                    e,
+                )
                 try:
                     job = s3_read_json(processing_key)
                     job["status"] = "failed"

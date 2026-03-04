@@ -879,21 +879,10 @@ candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id
 active_group_id = ""
 blocked_group_id = ""
 if candidate_group_id:
-    # Keep latest session result visible even when identity fields are temporarily empty.
-    # Only block when user explicitly enters identity but ownership verification fails.
-    if has_identity_input:
-        if identity_verified and is_group_owned_by_employee(candidate_group_id, employee_id, notify_email):
-            active_group_id = candidate_group_id
-            st.session_state["last_group_id"] = active_group_id
-            _persist_group_id_to_url(active_group_id)
-        else:
-            blocked_group_id = candidate_group_id
-            st.session_state["last_group_id"] = ""
-            _persist_group_id_to_url("")
-    else:
-        active_group_id = candidate_group_id
-        st.session_state["last_group_id"] = active_group_id
-        _persist_group_id_to_url(active_group_id)
+    # Email-only UX: always show latest accessible group from current session/url.
+    active_group_id = candidate_group_id
+    st.session_state["last_group_id"] = active_group_id
+    _persist_group_id_to_url(active_group_id)
 
 note = st.empty()
 
@@ -1009,7 +998,7 @@ if run:
     st.session_state["last_job_json_keys"] = queued_job_keys
 
     note.success(
-        f"Submitted! group_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
+        f"Submitted! submission_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
         f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
     )
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
@@ -1075,10 +1064,10 @@ else:
     if has_identity_input and not identity_verified:
         st.caption("Please enter the correct email to view only your own jobs.")
     else:
-        st.caption("No accessible group_id for this account yet. Upload a video and click **Run Analysis**.")
+        st.caption("No accessible Submission ID for this account yet. Upload a video and click **Run Analysis**.")
     st.stop()
 
-st.caption(f"Group: `{group_id}`")
+st.caption(f"Submission ID: `{group_id}`")
 
 
 def download_block(title: str, key: str, filename: str) -> None:

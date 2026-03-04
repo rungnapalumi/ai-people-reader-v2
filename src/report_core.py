@@ -1161,7 +1161,7 @@ def build_docx_report(
     # Language-specific text
     is_thai = (lang == "th")
     
-    en_operation_title = "Movement in Communication\nwith AI People Reader Report" if is_operation_test and (not is_thai) else "Character Analysis Report"
+    en_operation_title = "Movement in Communication\nwith AI People Reader Report"
     th_operation_title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader"
     texts = {
         "title": th_operation_title if is_thai else en_operation_title,
@@ -2116,7 +2116,7 @@ def build_pdf_report(
             draw_header_footer()
             # EN: move title and graph down to match Word report; TH: keep balanced layout.
             if not is_thai:
-                y = top_content_y - 55  # More top space: title and graph lower
+                y = top_content_y - 30  # Move EN title/graph up for better balance
             else:
                 y = min(height - 50, top_content_y + 50)
             write_paragraph_block(graph_title, graph_title_style, indent=0, extra_gap=0)
@@ -2322,7 +2322,7 @@ def build_pdf_report(
             detailed_analysis_label = "Detailed Analysis"
             first_impression_label = "1. First impression"
     else:
-        title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader" if is_thai else "Character Analysis Report"
+        title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader" if is_thai else "Movement in Communication\nwith AI People Reader Report"
         detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ" if is_thai else "Detailed Analysis"
         first_impression_label = "1. ความประทับใจแรกพบ (First Impression)" if is_thai else "1. First impression"
     eye_label = "การสบตา" if is_thai else "Eye Contact"

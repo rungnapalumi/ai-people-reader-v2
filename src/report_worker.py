@@ -2277,15 +2277,16 @@ def process_job(job_json_key: str) -> None:
     
     job_id = raw_job.get("job_id")
     mode = str(raw_job.get("mode") or "").strip().lower()
+    group_id = str(raw_job.get("group_id") or "").strip()
 
     if not job_id:
         raise ValueError("Job JSON missing 'job_id'")
 
-    logger.info("[process_job] job_id=%s mode=%s key=%s", job_id, mode, job_json_key)
+    logger.info("[process_job] job_id=%s group_id=%s mode=%s key=%s", job_id, group_id, mode, job_json_key)
 
     # Check if this worker should handle this job type
     if mode not in ("report", "report_th_en", "report_generator"):
-        logger.info("[process_job] Skipping job_id=%s mode=%s (not a report job)", job_id, mode)
+        logger.info("[process_job] Skipping job_id=%s group_id=%s mode=%s (not a report job)", job_id, group_id, mode)
         return  # Leave job in pending for other workers
 
     # Move to processing
@@ -2301,10 +2302,10 @@ def process_job(job_json_key: str) -> None:
         job = update_status(job, "finished", error=None)
         finished_key = f"{FINISHED_PREFIX}/{job_id}.json"
         move_json(processing_key, finished_key, job)
-        logger.info("[process_job] job_id=%s finished", job_id)
+        logger.info("[process_job] job_id=%s group_id=%s finished", job_id, group_id)
 
     except Exception as exc:
-        logger.exception("[process_job] job_id=%s FAILED: %s", job_id, exc)
+        logger.exception("[process_job] job_id=%s group_id=%s FAILED: %s", job_id, group_id, exc)
         job = update_status(job, "failed", error=str(exc))
         failed_key = f"{FAILED_PREFIX}/{job_id}.json"
         move_json(processing_key, failed_key, job)

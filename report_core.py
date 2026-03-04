@@ -1073,7 +1073,7 @@ def build_docx_report(
     is_thai = (lang == "th")
     
     texts = {
-        "title": "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report",
+        "title": "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Movement in Communication\nwith AI People Reader Report",
         "client_name": "ชื่อลูกค้า:" if is_thai else "Client Name:",
         "analysis_date": "วันที่วิเคราะห์:" if is_thai else "Analysis Date:",
         "video_info": "ข้อมูลวิดีโอ (Video Information)" if is_thai else "Video Information",
@@ -1669,7 +1669,7 @@ def build_pdf_report(
         for line in lines:
             write_line(line, size=size, bold=bold, gap=gap)
 
-    title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Character Analysis Report"
+    title = "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Movement in Communication\nwith AI People Reader Report"
     detailed_analysis_label = "การวิเคราะห์โดยละเอียด" if is_thai else "Detailed Analysis"
     first_impression_label = "1. ความประทับใจแรกพบ" if is_thai else "1. First impression"
     scale_label = "ระดับ" if is_thai else "Scale"
