@@ -1994,8 +1994,16 @@ def generate_reports_for_lang(
     duration_str = format_seconds_to_mmss(float(result.get("duration_seconds") or get_video_duration_seconds(video_path)))
     total = int(result.get("total_indicators") or 0) or 1
 
-    # Run First Impression analysis
-    first_impression = analyze_first_impression_from_video(video_path, sample_every_n=5, max_frames=200)
+    # Run First Impression analysis (guard against MediaPipe runtime/import issues).
+    try:
+        first_impression = analyze_first_impression_from_video(video_path, sample_every_n=5, max_frames=200)
+    except Exception as e:
+        logger.warning("[first_impression] analysis failed, using zero fallback: %s", e)
+        first_impression = FirstImpressionData(
+            eye_contact_pct=0.0,
+            upright_pct=0.0,
+            stance_stability=0.0,
+        )
     
     # Log the actual detected values for debugging
     logger.info("[first_impression] Eye Contact: %.1f%%, Uprightness: %.1f%%, Stance: %.1f%%", 
