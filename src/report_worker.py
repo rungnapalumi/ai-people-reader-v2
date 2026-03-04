@@ -101,6 +101,9 @@ DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("DOCX_TO_PDF_TIMEOUT_SECONDS", "180"
 PDF_VIA_HTML_FIRST = str(os.getenv("PDF_VIA_HTML_FIRST", "true")).strip().lower() in ("1", "true", "yes", "on")
 HTML_PDF_ENGINE = str(os.getenv("HTML_PDF_ENGINE", "auto")).strip().lower()  # auto|chrome|libreoffice
 HTML_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("HTML_TO_PDF_TIMEOUT_SECONDS", str(DOCX_TO_PDF_TIMEOUT_SECONDS)))
+PDF_HTML_STRICT_FOR_OPERATION_TEST = str(
+    os.getenv("PDF_HTML_STRICT_FOR_OPERATION_TEST", "true")
+).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_CAPTURE = str(os.getenv("THAI_PDF_IMAGE_CAPTURE", "true")).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
 THAI_PDF_IMAGE_CAPTURE_STRICT = str(
@@ -2084,6 +2087,9 @@ def generate_reports_for_lang(
     # PDF (file -> bytes) only when requested by job format.
     if wants_pdf:
         pdf_generation_mode = "requested"
+        strict_html_pdf = bool(
+            PDF_HTML_STRICT_FOR_OPERATION_TEST and is_operation_test_style(report_style)
+        )
 
         if PDF_VIA_HTML_FIRST:
             if html_out_path:
@@ -2097,6 +2103,12 @@ def generate_reports_for_lang(
                 except Exception as e:
                     logger.warning("[pdf] html->pdf conversion failed for lang=%s: %s", lang_code, e)
                     pdf_bytes = None
+
+        if strict_html_pdf and (not pdf_bytes):
+            raise RuntimeError(
+                "operation_test strict html->pdf enabled: html->pdf conversion failed; "
+                "fallback to docx/reportlab is disabled"
+            )
 
         use_docx_to_pdf = bool(PDF_VIA_DOCX_FOR_ALL_LANGS or (lang_code == "th" and THAI_PDF_VIA_DOCX))
         if (not pdf_bytes) and use_docx_to_pdf:
@@ -2558,6 +2570,10 @@ def main() -> None:
         HTML_PDF_ENGINE,
         THAI_PDF_IMAGE_CAPTURE,
         THAI_CAPTURE_FROM_DOCX_DIRECT,
+    )
+    logger.info(
+        "PDF strict   : html_strict_for_operation_test=%s",
+        PDF_HTML_STRICT_FOR_OPERATION_TEST,
     )
     logger.info(
         "Recovery cfg : processing_stale_minutes=%s processing_recovery_max_items=%s",
