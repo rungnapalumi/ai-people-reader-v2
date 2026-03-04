@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 import boto3
 import streamlit as st
+import streamlit.components.v1 as components
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 
@@ -55,7 +56,7 @@ BANNER_PATHS = [
 def render_banner() -> None:
     for path in BANNER_PATHS:
         if os.path.exists(path):
-            st.image(path, use_container_width=True)
+            st.image(path, width="stretch")
             return
 
 
@@ -380,6 +381,43 @@ def find_docx_keys_from_finished_jobs(group_id: str) -> Dict[str, str]:
     return result
 
 
+def find_report_keys_in_s3(group_id: str) -> Dict[str, str]:
+    result: Dict[str, str] = {
+        "pdf_th": "",
+        "pdf_en": "",
+        "docx_th": "",
+        "docx_en": "",
+        "html_th": "",
+        "html_en": "",
+    }
+    prefixes = [
+        f"{JOBS_GROUP_PREFIX}{group_id}/",
+        f"{JOBS_OUTPUT_PREFIX}{group_id}/",
+    ]
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for prefix in prefixes:
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = str(item.get("Key") or "")
+                    lo = key.lower()
+                    if lo.endswith("_th.pdf"):
+                        result["pdf_th"] = key
+                    elif lo.endswith("_en.pdf"):
+                        result["pdf_en"] = key
+                    elif lo.endswith("_th.docx"):
+                        result["docx_th"] = key
+                    elif lo.endswith("_en.docx"):
+                        result["docx_en"] = key
+                    elif lo.endswith("_th.html"):
+                        result["html_th"] = key
+                    elif lo.endswith("_en.html"):
+                        result["html_en"] = key
+    except Exception:
+        pass
+    return result
+
+
 def find_pdf_key_from_finished_jobs(group_id: str) -> str:
     latest_key = ""
     latest_ts = 0.0
@@ -447,6 +485,22 @@ def persist_group_id_to_url(group_id: str) -> None:
 
 ensure_session_defaults()
 render_banner()
+components.html(
+    """
+    <script>
+    (function () {
+      try {
+        var topLoc = window.top.location;
+        var path = topLoc.pathname || "/";
+        if (path !== "/" && !path.startsWith("/_stcore")) {
+          topLoc.replace(topLoc.origin + "/" + (topLoc.search || ""));
+        }
+      } catch (e) {}
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 st.markdown("# Operational Test")
 st.caption("Select specific functions to test. Useful when debugging — run only what you need.")
@@ -484,22 +538,8 @@ enable_th_report = st.checkbox("Thai report (PDF)", value=False, help="Generate 
 enable_en_report = st.checkbox("English report (PDF)", value=False, help="Generate English report PDF only")
 enable_th_docx = st.checkbox("Thai report (DOCX)", value=False, help="Generate Thai report DOCX only")
 enable_en_docx = st.checkbox("English report (DOCX)", value=False, help="Generate English report DOCX only")
-
-# If no report selected, show report language as fallback for when user selects report later
-st.markdown("### Report Language")
-st.caption("ใช้เมื่อเลือก Thai/English report (PDF หรือ DOCX) ด้านบน")
-language_mode = st.radio(
-    "Choose report language (when report is selected)",
-    options=["Thai only", "English only", "Thai + English"],
-    horizontal=True,
-    index=2,
-)
-if language_mode == "Thai only":
-    selected_languages = ["th"]
-elif language_mode == "English only":
-    selected_languages = ["en"]
-else:
-    selected_languages = ["th", "en"]
+enable_th_html = st.checkbox("Thai report (HTML)", value=False, help="Generate Thai report HTML only")
+enable_en_html = st.checkbox("English report (HTML)", value=False, help="Generate English report HTML only")
 
 uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
@@ -529,27 +569,45 @@ if run:
     if not uploaded:
         notice.error("Please upload a video first.")
         st.stop()
-    if not (enable_dots or enable_skeleton or enable_th_report or enable_en_report or enable_th_docx or enable_en_docx):
+    if not (
+        enable_dots
+        or enable_skeleton
+        or enable_th_report
+        or enable_en_report
+        or enable_th_docx
+        or enable_en_docx
+        or enable_th_html
+        or enable_en_html
+    ):
         notice.error("Please select at least one function to test.")
         st.stop()
 
     report_pdf_languages = []
-    if enable_th_report and enable_en_report:
-        report_pdf_languages = selected_languages
-    elif enable_th_report:
-        report_pdf_languages = ["th"]
-    elif enable_en_report:
-        report_pdf_languages = ["en"]
+    if enable_th_report:
+        report_pdf_languages.append("th")
+    if enable_en_report:
+        report_pdf_languages.append("en")
 
     report_docx_languages = []
-    if enable_th_docx and enable_en_docx:
-        report_docx_languages = selected_languages
-    elif enable_th_docx:
-        report_docx_languages = ["th"]
-    elif enable_en_docx:
-        report_docx_languages = ["en"]
+    if enable_th_docx:
+        report_docx_languages.append("th")
+    if enable_en_docx:
+        report_docx_languages.append("en")
 
-    if (enable_th_report or enable_en_report or enable_th_docx or enable_en_docx) and not selected_recipients:
+    report_html_languages = []
+    if enable_th_html:
+        report_html_languages.append("th")
+    if enable_en_html:
+        report_html_languages.append("en")
+
+    if (
+        enable_th_report
+        or enable_en_report
+        or enable_th_docx
+        or enable_en_docx
+        or enable_th_html
+        or enable_en_html
+    ) and not selected_recipients:
         notice.error("Please select at least one recipient email for report.")
         st.stop()
 
@@ -615,7 +673,7 @@ if run:
                 "analysis_mode": "real",
                 "sample_fps": 5,
                 "max_frames": 300,
-                "report_style": "full",
+                "report_style": "operation_test",
                 "report_format": "pdf",
                 "notify_email": notify_email.strip(),
                 "enterprise_folder": "operation_test",
@@ -639,7 +697,7 @@ if run:
                 "analysis_mode": "real",
                 "sample_fps": 5,
                 "max_frames": 300,
-                "report_style": "full",
+                "report_style": "operation_test",
                 "report_format": "docx",
                 "notify_email": notify_email.strip(),
                 "enterprise_folder": "operation_test",
@@ -648,6 +706,32 @@ if run:
             }
             enqueue_job(report_job)
             queued.append("report_docx")
+        # HTML can be selected standalone. If PDF or DOCX report job is already queued,
+        # HTML will be produced from that job and no extra enqueue is needed.
+        if report_html_languages and (not report_pdf_languages) and (not report_docx_languages):
+            report_job = {
+                "job_id": new_job_id(),
+                "group_id": group_id,
+                "created_at": created_at,
+                "status": "pending",
+                "mode": "report",
+                "input_key": input_key,
+                "client_name": (name or "").strip(),
+                "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+                "languages": report_html_languages,
+                "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
+                "analysis_mode": "real",
+                "sample_fps": 5,
+                "max_frames": 300,
+                "report_style": "operation_test",
+                "report_format": "html",
+                "notify_email": notify_email.strip(),
+                "enterprise_folder": "operation_test",
+                "expect_dots": enable_dots,
+                "expect_skeleton": enable_skeleton,
+            }
+            enqueue_job(report_job)
+            queued.append("report_html")
     except Exception as e:
         notice.error(f"Enqueue job failed: {format_submit_error_message(e)}")
         st.warning(SUPPORT_CONTACT_TEXT)
@@ -717,6 +801,20 @@ if active_group_id:
     if not docx_keys.get("TH") and not docx_keys.get("EN"):
         found_docx = find_docx_keys_from_finished_jobs(active_group_id)
         docx_keys = found_docx
+    # Robust fallback: scan report artifacts directly in S3 by group prefix.
+    scanned_keys = find_report_keys_in_s3(active_group_id)
+    if not pdf_keys.get("TH") and scanned_keys.get("pdf_th"):
+        pdf_keys["TH"] = str(scanned_keys.get("pdf_th") or "").strip()
+    if not pdf_keys.get("EN") and scanned_keys.get("pdf_en"):
+        pdf_keys["EN"] = str(scanned_keys.get("pdf_en") or "").strip()
+    if not docx_keys.get("TH") and scanned_keys.get("docx_th"):
+        docx_keys["TH"] = str(scanned_keys.get("docx_th") or "").strip()
+    if not docx_keys.get("EN") and scanned_keys.get("docx_en"):
+        docx_keys["EN"] = str(scanned_keys.get("docx_en") or "").strip()
+    if not html_keys.get("TH") and scanned_keys.get("html_th"):
+        html_keys["TH"] = str(scanned_keys.get("html_th") or "").strip()
+    if not html_keys.get("EN") and scanned_keys.get("html_en"):
+        html_keys["EN"] = str(scanned_keys.get("html_en") or "").strip()
     failed_job = get_latest_failed_operation_test_job(active_group_id)
     failed_error = str((failed_job or {}).get("error") or "").strip()
     if failed_error:

@@ -6,6 +6,7 @@ import os
 import io
 import math
 import random
+import time
 import logging
 import unicodedata
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ import matplotlib.pyplot as plt
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+logger = logging.getLogger("report_core.analysis")
 
 try:
     from mediapipe.python.solutions import pose as mp_pose_module
@@ -704,16 +707,29 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     shape_counts = {"Directing": 0, "Enclosing": 0, "Spreading": 0, "Indirecting": 0, "Advancing": 0, "Retreating": 0}
     
     analyzed = 0
+    sampled = 0
     prev_landmarks = None
+    analysis_started_at = time.time()
+    analysis_timeout_seconds = max(60, int(os.getenv("ANALYSIS_TIMEOUT_SECONDS", "420")))
     
     with Pose(static_image_mode=False, model_complexity=1) as pose:
         frame_idx = 0
-        while analyzed < max_frames:
+        while analyzed < max_frames and sampled < max_frames:
             ret, frame = cap.read()
             if not ret:
                 break
+            if (time.time() - analysis_started_at) > analysis_timeout_seconds:
+                logger.warning(
+                    "[analysis] timeout reached (%ss): sampled=%s detected=%s max_frames=%s",
+                    analysis_timeout_seconds,
+                    sampled,
+                    analyzed,
+                    max_frames,
+                )
+                break
             
             if frame_idx % frame_interval == 0:
+                sampled += 1
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = pose.process(rgb)
                 
@@ -839,6 +855,13 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                     # Store current landmarks for next iteration
                     prev_landmarks = lms
                     analyzed += 1
+                if sampled % 25 == 0:
+                    logger.info(
+                        "[analysis] progress sampled=%s/%s detected=%s",
+                        sampled,
+                        max_frames,
+                        analyzed,
+                    )
             
             frame_idx += 1
     

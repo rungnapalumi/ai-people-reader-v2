@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import streamlit as st
+import streamlit.components.v1 as components
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
@@ -214,7 +215,7 @@ def is_blocked_typo_domain(value: str) -> bool:
 def render_top_banner() -> None:
     for path in BANNER_PATH_CANDIDATES:
         if os.path.exists(path):
-            st.image(path, use_container_width=True)
+            st.image(path, width="stretch")
             return
 
 
@@ -814,6 +815,22 @@ def infer_job_bucket_status(job_key: str) -> str:
 ensure_session_defaults()
 apply_theme()
 render_top_banner()
+components.html(
+    """
+    <script>
+    (function () {
+      try {
+        var topLoc = window.top.location;
+        var path = topLoc.pathname || "/";
+        if (path !== "/" && !path.startsWith("/_stcore")) {
+          topLoc.replace(topLoc.origin + "/" + (topLoc.search || ""));
+        }
+      } catch (e) {}
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 url_group_id = _read_group_id_from_url()
 if url_group_id and not st.session_state.get("last_group_id"):

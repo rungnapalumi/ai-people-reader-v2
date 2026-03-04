@@ -34,6 +34,7 @@ import tempfile
 import re
 import subprocess
 import shutil
+from pathlib import Path
 import smtplib
 import ssl
 from datetime import datetime, timezone
@@ -98,6 +99,8 @@ THAI_PDF_VIA_DOCX = str(os.getenv("THAI_PDF_VIA_DOCX", "true")).strip().lower() 
 PDF_VIA_DOCX_FOR_ALL_LANGS = str(os.getenv("PDF_VIA_DOCX_FOR_ALL_LANGS", "true")).strip().lower() in ("1", "true", "yes", "on")
 DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("DOCX_TO_PDF_TIMEOUT_SECONDS", "180"))
 PDF_VIA_HTML_FIRST = str(os.getenv("PDF_VIA_HTML_FIRST", "true")).strip().lower() in ("1", "true", "yes", "on")
+HTML_PDF_ENGINE = str(os.getenv("HTML_PDF_ENGINE", "auto")).strip().lower()  # auto|chrome|libreoffice
+HTML_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("HTML_TO_PDF_TIMEOUT_SECONDS", str(DOCX_TO_PDF_TIMEOUT_SECONDS)))
 THAI_PDF_IMAGE_CAPTURE = str(os.getenv("THAI_PDF_IMAGE_CAPTURE", "true")).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
 THAI_PDF_IMAGE_CAPTURE_STRICT = str(
@@ -435,6 +438,29 @@ def _find_libreoffice_bin() -> str:
     return ""
 
 
+def _find_chrome_bin() -> str:
+    for candidate in (
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    for candidate in (
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return ""
+
+
 def convert_docx_bytes_to_pdf_bytes(docx_bytes: bytes, filename_stem: str = "report") -> bytes:
     if not docx_bytes:
         raise RuntimeError("DOCX bytes are empty")
@@ -548,14 +574,22 @@ def build_html_report_file(
             return _scale_display_for_lang(report.categories[i].scale, lang_code)
         return "-"
 
-    # Keep HTML simple and deterministic for LibreOffice conversion.
+    # Keep HTML deterministic; browser-based print (Chrome) will preserve this styling best.
     html = f"""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
   <style>
-    @page {{ size: A4; margin: 22mm 16mm 18mm 16mm; }}
-    body {{ font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #111; }}
+    @page {{ size: A4; margin: 16mm 13mm 14mm 13mm; }}
+    body {{
+      font-family: "Noto Sans Thai", "TH Sarabun New", "Sarabun", "Tahoma", Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #111;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      text-rendering: geometricPrecision;
+    }}
     h1 {{ font-size: 28px; margin: 0 0 24px; color: #b24b45; text-align: center; }}
     h2 {{ font-size: 22px; margin: 0 0 14px; }}
     h3 {{ font-size: 18px; margin: 14px 0 8px; }}
@@ -621,7 +655,47 @@ def build_html_report_file(
         f.write(html)
 
 
-def convert_html_file_to_pdf_bytes(html_path: str, filename_stem: str = "report") -> bytes:
+def _convert_html_to_pdf_via_chrome(html_path: str, filename_stem: str = "report") -> bytes:
+    if not html_path or (not os.path.exists(html_path)):
+        raise RuntimeError("HTML file not found for PDF conversion")
+    chrome_bin = _find_chrome_bin()
+    if not chrome_bin:
+        raise RuntimeError("Chrome/Chromium binary not found")
+
+    with tempfile.TemporaryDirectory(prefix="html2pdf_chrome_") as td:
+        out_pdf_path = os.path.join(td, f"{filename_stem}.pdf")
+        html_uri = Path(html_path).resolve().as_uri()
+        cmd = [
+            chrome_bin,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--allow-file-access-from-files",
+            "--run-all-compositor-stages-before-draw",
+            "--print-to-pdf-no-header",
+            f"--print-to-pdf={out_pdf_path}",
+            html_uri,
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=HTML_TO_PDF_TIMEOUT_SECONDS,
+        )
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"Chrome HTML->PDF failed rc={proc.returncode} err={err[:500]}")
+        if not os.path.exists(out_pdf_path):
+            raise RuntimeError("Chrome HTML->PDF conversion succeeded but PDF output not found")
+        with open(out_pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        if not pdf_bytes:
+            raise RuntimeError("Chrome converted PDF is empty")
+        return pdf_bytes
+
+
+def _convert_html_to_pdf_via_libreoffice(html_path: str, filename_stem: str = "report") -> bytes:
     """Convert HTML file to PDF via LibreOffice."""
     if not html_path or (not os.path.exists(html_path)):
         raise RuntimeError("HTML file not found for PDF conversion")
@@ -660,6 +734,25 @@ def convert_html_file_to_pdf_bytes(html_path: str, filename_stem: str = "report"
         if not pdf_bytes:
             raise RuntimeError("Converted PDF is empty")
         return pdf_bytes
+
+
+def convert_html_file_to_pdf_bytes(html_path: str, filename_stem: str = "report") -> bytes:
+    """
+    Convert HTML file to PDF with configurable engine.
+    - auto: Chrome/Chromium first, then LibreOffice fallback
+    - chrome: Chrome/Chromium only
+    - libreoffice: LibreOffice only
+    """
+    engine = HTML_PDF_ENGINE if HTML_PDF_ENGINE in ("auto", "chrome", "libreoffice") else "auto"
+    if engine == "chrome":
+        return _convert_html_to_pdf_via_chrome(html_path, filename_stem)
+    if engine == "libreoffice":
+        return _convert_html_to_pdf_via_libreoffice(html_path, filename_stem)
+    try:
+        return _convert_html_to_pdf_via_chrome(html_path, filename_stem)
+    except Exception as chrome_err:
+        logger.warning("[pdf] chrome html->pdf failed, falling back to libreoffice: %s", chrome_err)
+        return _convert_html_to_pdf_via_libreoffice(html_path, filename_stem)
 
 
 def rasterize_pdf_bytes_to_image_pdf_bytes(pdf_bytes: bytes, dpi: int = 220) -> bytes:
@@ -1211,15 +1304,23 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     th_report = outputs.get("reports", {}).get("TH", {}) or {}
     en_docx_key = str(en_report.get("docx_key") or "").strip()
     en_pdf_key = str(en_report.get("pdf_key") or "").strip()
+    en_html_key = str(en_report.get("html_key") or "").strip()
     th_docx_key = str(th_report.get("docx_key") or "").strip()
     th_pdf_key = str(th_report.get("pdf_key") or "").strip()
-    # Keep legacy "report_*_key" as primary; prefer PDF when report_format asks for it.
-    en_key = en_pdf_key or en_docx_key
-    th_key = th_pdf_key or th_docx_key
+    th_html_key = str(th_report.get("html_key") or "").strip()
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
     analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     report_format = str(job.get("report_format") or "docx").strip().lower()
-    ext = "pdf" if report_format == "pdf" else "docx"
+    ext = "pdf" if report_format == "pdf" else ("html" if report_format == "html" else "docx")
+    if report_format == "pdf":
+        en_key = en_pdf_key or en_docx_key or en_html_key
+        th_key = th_pdf_key or th_docx_key or th_html_key
+    elif report_format == "html":
+        en_key = en_html_key or en_pdf_key or en_docx_key
+        th_key = th_html_key or th_pdf_key or th_docx_key
+    else:
+        en_key = en_docx_key or en_pdf_key or en_html_key
+        th_key = th_docx_key or th_pdf_key or th_html_key
     raw_languages = job.get("languages") or ["th", "en"]
     if isinstance(raw_languages, str):
         raw_languages = [raw_languages]
@@ -1249,8 +1350,10 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "report_th_key": th_key,
         "report_en_docx_key": en_docx_key,
         "report_en_pdf_key": en_pdf_key,
+        "report_en_html_key": en_html_key,
         "report_th_docx_key": th_docx_key,
         "report_th_pdf_key": th_pdf_key,
+        "report_th_html_key": th_html_key,
         "report_th_email_sent": False,
         "report_en_email_sent": False,
         "skeleton_email_sent": False,
@@ -1954,17 +2057,17 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if not languages:
         languages = ["th", "en"]
     report_format = str(job.get("report_format") or "docx").strip().lower()
-    if report_format not in ("docx", "pdf"):
+    if report_format not in ("docx", "pdf", "html"):
         report_format = "docx"
 
-    # Operational Test must always produce PDF output.
+    # Operational Test uses dedicated layout.
+    # Keep user-selected languages/formats (e.g., EN-only, HTML-only) when provided.
     if report_style == "operation_test":
         if not languages:
             languages = ["th", "en"]
-        report_format = "pdf"
         job["languages"] = languages
-        job["report_format"] = "pdf"
-        logger.info("[report] operation_test override: force languages=%s report_format=%s", languages, report_format)
+        job["report_format"] = report_format
+        logger.info("[report] operation_test override: languages=%s report_format=%s", languages, report_format)
 
     # output prefix
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
@@ -2012,16 +2115,18 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             if force_thai_docx and report_format == "pdf":
                 logger.warning("[report] emergency_thai_docx_fallback enabled; lang=th will upload DOCX instead of PDF")
 
-            # Upload DOCX for every language so users can compare DOCX/PDF side-by-side.
+            # Upload only the requested output format.
             analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             docx_key = None
-            docx_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.docx"
-            docx_key = f"{output_prefix}/{docx_name}"
-            upload_bytes(
-                docx_key,
-                docx_bytes,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
+            wants_docx_output = (report_format == "docx") or force_thai_docx
+            if wants_docx_output:
+                docx_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.docx"
+                docx_key = f"{output_prefix}/{docx_name}"
+                upload_bytes(
+                    docx_key,
+                    docx_bytes,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
 
             # Upload HTML (when generated) for debug/preview.
             html_key = None
@@ -2030,6 +2135,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 html_name = os.path.basename(html_path)
                 html_key = f"{output_prefix}/{html_name}"
                 upload_file(html_path, html_key, "text/html; charset=utf-8")
+            if report_format == "html" and not html_key:
+                raise RuntimeError("HTML format requested but HTML generation failed")
 
             # Upload PDF when requested and not overridden by Thai fallback.
             pdf_key = None
@@ -2106,7 +2213,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             dots_key = f"jobs/output/groups/{group_id}/dots.mp4"
             skeleton_key = f"jobs/output/groups/{group_id}/skeleton.mp4"
             report_en_key = str(en_report.get("docx_key") or en_report.get("pdf_key") or "").strip()
+            report_en_key = str(report_en_key or en_report.get("html_key") or "").strip()
             report_th_key = str(th_report.get("docx_key") or th_report.get("pdf_key") or "").strip()
+            report_th_key = str(report_th_key or th_report.get("html_key") or "").strip()
             try:
                 package_info = sync_enterprise_package(
                     group_id=group_id,
@@ -2148,6 +2257,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                         th_report_links["Report TH (PDF)"] = str(payload.get("report_th_pdf_key") or "").strip()
                     if str(payload.get("report_th_docx_key") or "").strip():
                         th_report_links["Report TH (DOCX)"] = str(payload.get("report_th_docx_key") or "").strip()
+                    if str(payload.get("report_th_html_key") or "").strip():
+                        th_report_links["Report TH (HTML)"] = str(payload.get("report_th_html_key") or "").strip()
                     if not th_report_links and str(payload.get("report_th_key") or "").strip():
                         th_report_links["Report TH"] = str(payload.get("report_th_key") or "").strip()
                     sent, status = send_result_email(
@@ -2174,6 +2285,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                         en_report_links["Report EN (PDF)"] = str(payload.get("report_en_pdf_key") or "").strip()
                     if str(payload.get("report_en_docx_key") or "").strip():
                         en_report_links["Report EN (DOCX)"] = str(payload.get("report_en_docx_key") or "").strip()
+                    if str(payload.get("report_en_html_key") or "").strip():
+                        en_report_links["Report EN (HTML)"] = str(payload.get("report_en_html_key") or "").strip()
                     if not en_report_links and str(payload.get("report_en_key") or "").strip():
                         en_report_links["Report EN"] = str(payload.get("report_en_key") or "").strip()
                     sent, status = send_result_email(

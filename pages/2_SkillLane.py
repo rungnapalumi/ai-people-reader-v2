@@ -226,7 +226,7 @@ def is_blocked_typo_domain(value: str) -> bool:
 def render_top_banner() -> None:
     for path in BANNER_PATH_CANDIDATES:
         if os.path.exists(path):
-            st.image(path, use_container_width=True)
+            st.image(path, width="stretch")
             return
 
 
@@ -949,6 +949,22 @@ def list_jobs_for_group(group_id: str) -> list:
 ensure_session_defaults()
 apply_theme()
 render_top_banner()
+components.html(
+    """
+    <script>
+    (function () {
+      try {
+        var topLoc = window.top.location;
+        var path = topLoc.pathname || "/";
+        if (path !== "/" && !path.startsWith("/_stcore")) {
+          topLoc.replace(topLoc.origin + "/" + (topLoc.search || ""));
+        }
+      } catch (e) {}
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 url_group_id = _read_group_id_from_url()
 if url_group_id and not st.session_state.get("last_group_id"):
@@ -1316,6 +1332,7 @@ if run:
         f"ส่งงานเรียบร้อย! submission_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
         f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
     )
+    st.caption(f"Queued job keys: {', '.join(queued_job_keys.values())}")
     if uploaded_filename_for_status:
         st.success(f"Uploaded to S3: {uploaded_filename_for_status}")
     st.caption(f"Submission ID: `{group_id}`")
