@@ -60,6 +60,10 @@ PENDING = "jobs/pending/"
 PROCESSING = "jobs/processing/"
 FINISHED = "jobs/finished/"
 FAILED = "jobs/failed/"
+PROCESSING_STALE_MINUTES = int(os.getenv("PROCESSING_STALE_MINUTES", "20"))
+PROCESSING_RECOVERY_MAX_ITEMS = int(os.getenv("PROCESSING_RECOVERY_MAX_ITEMS", "50"))
+PROCESSING_RECOVERY_INTERVAL_SECONDS = int(os.getenv("PROCESSING_RECOVERY_INTERVAL_SECONDS", "60"))
+IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
 
 
 # -----------------------------
@@ -218,6 +222,51 @@ def list_pending(limit: int = 200) -> List[str]:
                 if len(keys) >= limit:
                     return keys
     return keys
+
+
+def count_jobs(prefix: str) -> int:
+    total = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if key.endswith(".json"):
+                total += 1
+    return total
+
+
+def recover_stale_processing_jobs(stale_minutes: int, max_items: int) -> int:
+    stale_minutes = max(1, int(stale_minutes or 1))
+    max_items = max(1, int(max_items or 1))
+    now_ts = time.time()
+    recovered = 0
+    scanned = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PROCESSING):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if not key.endswith(".json"):
+                continue
+            scanned += 1
+            last_modified = item.get("LastModified")
+            if not last_modified:
+                continue
+            age_minutes = (now_ts - float(last_modified.timestamp())) / 60.0
+            if age_minutes < float(stale_minutes):
+                continue
+            try:
+                move_job(key, PENDING)
+                recovered += 1
+                logging.warning(
+                    "[startup_recovery] moved stale processing->pending key=%s age_minutes=%.1f",
+                    key,
+                    age_minutes,
+                )
+            except Exception as e:
+                logging.warning("[startup_recovery] failed to move stale key=%s err=%s", key, e)
+            if scanned >= max_items:
+                return recovered
+    return recovered
 
 
 def claim_job(pending_key: str) -> Optional[str]:
@@ -887,8 +936,43 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
 def main_loop(poll_seconds: int = 3) -> None:
     logging.info("Worker started. Bucket=%s region=%s", AWS_BUCKET, AWS_REGION)
+    logging.info(
+        "Recovery cfg: processing_stale_minutes=%s processing_recovery_max_items=%s",
+        PROCESSING_STALE_MINUTES,
+        PROCESSING_RECOVERY_MAX_ITEMS,
+    )
+    logging.info(
+        "Loop cfg: processing_recovery_interval_seconds=%s idle_heartbeat_seconds=%s poll_interval=%ss",
+        PROCESSING_RECOVERY_INTERVAL_SECONDS,
+        IDLE_HEARTBEAT_SECONDS,
+        poll_seconds,
+    )
+    recovered = recover_stale_processing_jobs(PROCESSING_STALE_MINUTES, PROCESSING_RECOVERY_MAX_ITEMS)
+    logging.info("[startup_recovery] completed recovered=%s", recovered)
+    last_recovery_at = time.time()
+    last_heartbeat_at = 0.0
 
     while True:
+        now = time.time()
+        if (now - last_recovery_at) >= max(1, PROCESSING_RECOVERY_INTERVAL_SECONDS):
+            recovered = recover_stale_processing_jobs(PROCESSING_STALE_MINUTES, PROCESSING_RECOVERY_MAX_ITEMS)
+            logging.info("[startup_recovery] completed recovered=%s", recovered)
+            last_recovery_at = now
+        if (now - last_heartbeat_at) >= max(1, IDLE_HEARTBEAT_SECONDS):
+            try:
+                pending_count = count_jobs(PENDING)
+                processing_count = count_jobs(PROCESSING)
+            except Exception:
+                pending_count = -1
+                processing_count = -1
+            logging.info(
+                "[heartbeat] worker_alive pending=%s processing=%s poll_interval=%ss",
+                pending_count,
+                processing_count,
+                poll_seconds,
+            )
+            last_heartbeat_at = now
+
         # Scan deeper in pending queue so skeleton/dots are not starved
         # by many report jobs.
         keys = list_pending(limit=200)

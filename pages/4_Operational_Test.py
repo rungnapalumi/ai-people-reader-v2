@@ -576,6 +576,8 @@ notice = st.empty()
 
 op_group_hint = str(manual_group_id or st.session_state.get("operation_test_group_id") or read_group_id_from_url() or "").strip()
 st.markdown("### สถานะการอัปโหลด/ส่งงาน")
+if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="optest_refresh_status_top", width="content"):
+    st.rerun()
 if run and not uploaded:
     st.warning("ยังไม่ได้เลือกไฟล์วิดีโอ กรุณาเลือกไฟล์ก่อนกด Run selected functions")
 elif run and uploaded is not None:

@@ -102,11 +102,23 @@ p, label, span, div {
 
 [data-testid="stFileUploader"] section button {
   font-size: 0 !important;
+  color: #ffffff !important;
+  background: #4a4038 !important;
+  border: 1px solid var(--border) !important;
 }
 
 [data-testid="stFileUploader"] section button::after {
   content: "Browse File";
   font-size: 1.1rem;
+  color: #ffffff !important;
+}
+
+[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"],
+[data-testid="stFileUploader"] small,
+[data-testid="stFileUploader"] span,
+[data-testid="stFileUploader"] label,
+[data-testid="stFileUploader"] div {
+  color: #ffffff !important;
 }
 
 .stButton > button,
@@ -661,8 +673,7 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                                 found["report_en_html"] = en_html
                             if th_html:
                                 found["report_th_html"] = th_html
-                            if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
-                                return found
+                            # Keep scanning to also collect HTML/PDF variants when available.
                         
                         # If no outputs structure, try to construct paths from output_prefix
                         output_prefix = job_data.get("output_prefix", "")
@@ -681,8 +692,7 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                                 found["report_en_html"] = scanned["report_en_html"]
                             if scanned.get("report_th_html"):
                                 found["report_th_html"] = scanned["report_th_html"]
-                            if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
-                                return found
+                            # Keep scanning to also collect HTML/PDF variants when available.
             
     except Exception as e:
         # Silent fail - don't show error to customers
@@ -707,8 +717,7 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
             found["report_en_html"] = scanned["report_en_html"]
         if scanned.get("report_th_html") and not found.get("report_th_html"):
             found["report_th_html"] = scanned["report_th_html"]
-        if (found.get("report_en_docx") and found.get("report_th_docx")) or (found.get("report_en_pdf") and found.get("report_th_pdf")):
-            break
+        # Keep scanning both prefixes to collect all report variants.
 
     return found
 
@@ -1068,6 +1077,8 @@ if direct_ready and (not upload_done) and (not manual_direct_done):
 
 # Always show visible status so users know current step.
 st.markdown("### สถานะการอัปโหลด/ส่งงาน")
+if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="refresh_status_top", width="content"):
+    st.rerun()
 if direct_ready and not upload_done and not manual_direct_done:
     pass
 elif upload_done or manual_direct_done:
@@ -1470,6 +1481,10 @@ if group_id:
         outputs["report_en_pdf"] = report_outputs["report_en_pdf"]
     if report_outputs.get("report_th_pdf"):
         outputs["report_th_pdf"] = report_outputs["report_th_pdf"]
+    if report_outputs.get("report_en_html"):
+        outputs["report_en_html"] = report_outputs["report_en_html"]
+    if report_outputs.get("report_th_html"):
+        outputs["report_th_html"] = report_outputs["report_th_html"]
 else:
     if has_identity_input and not identity_verified:
         st.caption("กรุณากรอกอีเมลให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
@@ -1541,41 +1556,30 @@ with c1:
 
 with c2:
     st.markdown("### รายงาน")
-    en_pdf_candidate = outputs.get("report_en_pdf", "")
-    en_docx_candidate = outputs.get("report_en_docx", "")
-    th_pdf_candidate = outputs.get("report_th_pdf", "")
-    th_docx_candidate = outputs.get("report_th_docx", "")
-
-    # Prefer a format that actually exists in S3.
-    en_pdf_ready = bool(en_pdf_candidate) and s3_key_exists(en_pdf_candidate)
-    en_docx_ready = bool(en_docx_candidate) and s3_key_exists(en_docx_candidate)
-    th_pdf_ready = bool(th_pdf_candidate) and s3_key_exists(th_pdf_candidate)
-    th_docx_ready = bool(th_docx_candidate) and s3_key_exists(th_docx_candidate)
-
-    en_key = en_pdf_candidate if en_pdf_ready else (en_docx_candidate if en_docx_ready else (en_pdf_candidate or en_docx_candidate))
-    th_key = th_pdf_candidate if th_pdf_ready else (th_docx_candidate if th_docx_ready else (th_pdf_candidate or th_docx_candidate))
-    en_name = "report_en.pdf" if en_pdf_ready else "report_en.docx"
-    th_name = "report_th.pdf" if th_pdf_ready else "report_th.docx"
-    en_label = "PDF" if en_pdf_ready else ("DOCX" if en_docx_ready else "PDF/DOCX")
-    th_label = "PDF" if th_pdf_ready else ("DOCX" if th_docx_ready else "PDF/DOCX")
+    en_pdf_key = str(outputs.get("report_en_pdf", "") or "").strip()
+    en_docx_key = str(outputs.get("report_en_docx", "") or "").strip()
+    en_html_key = str(outputs.get("report_en_html", "") or "").strip()
+    th_pdf_key = str(outputs.get("report_th_pdf", "") or "").strip()
+    th_docx_key = str(outputs.get("report_th_docx", "") or "").strip()
+    th_html_key = str(outputs.get("report_th_html", "") or "").strip()
 
     st.markdown("**ภาษาอังกฤษ**")
-    download_block(f"รายงาน EN ({en_label})", en_key, en_name)
+    download_block("รายงาน EN (DOCX)", en_docx_key, "report_en.docx")
+    download_block("รายงาน EN (HTML)", en_html_key, "report_en.html")
+    if en_pdf_key:
+        download_block("รายงาน EN (PDF)", en_pdf_key, "report_en.pdf")
 
     st.markdown("**ภาษาไทย**")
-    download_block(f"รายงาน TH ({th_label})", th_key, th_name)
+    download_block("รายงาน TH (DOCX)", th_docx_key, "report_th.docx")
+    download_block("รายงาน TH (HTML)", th_html_key, "report_th.html")
+    if th_pdf_key:
+        download_block("รายงาน TH (PDF)", th_pdf_key, "report_th.pdf")
 
-    st.markdown("**HTML (Debug/Preview)**")
-    en_html_key = str(report_outputs.get("report_en_html") or "").strip()
-    th_html_key = str(report_outputs.get("report_th_html") or "").strip()
-    if en_html_key:
-        download_block("รายงาน EN (HTML)", en_html_key, "report_en.html")
-    else:
-        st.caption("EN HTML: ยังไม่มี (จะมีเมื่อสร้างรายงานแบบ PDF)")
-    if th_html_key:
-        download_block("รายงาน TH (HTML)", th_html_key, "report_th.html")
-    else:
-        st.caption("TH HTML: ยังไม่มี (จะมีเมื่อสร้างรายงานแบบ PDF)")
+    # Primary report ready state (for progress/status + quick download)
+    en_key = en_docx_key if (en_docx_key and s3_key_exists(en_docx_key)) else (en_pdf_key if en_pdf_key else en_docx_key)
+    th_key = th_docx_key if (th_docx_key and s3_key_exists(th_docx_key)) else (th_pdf_key if th_pdf_key else th_docx_key)
+    en_name = "report_en.docx" if (en_docx_key and s3_key_exists(en_docx_key)) else ("report_en.pdf" if en_pdf_key else "report_en.docx")
+    th_name = "report_th.docx" if (th_docx_key and s3_key_exists(th_docx_key)) else ("report_th.pdf" if th_pdf_key else "report_th.docx")
 
 videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("dots_video", "")) and s3_key_exists(outputs.get("skeleton_video", ""))
 dots_ready = bool(outputs.get("dots_video")) and s3_key_exists(outputs.get("dots_video", ""))

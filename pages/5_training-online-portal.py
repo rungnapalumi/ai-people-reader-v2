@@ -102,11 +102,23 @@ p, label, span, div {
 
 [data-testid="stFileUploader"] section button {
   font-size: 0 !important;
+  color: #ffffff !important;
+  background: #4a4038 !important;
+  border: 1px solid var(--border) !important;
 }
 
 [data-testid="stFileUploader"] section button::after {
   content: "Browse File";
   font-size: 1.1rem;
+  color: #ffffff !important;
+}
+
+[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"],
+[data-testid="stFileUploader"] small,
+[data-testid="stFileUploader"] span,
+[data-testid="stFileUploader"] label,
+[data-testid="stFileUploader"] div {
+  color: #ffffff !important;
 }
 
 .stButton > button,
@@ -912,6 +924,8 @@ st.caption(SUPPORT_CONTACT_TEXT)
 
 last_group_hint = str(st.session_state.get("last_group_id") or url_group_id or "").strip()
 st.markdown("### สถานะการอัปโหลด/ส่งงาน")
+if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="training_portal_refresh_status_top", width="content"):
+    st.rerun()
 if run and not uploaded:
     st.warning("ยังไม่ได้เลือกไฟล์วิดีโอ กรุณาเลือกไฟล์ก่อนกดเริ่มวิเคราะห์")
 elif run and uploaded is not None:
