@@ -1310,7 +1310,7 @@ def build_docx_report(
         return s
 
     def _square_bullet_text(text: str) -> str:
-        return f"▪ {_strip_bullet(text)}"
+        return f"• {_strip_bullet(text)}"
 
     def _apply_bullet_layout(paragraph) -> None:
         if paragraph is None:
@@ -2453,19 +2453,19 @@ def build_pdf_report(
         if is_operation_test:
             if is_thai:
                 write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
-                write_paragraph_block(f"▪ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block(f"▪ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.upright_pct, metric='uprightness')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block(f"▪ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.stance_stability, metric='stance')}",
                     LEVEL_STYLE,
@@ -2473,19 +2473,19 @@ def build_pdf_report(
                 )
             else:
                 write_paragraph_block("1. First impression", SECTION_STYLE, extra_gap=0)
-                write_paragraph_block("▪ Eye Contact", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Eye Contact", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block("▪ Uprightness", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Uprightness", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}",
                     LEVEL_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block("▪ Stance", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Stance", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}",
                     LEVEL_STYLE,
@@ -2497,11 +2497,11 @@ def build_pdf_report(
             eye_level = _first_impression_level_th(fi.eye_contact_pct, "eye_contact") if is_thai else _first_impression_level(fi.eye_contact_pct, "eye_contact")
             up_level = _first_impression_level_th(fi.upright_pct, "uprightness") if is_thai else _first_impression_level(fi.upright_pct, "uprightness")
             st_level = _first_impression_level_th(fi.stance_stability, "stance") if is_thai else _first_impression_level(fi.stance_stability, "stance")
-            write_line(f"▪ {eye_label}" if is_thai else "▪ Eye Contact", gap=14)
+            write_line(f"• {eye_label}" if is_thai else "• Eye Contact", gap=14)
             write_line(f"{'ระดับ' if is_thai else 'Scale'}: {eye_level}", bold=True, gap=14)
-            write_line(f"▪ {upright_label}" if is_thai else "▪ Uprightness", gap=14)
+            write_line(f"• {upright_label}" if is_thai else "• Uprightness", gap=14)
             write_line(f"{'ระดับ' if is_thai else 'Scale'}: {up_level}", bold=True, gap=14)
-            write_line(f"▪ {stance_label}" if is_thai else "▪ Stance", gap=14)
+            write_line(f"• {stance_label}" if is_thai else "• Stance", gap=14)
             write_line(f"{'ระดับ' if is_thai else 'Scale'}: {st_level}", bold=True, gap=14)
             write_line("หมายเหตุ" if is_thai else "Remark", bold=True, gap=14)
             remark_text = (
@@ -2533,7 +2533,7 @@ def build_pdf_report(
             y = top_content_y
 
             write_paragraph_block("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", SECTION_STYLE, extra_gap=0)
-            write_bullet("ความเป็นกันเอง", indent=28, space_after=6, bullet_text="▪")
+            write_bullet("ความเป็นกันเอง", indent=28, space_after=6, bullet_text="•")
 
             # Keep section 2 contiguous before section 3.
             write_paragraph_block("", SUBITEM_STYLE, extra_gap=0)
@@ -2542,19 +2542,19 @@ def build_pdf_report(
             confidence_scale = _scale_th(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_th(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_bullet("ความเข้าถึงได้", indent=28, space_after=6, bullet_text="▪")
-            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=6, bullet_text="▪")
+            write_bullet("ความเข้าถึงได้", indent=28, space_after=6, bullet_text="•")
+            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=6, bullet_text="•")
             write_paragraph_block(f"ระดับ: {engaging_scale}", LEVEL_BULLET_STYLE, extra_gap=4)
 
             write_paragraph_block("3. ความมั่นใจ:", SECTION_STYLE, extra_gap=0)
-            write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=4, bullet_text="▪")
-            write_bullet("ความมีสมาธิ", indent=28, space_after=4, bullet_text="▪")
-            write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=4, bullet_text="•")
+            write_bullet("ความมีสมาธิ", indent=28, space_after=4, bullet_text="•")
+            write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=4, bullet_text="•")
             write_paragraph_block(f"ระดับ: {confidence_scale}", LEVEL_BULLET_STYLE, extra_gap=2)
 
             write_paragraph_block("4. ความเป็นผู้นำและความดูมีอำนาจ:", SECTION_STYLE, extra_gap=0)
-            write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=4, bullet_text="▪")
-            write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=4, bullet_text="•")
+            write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=4, bullet_text="•")
             write_paragraph_block(f"ระดับ: {authority_scale}", LEVEL_BULLET_STYLE, extra_gap=2)
         else:
             if thai_font_fallback and lang_name == "th":
@@ -2576,7 +2576,7 @@ def build_pdf_report(
                 gap=en_section2_item_gap,
             )
             write_line("2. Engaging & Connecting:", size=12, bold=True, gap=en_section_gap)
-            write_line_indented("▪ Approachability.", indent=28, gap=en_section2_item_gap)
+            write_line_indented("• Approachability.", indent=28, gap=en_section2_item_gap)
 
             # Keep section 2 on page 1; do not force a page break after the first bullet.
             write_line("", gap=2)
@@ -2585,8 +2585,8 @@ def build_pdf_report(
             confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line_indented("▪ Relatability.", indent=28, gap=en_section2_item_gap)
-            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=en_section2_item_gap)
+            write_line_indented("• Relatability.", indent=28, gap=en_section2_item_gap)
+            write_line_indented("• Engagement, connect and build instant rapport with team.", indent=28, gap=en_section2_item_gap)
             write_line_indented(f"Scale: {engaging_scale}", indent=30, bold=True, gap=en_section2_scale_gap)  # 30 = match section 1
 
             # Requested EN layout: page 1 ends after section 2, sections 3-4 on page 2.
@@ -2595,14 +2595,14 @@ def build_pdf_report(
             y = top_content_y
 
             write_line("3. Confidence:", size=12, bold=True, gap=en_section_gap)
-            write_line_indented("▪ Optimistic Presence.", indent=28, gap=en_section34_item_gap)
-            write_line_indented("▪ Focus.", indent=28, gap=en_section34_item_gap)
-            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("• Optimistic Presence.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("• Focus.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("• Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_section34_item_gap)
             write_line_indented(f"Scale: {confidence_scale}", indent=30, bold=True, gap=en_section34_scale_gap)  # 30 = match section 1
 
             write_line("4. Authority:", size=12, bold=True, gap=en_section_gap)
-            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
-            write_line_indented("▪ Pressing for action.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("• Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("• Pressing for action.", indent=28, gap=en_section34_item_gap)
             write_line_indented(f"Scale: {authority_scale}", indent=30, bold=True, gap=en_section34_scale_gap)  # 30 = match section 1
         append_graph_pages_for_operation_test()
         c.save()

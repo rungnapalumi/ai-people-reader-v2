@@ -98,6 +98,7 @@ EMERGENCY_THAI_DOCX_FALLBACK = str(
 THAI_PDF_VIA_DOCX = str(os.getenv("THAI_PDF_VIA_DOCX", "true")).strip().lower() in ("1", "true", "yes", "on")
 PDF_VIA_DOCX_FOR_ALL_LANGS = str(os.getenv("PDF_VIA_DOCX_FOR_ALL_LANGS", "true")).strip().lower() in ("1", "true", "yes", "on")
 DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("DOCX_TO_PDF_TIMEOUT_SECONDS", "180"))
+USE_DOCX2PDF_FALLBACK = str(os.getenv("USE_DOCX2PDF_FALLBACK", "false")).strip().lower() in ("1", "true", "yes", "on")
 PDF_VIA_HTML_FIRST = str(os.getenv("PDF_VIA_HTML_FIRST", "true")).strip().lower() in ("1", "true", "yes", "on")
 HTML_PDF_ENGINE = str(os.getenv("HTML_PDF_ENGINE", "auto")).strip().lower()  # auto|chrome|libreoffice
 HTML_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("HTML_TO_PDF_TIMEOUT_SECONDS", str(DOCX_TO_PDF_TIMEOUT_SECONDS)))
@@ -489,43 +490,81 @@ def _find_chrome_bin() -> str:
     return ""
 
 
-def convert_docx_bytes_to_pdf_bytes(docx_bytes: bytes, filename_stem: str = "report") -> bytes:
-    if not docx_bytes:
-        raise RuntimeError("DOCX bytes are empty")
+def _convert_docx_to_pdf_via_libreoffice(
+    docx_path: str, pdf_path: str, timeout: int = DOCX_TO_PDF_TIMEOUT_SECONDS
+) -> None:
+    """Convert DOCX to PDF using LibreOffice headless."""
     lo_bin = _find_libreoffice_bin()
     if not lo_bin:
         raise RuntimeError("LibreOffice binary not found (expected libreoffice/soffice)")
+    out_dir = os.path.dirname(pdf_path)
+    cmd = [
+        lo_bin,
+        "--headless",
+        "--nologo",
+        "--nofirststartwizard",
+        "--convert-to",
+        "pdf:writer_pdf_Export",
+        "--outdir",
+        out_dir,
+        os.path.abspath(docx_path),
+    ]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, timeout=timeout
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"LibreOffice failed (rc={proc.returncode}): {err[:500]}")
+    stem = os.path.splitext(os.path.basename(docx_path))[0]
+    expected = os.path.join(out_dir, stem + ".pdf")
+    actual = expected if os.path.exists(expected) else None
+    if not actual:
+        for f in os.listdir(out_dir):
+            if f.lower().endswith(".pdf"):
+                actual = os.path.join(out_dir, f)
+                break
+    if not actual or not os.path.exists(actual):
+        raise RuntimeError("LibreOffice succeeded but PDF output not found")
+    if actual != pdf_path:
+        os.rename(actual, pdf_path)
+
+
+def _convert_docx_to_pdf_via_docx2pdf(docx_path: str, pdf_path: str) -> None:
+    """Convert DOCX to PDF using docx2pdf (Windows only, requires Microsoft Word)."""
+    try:
+        from docx2pdf import convert as docx2pdf_convert
+    except ImportError:
+        raise RuntimeError("docx2pdf not installed. Run: pip install docx2pdf")
+    docx2pdf_convert(os.path.abspath(docx_path), os.path.abspath(pdf_path))
+
+
+def convert_docx_bytes_to_pdf_bytes(docx_bytes: bytes, filename_stem: str = "report") -> bytes:
+    if not docx_bytes:
+        raise RuntimeError("DOCX bytes are empty")
 
     with tempfile.TemporaryDirectory(prefix="docx2pdf_") as td:
         input_path = os.path.join(td, f"{filename_stem}.docx")
-        expected_pdf_path = os.path.join(td, f"{filename_stem}.pdf")
+        pdf_path = os.path.join(td, f"{filename_stem}.pdf")
         with open(input_path, "wb") as f:
             f.write(docx_bytes)
 
-        cmd = [
-            lo_bin,
-            "--headless",
-            "--nologo",
-            "--nofirststartwizard",
-            "--convert-to",
-            "pdf:writer_pdf_Export",
-            "--outdir",
-            td,
-            input_path,
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=DOCX_TO_PDF_TIMEOUT_SECONDS)
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or "").strip()
-            raise RuntimeError(f"LibreOffice convert failed rc={proc.returncode} err={err[:500]}")
+        # Try LibreOffice first (cross-platform).
+        try:
+            _convert_docx_to_pdf_via_libreoffice(
+                input_path, pdf_path, timeout=DOCX_TO_PDF_TIMEOUT_SECONDS
+            )
+        except Exception as e:
+            if USE_DOCX2PDF_FALLBACK:
+                # Fallback: docx2pdf (Windows + Word).
+                try:
+                    _convert_docx_to_pdf_via_docx2pdf(input_path, pdf_path)
+                except Exception as e2:
+                    raise RuntimeError(f"LibreOffice failed: {e} | docx2pdf fallback failed: {e2}")
+            else:
+                raise
 
-        pdf_path = expected_pdf_path
         if not os.path.exists(pdf_path):
-            # Some platforms output lowercase/variant names; scan folder as fallback.
-            cands = [p for p in os.listdir(td) if p.lower().endswith(".pdf")]
-            if cands:
-                pdf_path = os.path.join(td, cands[0])
-        if not os.path.exists(pdf_path):
-            raise RuntimeError("LibreOffice conversion succeeded but PDF output not found")
+            raise RuntimeError("PDF conversion succeeded but output not found")
 
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
@@ -1189,6 +1228,12 @@ def send_result_email(
     video_keys: Dict[str, str],
     report_docx_keys: Dict[str, str],
 ) -> Tuple[bool, str]:
+    # Email policy: only send PDF reports (exclude DOCX and HTML).
+    report_pdf_keys = {
+        label: key
+        for label, key in (report_docx_keys or {}).items()
+        if key and str(key).strip().lower().endswith(".pdf")
+    }
     recipients = resolve_notification_recipients(
         str(job.get("notify_email") or ""),
         str(job.get("report_style") or ""),
@@ -1204,7 +1249,7 @@ def send_result_email(
     group_id = str(job.get("group_id") or "").strip()
     subject = f"AI People Reader - Results Ready ({group_id or job_id})"
     has_video_links = any(bool(v) for v in video_keys.values())
-    report_labels = [str(label) for label, key in report_docx_keys.items() if key]
+    report_labels = [str(label) for label, key in report_pdf_keys.items() if key]
     has_report_links = bool(report_labels)
     lines = [
         f"Job ID: {job_id}",
@@ -1237,9 +1282,9 @@ def send_result_email(
             vname = _video_filename_from_label(label)
             lines.append(f"- {label}: {presigned_get_url(key, filename=vname)}")
 
-    # Fallback links for report DOCX in case attachment cannot be included.
+    # Fallback links for report PDF in case attachment cannot be included.
     report_link_lines: List[str] = []
-    for label, key in report_docx_keys.items():
+    for label, key in report_pdf_keys.items():
         if key:
             if str(key).lower().endswith(".pdf"):
                 rname = "report_en.pdf" if "EN" in label else "report_th.pdf"
@@ -1268,7 +1313,7 @@ def send_result_email(
             url = presigned_get_url(key, filename=vname)
             html_video_rows.append(f"<li><a href=\"{escape(url)}\">{escape(label)}</a></li>")
     html_report_rows = []
-    for label, key in report_docx_keys.items():
+    for label, key in report_pdf_keys.items():
         if key:
             if str(key).lower().endswith(".pdf"):
                 rname = "report_en.pdf" if "EN" in label else "report_th.pdf"
@@ -1303,8 +1348,8 @@ def send_result_email(
         alt.attach(MIMEText(body_text, "plain", "utf-8"))
         alt.attach(MIMEText(body_html, "html", "utf-8"))
         msg.attach(alt)
-        # Attach report files (DOCX/PDF) if available and not too large.
-        for label, key in report_docx_keys.items():
+        # Attach report PDF files only (exclude DOCX/HTML).
+        for label, key in report_pdf_keys.items():
             if not key:
                 continue
             try:
@@ -1703,51 +1748,53 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             # Stage 1: TH report first.
             if (not report_th_sent) and email_payload_report_th_ready(payload):
-                sent, status = send_result_email(
-                    {
-                        "job_id": job_id,
-                        "group_id": payload.get("group_id", ""),
-                        "notify_email": notify_email,
-                        "report_style": report_style,
-                    },
-                    (
-                        {"Uploaded video (MP4)": payload.get("input_video_key", "")}
-                        if is_operation_test
-                        else {}
-                    ),
-                    {
-                        "Report TH": payload.get("report_th_key", ""),
-                    },
-                )
-                statuses.append(f"report_th:{status}")
-                if sent:
-                    report_th_sent = True
-                    payload["report_th_email_sent"] = True
-                    sent_any = True
+                th_pdf = str(payload.get("report_th_pdf_key") or payload.get("report_th_key") or "").strip()
+                th_links = {"Report TH (PDF)": th_pdf} if (th_pdf and th_pdf.lower().endswith(".pdf")) else {}
+                if th_links:
+                    sent, status = send_result_email(
+                        {
+                            "job_id": job_id,
+                            "group_id": payload.get("group_id", ""),
+                            "notify_email": notify_email,
+                            "report_style": report_style,
+                        },
+                        (
+                            {"Uploaded video (MP4)": payload.get("input_video_key", "")}
+                            if is_operation_test
+                            else {}
+                        ),
+                        th_links,
+                    )
+                    statuses.append(f"report_th:{status}")
+                    if sent:
+                        report_th_sent = True
+                        payload["report_th_email_sent"] = True
+                        sent_any = True
 
             # Stage 2: EN report later.
             if (not report_en_sent) and email_payload_report_en_ready(payload):
-                sent, status = send_result_email(
-                    {
-                        "job_id": job_id,
-                        "group_id": payload.get("group_id", ""),
-                        "notify_email": notify_email,
-                        "report_style": report_style,
-                    },
-                    (
-                        {"Uploaded video (MP4)": payload.get("input_video_key", "")}
-                        if is_operation_test
-                        else {}
-                    ),
-                    {
-                        "Report EN": payload.get("report_en_key", ""),
-                    },
-                )
-                statuses.append(f"report_en:{status}")
-                if sent:
-                    report_en_sent = True
-                    payload["report_en_email_sent"] = True
-                    sent_any = True
+                en_pdf = str(payload.get("report_en_pdf_key") or payload.get("report_en_key") or "").strip()
+                en_links = {"Report EN (PDF)": en_pdf} if (en_pdf and en_pdf.lower().endswith(".pdf")) else {}
+                if en_links:
+                    sent, status = send_result_email(
+                        {
+                            "job_id": job_id,
+                            "group_id": payload.get("group_id", ""),
+                            "notify_email": notify_email,
+                            "report_style": report_style,
+                        },
+                        (
+                            {"Uploaded video (MP4)": payload.get("input_video_key", "")}
+                            if is_operation_test
+                            else {}
+                        ),
+                        en_links,
+                    )
+                    statuses.append(f"report_en:{status}")
+                    if sent:
+                        report_en_sent = True
+                        payload["report_en_email_sent"] = True
+                        sent_any = True
 
             # Video emails are handled in src/worker.py as soon as each mode finishes.
             skeleton_sent = True
