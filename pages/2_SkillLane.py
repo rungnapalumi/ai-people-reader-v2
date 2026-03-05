@@ -577,6 +577,36 @@ def enqueue_report_only_job(
     }
     return enqueue_legacy_job(job_report)
 
+
+def enqueue_video_only_job(
+    group_id: str,
+    mode: str,
+    notify_email: str = "",
+    employee_id: str = "",
+    enterprise_folder: str = "SkillLane",
+) -> str:
+    mode_norm = str(mode or "").strip().lower()
+    if mode_norm not in ("dots", "skeleton"):
+        raise ValueError("mode must be 'dots' or 'skeleton'")
+    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+    if not s3_key_exists(input_key):
+        raise RuntimeError(f"Input video not found for group_id={group_id}")
+    output_key = f"{JOBS_OUTPUT_PREFIX}groups/{group_id}/{mode_norm}.mp4"
+    job = {
+        "job_id": new_job_id(),
+        "group_id": group_id,
+        "created_at": utc_now_iso(),
+        "status": "pending",
+        "mode": mode_norm,
+        "input_key": input_key,
+        "output_key": output_key,
+        "notify_email": (notify_email or "").strip(),
+        "enterprise_folder": (enterprise_folder or "").strip() or "SkillLane",
+        "employee_id": (employee_id or "").strip(),
+        "employee_email": (notify_email or "").strip(),
+    }
+    return enqueue_legacy_job(job)
+
 def get_report_style_for_group(group_id: str) -> str:
     """Best-effort lookup of previously requested report_style for this group."""
     try:
@@ -1090,6 +1120,77 @@ else:
         st.caption("ยังไม่เริ่มอัปโหลด กรุณากดปุ่ม 'เลือกวิดีโอและอัปโหลด'")
     else:
         st.caption("โหมด local: ใช้อัปโหลดแบบสำรองด้านล่าง แล้วกด 'เริ่มวิเคราะห์'")
+
+# Quick download/status block at top so users do not need to scroll to the bottom.
+quick_group_id = str(last_group_hint or _read_group_id_from_url() or "").strip()
+if quick_group_id:
+    st.caption(f"งานล่าสุด: `{quick_group_id}` (สามารถเลื่อนลงไปดูผลลัพธ์/ดาวน์โหลดได้)")
+    quick_outputs = build_output_keys(quick_group_id)
+    quick_report_outputs = get_report_outputs_from_job(quick_group_id)
+    for _k in (
+        "report_en_docx",
+        "report_th_docx",
+        "report_en_pdf",
+        "report_th_pdf",
+        "report_en_html",
+        "report_th_html",
+    ):
+        if quick_report_outputs.get(_k):
+            quick_outputs[_k] = str(quick_report_outputs.get(_k) or "").strip()
+
+    quick_items = [
+        ("รายงาน TH (DOCX)", quick_outputs.get("report_th_docx", ""), "report_th.docx"),
+        ("รายงาน EN (DOCX)", quick_outputs.get("report_en_docx", ""), "report_en.docx"),
+        ("รายงาน TH (HTML)", quick_outputs.get("report_th_html", ""), "report_th.html"),
+        ("รายงาน EN (HTML)", quick_outputs.get("report_en_html", ""), "report_en.html"),
+        ("วิดีโอ Dots", quick_outputs.get("dots_video", ""), "dots.mp4"),
+        ("วิดีโอ Skeleton", quick_outputs.get("skeleton_video", ""), "skeleton.mp4"),
+    ]
+    ready_quick = [(label, key, fn) for (label, key, fn) in quick_items if key and s3_key_exists(key)]
+    if ready_quick:
+        st.markdown("#### พร้อมดาวน์โหลดตอนนี้ (งานล่าสุด)")
+        for label, key, fn in ready_quick:
+            st.link_button(f"ดาวน์โหลด {label}", presigned_get_url(key, expires=3600, filename=fn), width="stretch")
+
+    # If report already exists but video outputs are missing and no active video jobs,
+    # allow one-click requeue for missing dots/skeleton from the latest group.
+    th_report_ready_quick = bool(quick_outputs.get("report_th_docx")) and s3_key_exists(str(quick_outputs.get("report_th_docx") or ""))
+    dots_ready_quick = bool(quick_outputs.get("dots_video")) and s3_key_exists(str(quick_outputs.get("dots_video") or ""))
+    skel_ready_quick = bool(quick_outputs.get("skeleton_video")) and s3_key_exists(str(quick_outputs.get("skeleton_video") or ""))
+    if th_report_ready_quick and (not dots_ready_quick or not skel_ready_quick):
+        quick_rows = list_jobs_for_group(quick_group_id)
+        dots_active = any(str(r.get("mode") or "").strip().lower() == "dots" and str(r.get("status") or "").strip().lower() in ("pending", "processing") for r in quick_rows)
+        skel_active = any(str(r.get("mode") or "").strip().lower() == "skeleton" and str(r.get("status") or "").strip().lower() in ("pending", "processing") for r in quick_rows)
+        st.warning("รายงานพร้อมแล้ว แต่ Dots/Skeleton ยังไม่ครบ")
+        c_requeue1, c_requeue2 = st.columns(2)
+        with c_requeue1:
+            if (not dots_ready_quick) and (not dots_active):
+                if st.button("ส่งงาน Dots ใหม่", key=f"requeue_dots_top_{quick_group_id}", width="stretch"):
+                    try:
+                        k = enqueue_video_only_job(
+                            group_id=quick_group_id,
+                            mode="dots",
+                            notify_email=notify_email,
+                            employee_id=employee_id,
+                            enterprise_folder=enterprise_folder,
+                        )
+                        st.success(f"ส่งงาน Dots ใหม่แล้ว: {k}")
+                    except Exception as e:
+                        st.error(f"ส่งงาน Dots ใหม่ไม่สำเร็จ: {format_submit_error_message(e)}")
+        with c_requeue2:
+            if (not skel_ready_quick) and (not skel_active):
+                if st.button("ส่งงาน Skeleton ใหม่", key=f"requeue_skeleton_top_{quick_group_id}", width="stretch"):
+                    try:
+                        k = enqueue_video_only_job(
+                            group_id=quick_group_id,
+                            mode="skeleton",
+                            notify_email=notify_email,
+                            employee_id=employee_id,
+                            enterprise_folder=enterprise_folder,
+                        )
+                        st.success(f"ส่งงาน Skeleton ใหม่แล้ว: {k}")
+                    except Exception as e:
+                        st.error(f"ส่งงาน Skeleton ใหม่ไม่สำเร็จ: {format_submit_error_message(e)}")
 
 # -------------------------
 # Direct S3 upload (browser -> S3, skips server for speed)
