@@ -64,6 +64,7 @@ PROCESSING_STALE_MINUTES = int(os.getenv("PROCESSING_STALE_MINUTES", "20"))
 PROCESSING_RECOVERY_MAX_ITEMS = int(os.getenv("PROCESSING_RECOVERY_MAX_ITEMS", "50"))
 PROCESSING_RECOVERY_INTERVAL_SECONDS = int(os.getenv("PROCESSING_RECOVERY_INTERVAL_SECONDS", "60"))
 IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
+MAX_VIDEO_JOB_RETRIES = int(os.getenv("MAX_VIDEO_JOB_RETRIES", "2"))
 
 
 # -----------------------------
@@ -947,6 +948,7 @@ def main_loop(poll_seconds: int = 3) -> None:
         IDLE_HEARTBEAT_SECONDS,
         poll_seconds,
     )
+    logging.info("Retry cfg: max_video_job_retries=%s", MAX_VIDEO_JOB_RETRIES)
     recovered = recover_stale_processing_jobs(PROCESSING_STALE_MINUTES, PROCESSING_RECOVERY_MAX_ITEMS)
     logging.info("[startup_recovery] completed recovered=%s", recovered)
     last_recovery_at = time.time()
@@ -1051,6 +1053,24 @@ def main_loop(poll_seconds: int = 3) -> None:
                 )
                 try:
                     job = s3_read_json(processing_key)
+                    current_mode = str(job.get("mode") or "").strip().lower()
+                    retry_count = int(job.get("retry_count") or 0)
+                    if current_mode in ("dots", "skeleton") and retry_count < max(0, MAX_VIDEO_JOB_RETRIES):
+                        next_retry = retry_count + 1
+                        job["status"] = "pending"
+                        job["retry_count"] = next_retry
+                        job["message"] = str(e)
+                        s3_write_json(processing_key, job)
+                        move_job(processing_key, PENDING)
+                        logging.warning(
+                            "Requeued transient video job job_id=%s group_id=%s mode=%s retry=%s/%s",
+                            job.get("job_id"),
+                            job.get("group_id"),
+                            current_mode,
+                            next_retry,
+                            MAX_VIDEO_JOB_RETRIES,
+                        )
+                        continue
                     job["status"] = "failed"
                     job["message"] = str(e)
                     s3_write_json(processing_key, job)

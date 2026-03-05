@@ -1207,41 +1207,19 @@ with c1:
 
 with c2:
     st.markdown("### รายงาน")
-    en_pdf_candidate = outputs.get("report_en_pdf", "")
-    en_docx_candidate = outputs.get("report_en_docx", "")
-    th_pdf_candidate = outputs.get("report_th_pdf", "")
-    th_docx_candidate = outputs.get("report_th_docx", "")
-
-    # Prefer a format that actually exists in S3.
-    en_pdf_ready = bool(en_pdf_candidate) and s3_key_exists(en_pdf_candidate)
-    en_docx_ready = bool(en_docx_candidate) and s3_key_exists(en_docx_candidate)
-    th_pdf_ready = bool(th_pdf_candidate) and s3_key_exists(th_pdf_candidate)
-    th_docx_ready = bool(th_docx_candidate) and s3_key_exists(th_docx_candidate)
-
-    en_key = en_pdf_candidate if en_pdf_ready else (en_docx_candidate if en_docx_ready else (en_pdf_candidate or en_docx_candidate))
-    th_key = th_pdf_candidate if th_pdf_ready else (th_docx_candidate if th_docx_ready else (th_pdf_candidate or th_docx_candidate))
-    en_name = "report_en.pdf" if en_pdf_ready else "report_en.docx"
-    th_name = "report_th.pdf" if th_pdf_ready else "report_th.docx"
-    en_label = "PDF" if en_pdf_ready else ("DOCX" if en_docx_ready else "PDF/DOCX")
-    th_label = "PDF" if th_pdf_ready else ("DOCX" if th_docx_ready else "PDF/DOCX")
+    en_pdf_key = str(outputs.get("report_en_pdf", "") or "").strip()
+    th_pdf_key = str(outputs.get("report_th_pdf", "") or "").strip()
 
     st.markdown("**ภาษาอังกฤษ**")
-    download_block(f"รายงาน EN ({en_label})", en_key, en_name)
+    download_block("รายงาน EN (PDF)", en_pdf_key, "report_en.pdf")
 
     st.markdown("**ภาษาไทย**")
-    download_block(f"รายงาน TH ({th_label})", th_key, th_name)
+    download_block("รายงาน TH (PDF)", th_pdf_key, "report_th.pdf")
 
-    st.markdown("**HTML (Debug/Preview)**")
-    en_html_key = str(report_outputs.get("report_en_html") or "").strip()
-    th_html_key = str(report_outputs.get("report_th_html") or "").strip()
-    if en_html_key:
-        download_block("รายงาน EN (HTML)", en_html_key, "report_en.html")
-    else:
-        st.caption("EN HTML: ยังไม่มี (จะมีเมื่อสร้างรายงานแบบ PDF)")
-    if th_html_key:
-        download_block("รายงาน TH (HTML)", th_html_key, "report_th.html")
-    else:
-        st.caption("TH HTML: ยังไม่มี (จะมีเมื่อสร้างรายงานแบบ PDF)")
+    en_key = en_pdf_key
+    th_key = th_pdf_key
+    en_name = "report_en.pdf"
+    th_name = "report_th.pdf"
 
 videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("dots_video", "")) and s3_key_exists(outputs.get("skeleton_video", ""))
 dots_ready = bool(outputs.get("dots_video")) and s3_key_exists(outputs.get("dots_video", ""))

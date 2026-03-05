@@ -923,6 +923,10 @@ def ensure_session_defaults() -> None:
         st.session_state["last_jobs"] = {}
     if "last_job_json_keys" not in st.session_state:
         st.session_state["last_job_json_keys"] = {}
+    if "last_notify_email" not in st.session_state:
+        st.session_state["last_notify_email"] = ""
+    if "skilllane_submission_id_override" not in st.session_state:
+        st.session_state["skilllane_submission_id_override"] = ""
 
 def _read_group_id_from_url() -> str:
     try:
@@ -1040,7 +1044,7 @@ enterprise_folder = st.text_input(
 st.caption("หน้านี้กำหนดชื่อองค์กรเป็น SkillLane อัตโนมัติและไม่สามารถแก้ไขได้")
 user_name = st.text_input(
     "อีเมลผู้ใช้งาน",
-    value="",
+    value=str(st.session_state.get("last_notify_email") or ""),
     placeholder="name@example.com",
     help="ใช้เป็นชื่อโฟลเดอร์งาน และเป็นอีเมลสำหรับส่งผลลัพธ์",
 )
@@ -1053,6 +1057,8 @@ if notify_email:
         st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
 # Email-only flow: reuse email as stable identity key.
 employee_id = notify_email
+if notify_email:
+    st.session_state["last_notify_email"] = notify_email
 org_settings = get_org_settings(enterprise_folder)
 
 # Read direct-upload callback flags before rendering upload widget.
@@ -1109,6 +1115,140 @@ if direct_ready and (not upload_done) and (not manual_direct_done):
 st.markdown("### สถานะการอัปโหลด/ส่งงาน")
 if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="refresh_status_top", width="content"):
     st.rerun()
+submission_id_override = st.text_input(
+    "Submission ID (วางจากอีเมลได้)",
+    value=str(st.session_state.get("skilllane_submission_id_override") or ""),
+    placeholder="เช่น 20260305_062908_93a975__rungnapaimagemattersat",
+    help="หากปุ่มดาวน์โหลดยังไม่ขึ้น ให้วาง Submission ID จากอีเมล แล้วระบบจะดึงผลลัพธ์ตามรหัสนี้",
+).strip()
+if submission_id_override:
+    st.session_state["skilllane_submission_id_override"] = submission_id_override
+    st.session_state["last_group_id"] = submission_id_override
+    _persist_group_id_to_url(submission_id_override)
+
+# Always-visible direct download by Submission ID (independent from session/state blocks).
+direct_group_id = str(submission_id_override or _read_group_id_from_url() or st.session_state.get("last_group_id") or "").strip()
+st.markdown("#### Direct download by Submission ID")
+if direct_group_id:
+    st.caption(f"กำลังตรวจไฟล์จาก Submission ID: `{direct_group_id}`")
+    direct_outputs_top = build_output_keys(direct_group_id)
+    direct_reports_top = find_report_files_in_s3(f"{JOBS_GROUP_PREFIX}{direct_group_id}")
+    if not direct_reports_top.get("report_en_docx") and not direct_reports_top.get("report_th_docx"):
+        direct_reports_top = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{direct_group_id}")
+    for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
+        if direct_reports_top.get(_k):
+            direct_outputs_top[_k] = str(direct_reports_top.get(_k) or "").strip()
+    direct_items_top = [
+        ("Dots Video", str(direct_outputs_top.get("dots_video") or "").strip(), "dots.mp4"),
+        ("Skeleton Video", str(direct_outputs_top.get("skeleton_video") or "").strip(), "skeleton.mp4"),
+        ("Report TH (PDF)", str(direct_outputs_top.get("report_th_pdf") or "").strip(), "report_th.pdf"),
+        ("Report EN (PDF)", str(direct_outputs_top.get("report_en_pdf") or "").strip(), "report_en.pdf"),
+    ]
+    # Extra-robust fallback: list actual files under group prefixes and show all supported outputs.
+    discovered_direct_items: List[tuple[str, str, str]] = []
+    discovered_seen: set[str] = set()
+    for _pfx in (f"{JOBS_GROUP_PREFIX}{direct_group_id}/", f"{JOBS_OUTPUT_PREFIX}groups/{direct_group_id}/"):
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=_pfx):
+                for item in page.get("Contents", []):
+                    k = str(item.get("Key") or "").strip()
+                    if not k or k in discovered_seen:
+                        continue
+                    kl = k.lower()
+                    if not (kl.endswith(".mp4") or kl.endswith(".pdf")):
+                        continue
+                    if "/input/" in kl:
+                        continue
+                    fname = os.path.basename(k)
+                    label = f"File: {fname}"
+                    if "dots.mp4" in kl:
+                        label = "Dots Video"
+                    elif "skeleton.mp4" in kl:
+                        label = "Skeleton Video"
+                    elif "_th.pdf" in kl:
+                        label = "Report TH (PDF)"
+                    elif "_en.pdf" in kl:
+                        label = "Report EN (PDF)"
+                    else:
+                        continue
+                    discovered_direct_items.append((label, k, fname))
+                    discovered_seen.add(k)
+        except Exception:
+            pass
+    if discovered_direct_items:
+        direct_items_top.extend(discovered_direct_items)
+    # Dedupe by exact key while preserving order.
+    _tmp_items: List[tuple[str, str, str]] = []
+    _tmp_seen: set[str] = set()
+    for _label, _key, _fn in direct_items_top:
+        if not _key or _key in _tmp_seen:
+            continue
+        _tmp_items.append((_label, _key, _fn))
+        _tmp_seen.add(_key)
+    direct_items_top = _tmp_items
+    ready_direct_top = [(label, key, fn) for (label, key, fn) in direct_items_top if key and s3_key_exists(key)]
+    if ready_direct_top:
+        for label, key, fn in ready_direct_top:
+            st.link_button(f"Direct Download: {label}", presigned_get_url(key, expires=3600, filename=fn), width="stretch")
+    else:
+        st.caption("ยังไม่พบไฟล์ของ Submission ID นี้ใน S3")
+
+    # Direct force requeue by Submission ID (useful when only one video output is missing).
+    dots_ready_top = bool(direct_outputs_top.get("dots_video")) and s3_key_exists(str(direct_outputs_top.get("dots_video") or ""))
+    skel_ready_top = bool(direct_outputs_top.get("skeleton_video")) and s3_key_exists(str(direct_outputs_top.get("skeleton_video") or ""))
+    if (not dots_ready_top) or (not skel_ready_top):
+        direct_rows = list_jobs_for_group(direct_group_id)
+        dots_active_top = any(
+            str(r.get("mode") or "").strip().lower() == "dots"
+            and str(r.get("status") or "").strip().lower() in ("pending", "processing")
+            for r in direct_rows
+        )
+        skel_active_top = any(
+            str(r.get("mode") or "").strip().lower() == "skeleton"
+            and str(r.get("status") or "").strip().lower() in ("pending", "processing")
+            for r in direct_rows
+        )
+        st.warning("ยังไม่ครบทุกวิดีโอ สามารถกดส่งงานซ้ำเฉพาะรายการที่ขาดได้")
+        d1, d2 = st.columns(2)
+        with d1:
+            if not dots_ready_top:
+                if st.button(
+                    "Force ส่งงาน Dots" if dots_active_top else "ส่งงาน Dots ใหม่",
+                    key=f"direct_force_dots_{direct_group_id}",
+                    width="stretch",
+                ):
+                    try:
+                        new_key = enqueue_video_only_job(
+                            group_id=direct_group_id,
+                            mode="dots",
+                            notify_email=notify_email,
+                            employee_id=employee_id,
+                            enterprise_folder=enterprise_folder,
+                        )
+                        st.success(f"ส่งงาน Dots แล้ว: {new_key}")
+                    except Exception as e:
+                        st.error(f"ส่งงาน Dots ไม่สำเร็จ: {format_submit_error_message(e)}")
+        with d2:
+            if not skel_ready_top:
+                if st.button(
+                    "Force ส่งงาน Skeleton" if skel_active_top else "ส่งงาน Skeleton ใหม่",
+                    key=f"direct_force_skeleton_{direct_group_id}",
+                    width="stretch",
+                ):
+                    try:
+                        new_key = enqueue_video_only_job(
+                            group_id=direct_group_id,
+                            mode="skeleton",
+                            notify_email=notify_email,
+                            employee_id=employee_id,
+                            enterprise_folder=enterprise_folder,
+                        )
+                        st.success(f"ส่งงาน Skeleton แล้ว: {new_key}")
+                    except Exception as e:
+                        st.error(f"ส่งงาน Skeleton ไม่สำเร็จ: {format_submit_error_message(e)}")
+else:
+    st.caption("วาง Submission ID ด้านบนเพื่อแสดงปุ่มดาวน์โหลดทันที")
 if direct_ready and not upload_done and not manual_direct_done:
     pass
 elif upload_done or manual_direct_done:
@@ -1122,7 +1262,7 @@ else:
         st.caption("โหมด local: ใช้อัปโหลดแบบสำรองด้านล่าง แล้วกด 'เริ่มวิเคราะห์'")
 
 # Quick download/status block at top so users do not need to scroll to the bottom.
-quick_group_id = str(last_group_hint or _read_group_id_from_url() or "").strip()
+quick_group_id = str(submission_id_override or last_group_hint or _read_group_id_from_url() or "").strip()
 if quick_group_id:
     st.caption(f"งานล่าสุด: `{quick_group_id}` (สามารถเลื่อนลงไปดูผลลัพธ์/ดาวน์โหลดได้)")
     quick_outputs = build_output_keys(quick_group_id)
@@ -1139,12 +1279,10 @@ if quick_group_id:
             quick_outputs[_k] = str(quick_report_outputs.get(_k) or "").strip()
 
     quick_items = [
-        ("รายงาน TH (DOCX)", quick_outputs.get("report_th_docx", ""), "report_th.docx"),
-        ("รายงาน EN (DOCX)", quick_outputs.get("report_en_docx", ""), "report_en.docx"),
-        ("รายงาน TH (HTML)", quick_outputs.get("report_th_html", ""), "report_th.html"),
-        ("รายงาน EN (HTML)", quick_outputs.get("report_en_html", ""), "report_en.html"),
         ("วิดีโอ Dots", quick_outputs.get("dots_video", ""), "dots.mp4"),
         ("วิดีโอ Skeleton", quick_outputs.get("skeleton_video", ""), "skeleton.mp4"),
+        ("รายงาน TH (PDF)", quick_outputs.get("report_th_pdf", ""), "report_th.pdf"),
+        ("รายงาน EN (PDF)", quick_outputs.get("report_en_pdf", ""), "report_en.pdf"),
     ]
     ready_quick = [(label, key, fn) for (label, key, fn) in quick_items if key and s3_key_exists(key)]
     if ready_quick:
@@ -1152,20 +1290,25 @@ if quick_group_id:
         for label, key, fn in ready_quick:
             st.link_button(f"ดาวน์โหลด {label}", presigned_get_url(key, expires=3600, filename=fn), width="stretch")
 
-    # If report already exists but video outputs are missing and no active video jobs,
-    # allow one-click requeue for missing dots/skeleton from the latest group.
-    th_report_ready_quick = bool(quick_outputs.get("report_th_docx")) and s3_key_exists(str(quick_outputs.get("report_th_docx") or ""))
+    # Allow one-click requeue for missing dots/skeleton from the latest group.
+    # Do not gate by report-ready state, because some jobs may have partial outputs.
     dots_ready_quick = bool(quick_outputs.get("dots_video")) and s3_key_exists(str(quick_outputs.get("dots_video") or ""))
     skel_ready_quick = bool(quick_outputs.get("skeleton_video")) and s3_key_exists(str(quick_outputs.get("skeleton_video") or ""))
-    if th_report_ready_quick and (not dots_ready_quick or not skel_ready_quick):
+    if (not dots_ready_quick) or (not skel_ready_quick):
         quick_rows = list_jobs_for_group(quick_group_id)
         dots_active = any(str(r.get("mode") or "").strip().lower() == "dots" and str(r.get("status") or "").strip().lower() in ("pending", "processing") for r in quick_rows)
         skel_active = any(str(r.get("mode") or "").strip().lower() == "skeleton" and str(r.get("status") or "").strip().lower() in ("pending", "processing") for r in quick_rows)
-        st.warning("รายงานพร้อมแล้ว แต่ Dots/Skeleton ยังไม่ครบ")
+        st.warning("ยังมีผลลัพธ์วิดีโอไม่ครบ (Dots/Skeleton) สามารถกดส่งงานใหม่เฉพาะรายการได้")
         c_requeue1, c_requeue2 = st.columns(2)
         with c_requeue1:
-            if (not dots_ready_quick) and (not dots_active):
-                if st.button("ส่งงาน Dots ใหม่", key=f"requeue_dots_top_{quick_group_id}", width="stretch"):
+            if not dots_ready_quick:
+                if dots_active:
+                    st.caption("Dots มีงานค้างในคิวอยู่ แต่สามารถกดส่งซ้ำได้")
+                if st.button(
+                    "ส่งงาน Dots ใหม่" if not dots_active else "ส่งงาน Dots ซ้ำ (force)",
+                    key=f"requeue_dots_top_{quick_group_id}",
+                    width="stretch",
+                ):
                     try:
                         k = enqueue_video_only_job(
                             group_id=quick_group_id,
@@ -1178,8 +1321,14 @@ if quick_group_id:
                     except Exception as e:
                         st.error(f"ส่งงาน Dots ใหม่ไม่สำเร็จ: {format_submit_error_message(e)}")
         with c_requeue2:
-            if (not skel_ready_quick) and (not skel_active):
-                if st.button("ส่งงาน Skeleton ใหม่", key=f"requeue_skeleton_top_{quick_group_id}", width="stretch"):
+            if not skel_ready_quick:
+                if skel_active:
+                    st.caption("Skeleton มีงานค้างในคิวอยู่ แต่สามารถกดส่งซ้ำได้")
+                if st.button(
+                    "ส่งงาน Skeleton ใหม่" if not skel_active else "ส่งงาน Skeleton ซ้ำ (force)",
+                    key=f"requeue_skeleton_top_{quick_group_id}",
+                    width="stretch",
+                ):
                     try:
                         k = enqueue_video_only_job(
                             group_id=quick_group_id,
@@ -1191,6 +1340,30 @@ if quick_group_id:
                         st.success(f"ส่งงาน Skeleton ใหม่แล้ว: {k}")
                     except Exception as e:
                         st.error(f"ส่งงาน Skeleton ใหม่ไม่สำเร็จ: {format_submit_error_message(e)}")
+
+    # Direct download block: fetch links by Submission ID from S3 keys immediately.
+    st.markdown("#### Direct download by Submission ID")
+    direct_outputs = build_output_keys(quick_group_id)
+    direct_reports = find_report_files_in_s3(f"{JOBS_GROUP_PREFIX}{quick_group_id}")
+    if not direct_reports.get("report_en_docx") and not direct_reports.get("report_th_docx"):
+        # Fallback prefix where some outputs may be written.
+        direct_reports = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{quick_group_id}")
+    for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
+        if direct_reports.get(_k):
+            direct_outputs[_k] = str(direct_reports.get(_k) or "").strip()
+
+    direct_items = [
+        ("Dots Video", str(direct_outputs.get("dots_video") or "").strip(), "dots.mp4"),
+        ("Skeleton Video", str(direct_outputs.get("skeleton_video") or "").strip(), "skeleton.mp4"),
+        ("Report TH (PDF)", str(direct_outputs.get("report_th_pdf") or "").strip(), "report_th.pdf"),
+        ("Report EN (PDF)", str(direct_outputs.get("report_en_pdf") or "").strip(), "report_en.pdf"),
+    ]
+    ready_direct = [(label, key, fn) for (label, key, fn) in direct_items if key and s3_key_exists(key)]
+    if ready_direct:
+        for label, key, fn in ready_direct:
+            st.link_button(f"Direct Download: {label}", presigned_get_url(key, expires=3600, filename=fn), width="stretch")
+    else:
+        st.caption("ยังไม่พบไฟล์สำหรับ Submission ID นี้ใน S3 (ลองกดรีเฟรชอีกครั้ง)")
 
 # -------------------------
 # Direct S3 upload (browser -> S3, skips server for speed)
@@ -1263,10 +1436,19 @@ run = st.button(
     type="primary",
     width="stretch",
     key="run_analyze",
-    disabled=(uploaded is None),
+    disabled=(
+        (uploaded is None)
+        or (not notify_email)
+        or (not is_valid_email_format(notify_email))
+        or is_blocked_typo_domain(notify_email)
+    ),
 )
 if use_direct_upload:
     st.caption("หรือใช้แบบสำรอง: เลือกไฟล์ด้านบนแล้วกดปุ่มนี้")
+if not notify_email:
+    st.warning("กรุณากรอกอีเมลผู้ใช้งานก่อนอัปโหลด/เริ่มวิเคราะห์")
+elif (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
+    st.warning("รูปแบบอีเมลไม่ถูกต้อง กรุณาตรวจสอบก่อนเริ่มวิเคราะห์")
     st.caption(SUPPORT_CONTACT_TEXT)
 
 # Handle "Upload Video" click -> prepare direct upload
@@ -1345,7 +1527,11 @@ identity_verified = False
 if has_identity_input:
     identity_verified = is_employee_identity_verified(employee_id, notify_email)
 
-candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id
+candidate_group_id = (
+    submission_id_override
+    or st.session_state.get("last_group_id", "")
+    or url_group_id
+)
 active_group_id = ""
 blocked_group_id = ""
 if candidate_group_id:
@@ -1373,8 +1559,8 @@ if run:
         st.stop()
     # Page policy: SkillLane always uses full report style.
     effective_report_style = "full"
-    # Temporary policy for SkillLane: always deliver Word first and disable PDF jobs.
-    effective_report_format = "docx"
+    # Deliver report as PDF.
+    effective_report_format = "pdf"
     # SkillLane page policy: always enqueue TH+EN report jobs.
     # Admin toggles can still control optional video outputs, but report should always run.
     enable_report_th = True
@@ -1658,29 +1844,19 @@ with c1:
 with c2:
     st.markdown("### รายงาน")
     en_pdf_key = str(outputs.get("report_en_pdf", "") or "").strip()
-    en_docx_key = str(outputs.get("report_en_docx", "") or "").strip()
-    en_html_key = str(outputs.get("report_en_html", "") or "").strip()
     th_pdf_key = str(outputs.get("report_th_pdf", "") or "").strip()
-    th_docx_key = str(outputs.get("report_th_docx", "") or "").strip()
-    th_html_key = str(outputs.get("report_th_html", "") or "").strip()
 
     st.markdown("**ภาษาอังกฤษ**")
-    download_block("รายงาน EN (DOCX)", en_docx_key, "report_en.docx")
-    download_block("รายงาน EN (HTML)", en_html_key, "report_en.html")
-    if en_pdf_key:
-        download_block("รายงาน EN (PDF)", en_pdf_key, "report_en.pdf")
+    download_block("รายงาน EN (PDF)", en_pdf_key, "report_en.pdf")
 
     st.markdown("**ภาษาไทย**")
-    download_block("รายงาน TH (DOCX)", th_docx_key, "report_th.docx")
-    download_block("รายงาน TH (HTML)", th_html_key, "report_th.html")
-    if th_pdf_key:
-        download_block("รายงาน TH (PDF)", th_pdf_key, "report_th.pdf")
+    download_block("รายงาน TH (PDF)", th_pdf_key, "report_th.pdf")
 
-    # Primary report ready state (for progress/status + quick download)
-    en_key = en_docx_key if (en_docx_key and s3_key_exists(en_docx_key)) else (en_pdf_key if en_pdf_key else en_docx_key)
-    th_key = th_docx_key if (th_docx_key and s3_key_exists(th_docx_key)) else (th_pdf_key if th_pdf_key else th_docx_key)
-    en_name = "report_en.docx" if (en_docx_key and s3_key_exists(en_docx_key)) else ("report_en.pdf" if en_pdf_key else "report_en.docx")
-    th_name = "report_th.docx" if (th_docx_key and s3_key_exists(th_docx_key)) else ("report_th.pdf" if th_pdf_key else "report_th.docx")
+    # Primary report ready state (for progress/status + quick download) - PDF only
+    en_key = en_pdf_key
+    th_key = th_pdf_key
+    en_name = "report_en.pdf"
+    th_name = "report_th.pdf"
 
 videos_ready = bool(outputs.get("dots_video")) and bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("dots_video", "")) and s3_key_exists(outputs.get("skeleton_video", ""))
 dots_ready = bool(outputs.get("dots_video")) and s3_key_exists(outputs.get("dots_video", ""))
@@ -1775,7 +1951,7 @@ if videos_ready and not th_report_ready:
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
             rerun_style = "full"
-            rerun_format = "docx"
+            rerun_format = "pdf"
             rerun_email = notify_email
             if not rerun_email:
                 prev_notif = get_report_notification_status(group_id)
