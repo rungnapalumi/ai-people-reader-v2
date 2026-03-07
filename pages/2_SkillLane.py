@@ -23,7 +23,7 @@ import json
 import uuid
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -298,12 +298,18 @@ def s3_put_json(key: str, payload: Dict[str, Any]) -> None:
     )
 
 
-def s3_key_exists(key: str) -> bool:
-    try:
-        s3.head_object(Bucket=AWS_BUCKET, Key=key)
-        return True
-    except Exception:
-        return False
+def s3_key_exists(key: str, retries: int = 3) -> bool:
+    """Check if S3 key exists. Retries on transient failure for stability."""
+    for attempt in range(max(1, retries + 1)):
+        try:
+            s3.head_object(Bucket=AWS_BUCKET, Key=key)
+            return True
+        except Exception:
+            if attempt < retries:
+                time.sleep(0.3 * (attempt + 1))  # Brief backoff
+            else:
+                return False
+    return False
 
 
 def s3_read_json(key: str) -> Optional[Dict[str, Any]]:
@@ -565,8 +571,8 @@ def enqueue_report_only_job(
         "languages": ["th"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",
-        "sample_fps": 5,
-        "max_frames": 300,
+        "sample_fps": 3,
+        "max_frames": 150,
         "report_style": report_style,
         "report_format": report_format,
         "expect_skeleton": False,
@@ -805,20 +811,21 @@ def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
         for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
             for item in page.get("Contents", []):
                 key = item["Key"]
+                kl = key.lower()
                 if key.endswith(".docx"):
-                    if "_EN.docx" in key:
+                    if "report_en.docx" in kl or "_en.docx" in kl:
                         result["report_en_docx"] = key
-                    elif "_TH.docx" in key:
+                    elif "report_th.docx" in kl or "_th.docx" in kl:
                         result["report_th_docx"] = key
                 elif key.endswith(".pdf"):
-                    if "_EN.pdf" in key:
+                    if "report_en.pdf" in kl or "_en.pdf" in kl:
                         result["report_en_pdf"] = key
-                    elif "_TH.pdf" in key:
+                    elif "report_th.pdf" in kl or "_th.pdf" in kl:
                         result["report_th_pdf"] = key
                 elif key.endswith(".html"):
-                    if "_EN.html" in key:
+                    if "report_en.html" in kl or "_en.html" in kl:
                         result["report_en_html"] = key
-                    elif "_TH.html" in key:
+                    elif "report_th.html" in kl or "_th.html" in kl:
                         result["report_th_html"] = key
         
         return result
@@ -927,6 +934,8 @@ def ensure_session_defaults() -> None:
         st.session_state["last_notify_email"] = ""
     if "skilllane_submission_id_override" not in st.session_state:
         st.session_state["skilllane_submission_id_override"] = ""
+    if "clear_upload_counter" not in st.session_state:
+        st.session_state["clear_upload_counter"] = 0
 
 def _read_group_id_from_url() -> str:
     try:
@@ -1028,10 +1037,15 @@ components.html(
 )
 
 url_group_id = _read_group_id_from_url()
-if url_group_id and not st.session_state.get("last_group_id"):
-    st.session_state["last_group_id"] = url_group_id
+if url_group_id:
+    if not st.session_state.get("last_group_id"):
+        st.session_state["last_group_id"] = url_group_id
+    if not st.session_state.get("skilllane_submission_id_override"):
+        st.session_state["skilllane_submission_id_override"] = url_group_id
 
 st.markdown("# วิเคราะห์วิดีโอ")
+
+st.divider()
 st.caption("อัปโหลดวิดีโอ 1 ครั้ง แล้วกด **เริ่มวิเคราะห์** เพื่อสร้าง dots + skeleton + รายงาน")
 
 page_default_org = "SkillLane"
@@ -1111,144 +1125,6 @@ if direct_ready and (not upload_done) and (not manual_direct_done):
         except Exception:
             pass
 
-# Always show visible status so users know current step.
-st.markdown("### สถานะการอัปโหลด/ส่งงาน")
-if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="refresh_status_top", width="content"):
-    st.rerun()
-submission_id_override = st.text_input(
-    "Submission ID (วางจากอีเมลได้)",
-    value=str(st.session_state.get("skilllane_submission_id_override") or ""),
-    placeholder="เช่น 20260305_062908_93a975__rungnapaimagemattersat",
-    help="หากปุ่มดาวน์โหลดยังไม่ขึ้น ให้วาง Submission ID จากอีเมล แล้วระบบจะดึงผลลัพธ์ตามรหัสนี้",
-).strip()
-if submission_id_override:
-    st.session_state["skilllane_submission_id_override"] = submission_id_override
-    st.session_state["last_group_id"] = submission_id_override
-    _persist_group_id_to_url(submission_id_override)
-
-# Always-visible direct download by Submission ID (independent from session/state blocks).
-direct_group_id = str(submission_id_override or _read_group_id_from_url() or st.session_state.get("last_group_id") or "").strip()
-st.markdown("#### Direct download by Submission ID")
-if direct_group_id:
-    st.caption(f"กำลังตรวจไฟล์จาก Submission ID: `{direct_group_id}`")
-    direct_outputs_top = build_output_keys(direct_group_id)
-    direct_reports_top = find_report_files_in_s3(f"{JOBS_GROUP_PREFIX}{direct_group_id}")
-    if not direct_reports_top.get("report_en_docx") and not direct_reports_top.get("report_th_docx"):
-        direct_reports_top = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{direct_group_id}")
-    for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
-        if direct_reports_top.get(_k):
-            direct_outputs_top[_k] = str(direct_reports_top.get(_k) or "").strip()
-    direct_items_top = [
-        ("Dots Video", str(direct_outputs_top.get("dots_video") or "").strip(), "dots.mp4"),
-        ("Skeleton Video", str(direct_outputs_top.get("skeleton_video") or "").strip(), "skeleton.mp4"),
-        ("Report TH (PDF)", str(direct_outputs_top.get("report_th_pdf") or "").strip(), "report_th.pdf"),
-        ("Report EN (PDF)", str(direct_outputs_top.get("report_en_pdf") or "").strip(), "report_en.pdf"),
-    ]
-    # Extra-robust fallback: list actual files under group prefixes and show all supported outputs.
-    discovered_direct_items: List[tuple[str, str, str]] = []
-    discovered_seen: set[str] = set()
-    for _pfx in (f"{JOBS_GROUP_PREFIX}{direct_group_id}/", f"{JOBS_OUTPUT_PREFIX}groups/{direct_group_id}/"):
-        try:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=_pfx):
-                for item in page.get("Contents", []):
-                    k = str(item.get("Key") or "").strip()
-                    if not k or k in discovered_seen:
-                        continue
-                    kl = k.lower()
-                    if not (kl.endswith(".mp4") or kl.endswith(".pdf")):
-                        continue
-                    if "/input/" in kl:
-                        continue
-                    fname = os.path.basename(k)
-                    label = f"File: {fname}"
-                    if "dots.mp4" in kl:
-                        label = "Dots Video"
-                    elif "skeleton.mp4" in kl:
-                        label = "Skeleton Video"
-                    elif "_th.pdf" in kl:
-                        label = "Report TH (PDF)"
-                    elif "_en.pdf" in kl:
-                        label = "Report EN (PDF)"
-                    else:
-                        continue
-                    discovered_direct_items.append((label, k, fname))
-                    discovered_seen.add(k)
-        except Exception:
-            pass
-    if discovered_direct_items:
-        direct_items_top.extend(discovered_direct_items)
-    # Dedupe by exact key while preserving order.
-    _tmp_items: List[tuple[str, str, str]] = []
-    _tmp_seen: set[str] = set()
-    for _label, _key, _fn in direct_items_top:
-        if not _key or _key in _tmp_seen:
-            continue
-        _tmp_items.append((_label, _key, _fn))
-        _tmp_seen.add(_key)
-    direct_items_top = _tmp_items
-    ready_direct_top = [(label, key, fn) for (label, key, fn) in direct_items_top if key and s3_key_exists(key)]
-    if ready_direct_top:
-        for label, key, fn in ready_direct_top:
-            st.link_button(f"Direct Download: {label}", presigned_get_url(key, expires=3600, filename=fn), width="stretch")
-    else:
-        st.caption("ยังไม่พบไฟล์ของ Submission ID นี้ใน S3")
-
-    # Direct force requeue by Submission ID (useful when only one video output is missing).
-    dots_ready_top = bool(direct_outputs_top.get("dots_video")) and s3_key_exists(str(direct_outputs_top.get("dots_video") or ""))
-    skel_ready_top = bool(direct_outputs_top.get("skeleton_video")) and s3_key_exists(str(direct_outputs_top.get("skeleton_video") or ""))
-    if (not dots_ready_top) or (not skel_ready_top):
-        direct_rows = list_jobs_for_group(direct_group_id)
-        dots_active_top = any(
-            str(r.get("mode") or "").strip().lower() == "dots"
-            and str(r.get("status") or "").strip().lower() in ("pending", "processing")
-            for r in direct_rows
-        )
-        skel_active_top = any(
-            str(r.get("mode") or "").strip().lower() == "skeleton"
-            and str(r.get("status") or "").strip().lower() in ("pending", "processing")
-            for r in direct_rows
-        )
-        st.warning("ยังไม่ครบทุกวิดีโอ สามารถกดส่งงานซ้ำเฉพาะรายการที่ขาดได้")
-        d1, d2 = st.columns(2)
-        with d1:
-            if not dots_ready_top:
-                if st.button(
-                    "Force ส่งงาน Dots" if dots_active_top else "ส่งงาน Dots ใหม่",
-                    key=f"direct_force_dots_{direct_group_id}",
-                    width="stretch",
-                ):
-                    try:
-                        new_key = enqueue_video_only_job(
-                            group_id=direct_group_id,
-                            mode="dots",
-                            notify_email=notify_email,
-                            employee_id=employee_id,
-                            enterprise_folder=enterprise_folder,
-                        )
-                        st.success(f"ส่งงาน Dots แล้ว: {new_key}")
-                    except Exception as e:
-                        st.error(f"ส่งงาน Dots ไม่สำเร็จ: {format_submit_error_message(e)}")
-        with d2:
-            if not skel_ready_top:
-                if st.button(
-                    "Force ส่งงาน Skeleton" if skel_active_top else "ส่งงาน Skeleton ใหม่",
-                    key=f"direct_force_skeleton_{direct_group_id}",
-                    width="stretch",
-                ):
-                    try:
-                        new_key = enqueue_video_only_job(
-                            group_id=direct_group_id,
-                            mode="skeleton",
-                            notify_email=notify_email,
-                            employee_id=employee_id,
-                            enterprise_folder=enterprise_folder,
-                        )
-                        st.success(f"ส่งงาน Skeleton แล้ว: {new_key}")
-                    except Exception as e:
-                        st.error(f"ส่งงาน Skeleton ไม่สำเร็จ: {format_submit_error_message(e)}")
-else:
-    st.caption("วาง Submission ID ด้านบนเพื่อแสดงปุ่มดาวน์โหลดทันที")
 if direct_ready and not upload_done and not manual_direct_done:
     pass
 elif upload_done or manual_direct_done:
@@ -1260,6 +1136,9 @@ else:
         st.caption("ยังไม่เริ่มอัปโหลด กรุณากดปุ่ม 'เลือกวิดีโอและอัปโหลด'")
     else:
         st.caption("โหมด local: ใช้อัปโหลดแบบสำรองด้านล่าง แล้วกด 'เริ่มวิเคราะห์'")
+
+# submission_id_override จาก session state (อัปเดตจาก download section ด้านล่าง)
+submission_id_override = str(st.session_state.get("skilllane_submission_id_override") or "").strip()
 
 # Quick download/status block at top so users do not need to scroll to the bottom.
 quick_group_id = str(submission_id_override or last_group_hint or _read_group_id_from_url() or "").strip()
@@ -1284,11 +1163,13 @@ if quick_group_id:
         ("รายงาน TH (PDF)", quick_outputs.get("report_th_pdf", ""), "report_th.pdf"),
         ("รายงาน EN (PDF)", quick_outputs.get("report_en_pdf", ""), "report_en.pdf"),
     ]
-    ready_quick = [(label, key, fn) for (label, key, fn) in quick_items if key and s3_key_exists(key)]
-    if ready_quick:
-        st.markdown("#### พร้อมดาวน์โหลดตอนนี้ (งานล่าสุด)")
-        for label, key, fn in ready_quick:
-            st.link_button(f"ดาวน์โหลด {label}", presigned_get_url(key, expires=3600, filename=fn), width="stretch")
+    st.markdown("#### พร้อมดาวน์โหลดตอนนี้ (งานล่าสุด)")
+    for label, key, fn in quick_items:
+        if key and fn:
+            try:
+                st.link_button(f"⬇️ ดาวน์โหลด {label}", presigned_get_url(key, expires=3600, filename=fn), width="stretch")
+            except Exception:
+                pass
 
     # Allow one-click requeue for missing dots/skeleton from the latest group.
     # Do not gate by report-ready state, because some jobs may have partial outputs.
@@ -1344,12 +1225,14 @@ if quick_group_id:
     # Direct download block: fetch links by Submission ID from S3 keys immediately.
     st.markdown("#### Direct download by Submission ID")
     direct_outputs = build_output_keys(quick_group_id)
+    job_report_outputs_quick = get_report_outputs_from_job(quick_group_id)
     direct_reports = find_report_files_in_s3(f"{JOBS_GROUP_PREFIX}{quick_group_id}")
-    if not direct_reports.get("report_en_docx") and not direct_reports.get("report_th_docx"):
-        # Fallback prefix where some outputs may be written.
+    if not direct_reports.get("report_en_pdf") and not direct_reports.get("report_th_pdf"):
         direct_reports = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{quick_group_id}")
     for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
-        if direct_reports.get(_k):
+        if job_report_outputs_quick.get(_k):
+            direct_outputs[_k] = str(job_report_outputs_quick.get(_k) or "").strip()
+        elif direct_reports.get(_k):
             direct_outputs[_k] = str(direct_reports.get(_k) or "").strip()
 
     direct_items = [
@@ -1423,7 +1306,7 @@ uploaded = st.file_uploader(
     "วิดีโอ (MP4/MOV/M4V/WEBM) — แบบสำรอง",
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
-    key="skilllane_file_uploader",
+    key=f"skilllane_file_uploader_{st.session_state.get('clear_upload_counter', 0)}",
 )
 st.caption("หากอัปโหลดล้มเหลวหรือขึ้นสถานะ 400 กรุณา upload วีดีโอใหม่")
 if uploaded is not None:
@@ -1450,6 +1333,206 @@ if not notify_email:
 elif (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
     st.warning("รูปแบบอีเมลไม่ถูกต้อง กรุณาตรวจสอบก่อนเริ่มวิเคราะห์")
     st.caption(SUPPORT_CONTACT_TEXT)
+
+_just_submitted = st.session_state.pop("skilllane_show_submission_success", None)
+
+# --- ดาวน์โหลดผลจากอีเมล (แสดงด้านล่างปุ่มเริ่มวิเคราะห์) ---
+st.divider()
+st.markdown("### 📥 ดาวน์โหลดผลลัพธ์ (ได้รับอีเมลแล้ว)")
+st.caption("วาง Group ID จากอีเมล (บรรทัด 'Group ID: ...') ด้านล่าง แล้วกดรีเฟรช")
+_sub_id_key = f"skilllane_submission_id_top_{st.session_state.get('clear_upload_counter', 0)}"
+_sub_id_value = str(_just_submitted or st.session_state.get("skilllane_submission_id_override") or "")
+submission_id_override = st.text_input(
+    "Submission ID / Group ID (วางจากอีเมลได้)",
+    value=_sub_id_value,
+    placeholder="เช่น 20260306_094309_e7d062_rungnapaimagemattersat",
+    key=_sub_id_key,
+    help="คัดลอก Group ID จากอีเมล วางตรงนี้ แล้วกดรีเฟรช",
+).strip()
+if submission_id_override or _just_submitted:
+    _sid = submission_id_override or _just_submitted
+    st.session_state["skilllane_submission_id_override"] = _sid
+    st.session_state["last_group_id"] = _sid
+    _persist_group_id_to_url(_sid)
+_btn_col1, _btn_col2 = st.columns(2)
+with _btn_col1:
+    if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="refresh_status_top", width="content"):
+        st.rerun()
+with _btn_col2:
+    _has_prev = bool(
+        submission_id_override
+        or st.session_state.get("skilllane_submission_id_override")
+        or st.session_state.get("last_group_id")
+        or _read_group_id_from_url()
+    )
+    if _has_prev and st.button("🗑️ ล้างผลลัพธ์เพื่ออัปโหลดวิดีโอใหม่", key="clear_results_top", type="secondary"):
+        for _k in ("skilllane_submission_id_override", "last_group_id", "last_outputs", "last_jobs", "last_job_json_keys", "last_uploaded_filename"):
+            st.session_state.pop(_k, None)
+        st.session_state["clear_upload_counter"] = st.session_state.get("clear_upload_counter", 0) + 1
+        try:
+            if "group_id" in st.query_params:
+                del st.query_params["group_id"]
+        except Exception:
+            pass
+        st.rerun()
+
+direct_group_id = str(submission_id_override or _just_submitted or _read_group_id_from_url() or st.session_state.get("last_group_id") or "").strip()
+if direct_group_id:
+    st.success("✅ ได้รับงานแล้ว — ขอบคุณที่ใช้ AI People Reader ลิงก์ดาวน์โหลดด้านล่างกดได้เมื่อไฟล์พร้อม")
+    st.caption(f"กำลังตรวจไฟล์จาก Submission ID: `{direct_group_id}`")
+    direct_outputs_top = build_output_keys(direct_group_id)
+    job_report_outputs = get_report_outputs_from_job(direct_group_id)
+    direct_reports_top = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{direct_group_id}")
+    if not direct_reports_top.get("report_en_pdf") or not direct_reports_top.get("report_th_pdf"):
+        scanned = find_report_files_in_s3(f"{JOBS_GROUP_PREFIX}{direct_group_id}")
+        for k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
+            if scanned.get(k) and not direct_reports_top.get(k):
+                direct_reports_top[k] = scanned[k]
+    for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
+        if job_report_outputs.get(_k):
+            direct_outputs_top[_k] = str(job_report_outputs.get(_k) or "").strip()
+        elif direct_reports_top.get(_k):
+            direct_outputs_top[_k] = str(direct_reports_top.get(_k) or "").strip()
+    direct_items_top = [
+        ("Dots Video", str(direct_outputs_top.get("dots_video") or "").strip(), "dots.mp4"),
+        ("Skeleton Video", str(direct_outputs_top.get("skeleton_video") or "").strip(), "skeleton.mp4"),
+        ("Report TH (PDF)", str(direct_outputs_top.get("report_th_pdf") or "").strip(), "report_th.pdf"),
+        ("Report EN (PDF)", str(direct_outputs_top.get("report_en_pdf") or "").strip(), "report_en.pdf"),
+    ]
+    discovered_direct_items: List[tuple[str, str, str]] = []
+    discovered_seen: set[str] = set()
+    for _pfx in (f"{JOBS_GROUP_PREFIX}{direct_group_id}/", f"{JOBS_OUTPUT_PREFIX}groups/{direct_group_id}/"):
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=_pfx):
+                for item in page.get("Contents", []):
+                    k = str(item.get("Key") or "").strip()
+                    if not k or k in discovered_seen:
+                        continue
+                    kl = k.lower()
+                    if not (kl.endswith(".mp4") or kl.endswith(".pdf")):
+                        continue
+                    if "/input/" in kl:
+                        continue
+                    fname = os.path.basename(k)
+                    label = f"File: {fname}"
+                    if "dots.mp4" in kl:
+                        label = "Dots Video"
+                    elif "skeleton.mp4" in kl:
+                        label = "Skeleton Video"
+                    elif "_th.pdf" in kl:
+                        label = "Report TH (PDF)"
+                    elif "_en.pdf" in kl:
+                        label = "Report EN (PDF)"
+                    else:
+                        continue
+                    discovered_direct_items.append((label, k, fname))
+                    discovered_seen.add(k)
+        except Exception:
+            pass
+    if discovered_direct_items:
+        direct_items_top.extend(discovered_direct_items)
+    _tmp_items: List[tuple[str, str, str]] = []
+    _tmp_seen: set[str] = set()
+    for _label, _key, _fn in direct_items_top:
+        if not _key or _key in _tmp_seen:
+            continue
+        _tmp_items.append((_label, _key, _fn))
+        _tmp_seen.add(_key)
+    direct_items_top = _tmp_items
+    discovered_keys: set[str] = {k for (_, k, _) in discovered_direct_items}
+    dots_ready_top = bool(direct_outputs_top.get("dots_video")) and (
+        str(direct_outputs_top.get("dots_video") or "") in discovered_keys
+        or s3_key_exists(str(direct_outputs_top.get("dots_video") or ""))
+    )
+    skel_ready_top = bool(direct_outputs_top.get("skeleton_video")) and (
+        str(direct_outputs_top.get("skeleton_video") or "") in discovered_keys
+        or s3_key_exists(str(direct_outputs_top.get("skeleton_video") or ""))
+    )
+    ready_direct_top = [
+        (label, key, fn) for (label, key, fn) in direct_items_top
+        if key and (key in discovered_keys or s3_key_exists(key))
+    ]
+    if ready_direct_top:
+        report_ready = any("Report" in label for label, _, _ in ready_direct_top)
+        if not report_ready and (dots_ready_top or skel_ready_top):
+            st.caption("รายงาน PDF ยังกำลังประมวลผล รอสักครู่แล้วกดรีเฟรช")
+        else:
+            st.success("พบไฟล์พร้อมดาวน์โหลด")
+    else:
+        st.caption("หากได้รับอีเมลแล้ว ลิงก์ด้านล่างจะทำงานเมื่อไฟล์พร้อม (กดรีเฟรชหลัง 2–5 นาที)")
+    st.markdown("**ลิงก์ดาวน์โหลด**")
+    for label, key, fn in [
+        ("Dots Video", str(direct_outputs_top.get("dots_video") or "").strip(), "dots.mp4"),
+        ("Skeleton Video", str(direct_outputs_top.get("skeleton_video") or "").strip(), "skeleton.mp4"),
+        ("Report TH (PDF)", str(direct_outputs_top.get("report_th_pdf") or "").strip(), "report_th.pdf"),
+        ("Report EN (PDF)", str(direct_outputs_top.get("report_en_pdf") or "").strip(), "report_en.pdf"),
+    ]:
+        if key and fn:
+            try:
+                url = presigned_get_url(key, expires=3600, filename=fn)
+                st.link_button(f"⬇️ {label}", url, width="stretch")
+            except Exception:
+                st.caption(f"📥 {label} — กำลังประมวลผล (กดรีเฟรชเมื่อได้รับอีเมล)")
+    if (not dots_ready_top) or (not skel_ready_top):
+        _notify = str(st.session_state.get("last_notify_email") or "").strip()
+        _org = "SkillLane"
+        direct_rows = list_jobs_for_group(direct_group_id)
+        dots_active_top = any(
+            str(r.get("mode") or "").strip().lower() == "dots"
+            and str(r.get("status") or "").strip().lower() in ("pending", "processing")
+            for r in direct_rows
+        )
+        skel_active_top = any(
+            str(r.get("mode") or "").strip().lower() == "skeleton"
+            and str(r.get("status") or "").strip().lower() in ("pending", "processing")
+            for r in direct_rows
+        )
+        st.warning("ยังไม่ครบทุกวิดีโอ สามารถกดส่งงานซ้ำเฉพาะรายการที่ขาดได้")
+        d1, d2 = st.columns(2)
+        with d1:
+            if not dots_ready_top:
+                if st.button(
+                    "Force ส่งงาน Dots" if dots_active_top else "ส่งงาน Dots ใหม่",
+                    key=f"direct_force_dots_{direct_group_id}",
+                    width="stretch",
+                ):
+                    try:
+                        new_key = enqueue_video_only_job(
+                            group_id=direct_group_id,
+                            mode="dots",
+                            notify_email=_notify,
+                            employee_id=_notify,
+                            enterprise_folder=_org,
+                        )
+                        st.success(f"ส่งงาน Dots แล้ว: {new_key}")
+                    except Exception as e:
+                        st.error(f"ส่งงาน Dots ไม่สำเร็จ: {format_submit_error_message(e)}")
+        with d2:
+            if not skel_ready_top:
+                if st.button(
+                    "Force ส่งงาน Skeleton" if skel_active_top else "ส่งงาน Skeleton ใหม่",
+                    key=f"direct_force_skeleton_{direct_group_id}",
+                    width="stretch",
+                ):
+                    try:
+                        new_key = enqueue_video_only_job(
+                            group_id=direct_group_id,
+                            mode="skeleton",
+                            notify_email=_notify,
+                            employee_id=_notify,
+                            enterprise_folder=_org,
+                        )
+                        st.success(f"ส่งงาน Skeleton แล้ว: {new_key}")
+                    except Exception as e:
+                        st.error(f"ส่งงาน Skeleton ไม่สำเร็จ: {format_submit_error_message(e)}")
+elif not direct_group_id:
+    st.caption("กรุณาวาง Group ID จากอีเมลด้านบนเพื่อดูปุ่มดาวน์โหลด")
+
+# แสดงข้อความสำเร็จหลังส่งงาน
+if _just_submitted:
+    st.success(f"✅ ส่งงานเรียบร้อย! **Group ID:** `{_just_submitted}`")
+    st.info("ได้รับงานแล้ว — ระบบได้ทำการวิเคราะห์ ท่านจะได้รับ e-mail แจ้งผล ขอบคุณที่ใช้ AI People Reader")
 
 # Handle "Upload Video" click -> prepare direct upload
 if use_direct_upload and upload_clicked:
@@ -1557,8 +1640,9 @@ if run:
     if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
         note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
         st.stop()
-    # Page policy: SkillLane always uses full report style.
-    effective_report_style = "full"
+    # Page policy: use operation_test template for full layout (sub-bullets, graph pages).
+    # Sending "full" caused simplified single-page PDF when DOCX->PDF failed.
+    effective_report_style = "operation_test"
     # Deliver report as PDF.
     effective_report_format = "pdf"
     # SkillLane page policy: always enqueue TH+EN report jobs.
@@ -1592,6 +1676,14 @@ if run:
         except Exception as e:
             note.error(f"อัปโหลดไป S3 ไม่สำเร็จ: {format_submit_error_message(e)}")
             st.warning(SUPPORT_CONTACT_TEXT)
+            st.stop()
+        # Verify upload visible before enqueue (S3 eventual consistency)
+        for _ in range(5):
+            if s3_key_exists(input_key):
+                break
+            time.sleep(0.5)
+        if not s3_key_exists(input_key):
+            note.error("อัปโหลดสำเร็จแต่ระบบยังไม่เห็นไฟล์ กรุณากดเริ่มวิเคราะห์อีกครั้ง")
             st.stop()
     else:
         input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
@@ -1648,8 +1740,8 @@ if run:
         "languages": report_languages,
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",  # Use real MediaPipe analysis
-        "sample_fps": 5,
-        "max_frames": 300,
+        "sample_fps": 3,
+        "max_frames": 150,
         "report_style": effective_report_style,
         "report_format": effective_report_format,
         "expect_skeleton": bool(enable_skeleton),
@@ -1692,6 +1784,7 @@ if run:
         st.stop()
 
     st.session_state["last_group_id"] = group_id
+    st.session_state["skilllane_submission_id_override"] = group_id
     _persist_group_id_to_url(group_id)
     active_group_id = group_id
     st.session_state["last_outputs"] = outputs
@@ -1699,16 +1792,7 @@ if run:
     st.session_state["last_job_json_keys"] = queued_job_keys
     st.session_state["last_uploaded_filename"] = uploaded_filename_for_status
 
-    note.success(
-        f"ส่งงานเรียบร้อย! submission_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
-        f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
-    )
-    st.caption(f"Queued job keys: {', '.join(queued_job_keys.values())}")
-    if uploaded_filename_for_status:
-        st.success(f"Uploaded to S3: {uploaded_filename_for_status}")
-    st.caption(f"Submission ID: `{group_id}`")
-    st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
-
+    st.session_state["skilllane_show_submission_success"] = group_id
     if upload_done:
         try:
             for p in ("upload_done", "notify_email", "uploaded_file"):
@@ -1716,6 +1800,7 @@ if run:
                     del st.query_params[p]
         except Exception:
             pass
+    st.rerun()
 
 # Keep showing the latest submitted group in this session even before ownership index catches up.
 if not active_group_id:
@@ -1754,7 +1839,8 @@ if group_id:
 st.divider()
 st.subheader("ผลลัพธ์สำหรับดาวน์โหลด")
 
-group_id = active_group_id
+# ใช้ direct_group_id (จากช่องวางด้านบน) เป็น fallback เมื่อ active_group_id ว่าง
+group_id = active_group_id or direct_group_id
 if group_id:
     outputs = build_output_keys(group_id)
     # Get actual report paths from finished job JSON
@@ -1776,7 +1862,29 @@ else:
     if has_identity_input and not identity_verified:
         st.caption("กรุณากรอกอีเมลให้ถูกต้อง เพื่อดูเฉพาะงานของตนเอง")
     else:
-        st.caption("ยังไม่พบ Submission ID ที่เข้าถึงได้สำหรับบัญชีนี้ กรุณาอัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
+        st.caption("ยังไม่พบ Submission ID กรุณาวาง **Group ID จากอีเมล** ในช่องด้านบน แล้วกดรีเฟรช หรืออัปโหลดวิดีโอแล้วกด **เริ่มวิเคราะห์**")
+    st.divider()
+    # --- ข้อแนะนำในการอัดวีดีโอ และคลิปแนะนำ (แสดงด้านล่างสุด) ---
+    st.markdown("## ข้อแนะนำในการอัดวีดีโอ")
+    st.markdown(
+        """
+1. วิดีโอควรเป็นแนวตั้ง เห็นเต็มตัวหัวจรดเท้า
+2. กรุณาถ่ายวิดีโอเป็น **720 x 1280**, format **MP4 or MOV**
+3. กรุณาอย่าใส่สีขาว ดำ หรือสีเดียวกับผนัง
+4. กรุณาเลือกยืนหน้าผนังสีอ่อน หรือในกรณีที่ผนังสีเข้ม คุณควรใส่เสื้อผ้าสีอ่อน
+5. กรุณาเคลื่อนไหวและใช้ภาษามือเป็นธรรมชาติ
+6. โปรดตรวจสอบให้แน่ใจว่าวิดีโอของคุณมีความยาวอย่างน้อย 2 นาที
+"""
+    )
+    for training_video in TRAINING_VIDEOS:
+        title = str(training_video.get("title") or "").strip()
+        training_key = str(training_video.get("key") or "").strip()
+        if title:
+            st.markdown(f"### {title}")
+        if training_key and s3_key_exists(training_key):
+            st.video(presigned_get_url(training_key, expires=3600))
+        else:
+            st.warning(f"ไม่พบวิดีโอใน S3: {training_key}")
     st.divider()
     st.link_button(
         "กลับไปสู่บทเรียนออนไลน์ (SkillLane)",
@@ -1821,15 +1929,16 @@ def download_block(title: str, key: str, filename: str) -> None:
     if not key:
         st.write(f"- {title}: (ยังไม่มี key)")
         return
-    ready = s3_key_exists(key)
-    if ready:
+    try:
         url = presigned_get_url(key, expires=3600, filename=filename)
-        st.success(f"✅ {title} พร้อมดาวน์โหลด")
-        st.link_button(f"ดาวน์โหลด {title}", url, width="stretch")
-        st.code(key, language="text")
-    else:
+        ready = s3_key_exists(key)
+        if ready:
+            st.success(f"✅ {title} พร้อมดาวน์โหลด")
+        else:
+            st.caption(f"📥 {title} — ลองกดดาวน์โหลด (ถ้าได้รับอีเมลแล้ว ไฟล์น่าจะพร้อม)")
+        st.link_button(f"⬇️ ดาวน์โหลด {title}", url, width="stretch")
+    except Exception:
         st.warning(f"⏳ {title} ยังไม่พร้อม")
-        st.caption(SUPPORT_CONTACT_TEXT)
         st.code(key, language="text")
 
 
@@ -1865,51 +1974,26 @@ en_report_ready = bool(en_key) and s3_key_exists(en_key)
 th_report_ready = bool(th_key) and s3_key_exists(th_key)
 primary_done = th_report_ready
 
-# Show ready artifacts immediately without waiting for all outputs.
-ready_now = []
-if th_report_ready and th_key:
-    ready_now.append(("รายงาน TH", th_key, th_name))
-if en_report_ready and en_key:
-    ready_now.append(("รายงาน EN", en_key, en_name))
-if dots_ready:
-    ready_now.append(("วิดีโอ Dots", outputs.get("dots_video", ""), "dots.mp4"))
-if skeleton_ready:
-    ready_now.append(("วิดีโอ Skeleton", outputs.get("skeleton_video", ""), "skeleton.mp4"))
+# เสมอแสดงลิงก์ดาวน์โหลดทั้งหมด (กดได้แม้ s3 check ล้มเหลว — ถ้าได้รับอีเมลแล้วไฟล์น่าจะพร้อม)
+ready_now = [
+    ("รายงาน TH (PDF)", th_key, th_name),
+    ("รายงาน EN (PDF)", en_key, en_name),
+    ("วิดีโอ Dots", outputs.get("dots_video", ""), "dots.mp4"),
+    ("วิดีโอ Skeleton", outputs.get("skeleton_video", ""), "skeleton.mp4"),
+]
 
 st.divider()
 st.subheader("พร้อมดาวน์โหลดตอนนี้")
 if st.button("รีเฟรชสถานะผลลัพธ์", key="refresh_ready_downloads", width="content"):
     st.rerun()
-if ready_now:
-    for label, key, filename in ready_now:
-        url = presigned_get_url(key, expires=3600, filename=filename)
-        st.success(f"✅ {label} พร้อมแล้ว")
-        st.link_button(f"ดาวน์โหลด {label}", url, width="stretch")
-else:
-    st.info("ยังไม่มีไฟล์ที่พร้อมดาวน์โหลดตอนนี้ ระบบจะทยอยขึ้นให้ทันทีเมื่อไฟล์นั้นเสร็จ")
-st.caption("ถ้าไฟล์ไหนพร้อม จะขึ้นให้ก่อนทันที ไม่ต้องรอ Report และ Video ให้เสร็จพร้อมกัน")
-
-st.divider()
-st.markdown("## ข้อแนะนำในการอัดวีดีโอ")
-st.markdown(
-    """
-1. วิดีโอควรเป็นแนวตั้ง เห็นเต็มตัวหัวจรดเท้า
-2. กรุณาถ่ายวิดีโอเป็น **Full HD (1080 x 1920)**, format **MP4 or MOV**
-3. กรุณาอย่าใส่สีขาว ดำ หรือสีเดียวกับผนัง
-4. กรุณาเลือกยืนหน้าผนังสีอ่อน หรือในกรณีที่ผนังสีเข้ม คุณควรใส่เสื้อผ้าสีอ่อน
-5. กรุณาเคลื่อนไหวและใช้ภาษามือเป็นธรรมชาติ
-6. โปรดตรวจสอบให้แน่ใจว่าวิดีโอของคุณมีความยาวอย่างน้อย 2 นาที
-"""
-)
-for training_video in TRAINING_VIDEOS:
-    title = str(training_video.get("title") or "").strip()
-    training_key = str(training_video.get("key") or "").strip()
-    if title:
-        st.markdown(f"### {title}")
-    if training_key and s3_key_exists(training_key):
-        st.video(presigned_get_url(training_key, expires=3600))
-    else:
-        st.warning(f"ไม่พบวิดีโอใน S3: {training_key}")
+for label, key, filename in ready_now:
+    if key and filename:
+        try:
+            url = presigned_get_url(key, expires=3600, filename=filename)
+            st.link_button(f"⬇️ ดาวน์โหลด {label}", url, width="stretch")
+        except Exception:
+            pass
+st.caption("ถ้าได้รับอีเมลแล้ว ลิงก์ด้านบนจะทำงานเมื่อไฟล์พร้อม — กดรีเฟรชหลัง 2–5 นาที")
 
 st.divider()
 st.subheader("สถานะการประมวลผล")
@@ -1924,6 +2008,15 @@ if primary_done:
 else:
     overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
 st.progress(overall_pct, text=f"ความคืบหน้าโดยรวม: {overall_pct}%")
+# Auto-refresh every 12s when waiting for outputs
+if overall_pct < 100:
+    try:
+        @st.fragment(run_every=timedelta(seconds=8))
+        def _auto_refresh():
+            st.rerun()
+    except Exception:
+        pass
+
 for label, ready in status_items:
     item_pct = 100 if ready else 0
     st.progress(item_pct, text=f"{label}: {'พร้อมแล้ว' if ready else 'กำลังประมวลผล'} ({item_pct}%)")
@@ -1950,7 +2043,7 @@ if videos_ready and not th_report_ready:
     if st.button("สั่งสร้างรายงานใหม่", width="content"):
         try:
             guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            rerun_style = "full"
+            rerun_style = "operation_test"
             rerun_format = "pdf"
             rerun_email = notify_email
             if not rerun_email:
@@ -1970,6 +2063,29 @@ if videos_ready and not th_report_ready:
             st.success(f"ส่งงานสร้างรายงานใหม่เข้าคิวแล้ว ({rerun_style}, {rerun_format}): {new_report_key}")
         except Exception as e:
             st.error(f"ไม่สามารถส่งงานสร้างรายงานใหม่เข้าคิวได้: {format_submit_error_message(e)}")
+
+# --- ข้อแนะนำในการอัดวีดีโอ และคลิปแนะนำ (แสดงด้านล่างสุด) ---
+st.divider()
+st.markdown("## ข้อแนะนำในการอัดวีดีโอ")
+st.markdown(
+    """
+1. วิดีโอควรเป็นแนวตั้ง เห็นเต็มตัวหัวจรดเท้า
+2. กรุณาถ่ายวิดีโอเป็น **720 x 1280**, format **MP4 or MOV**
+3. กรุณาอย่าใส่สีขาว ดำ หรือสีเดียวกับผนัง
+4. กรุณาเลือกยืนหน้าผนังสีอ่อน หรือในกรณีที่ผนังสีเข้ม คุณควรใส่เสื้อผ้าสีอ่อน
+5. กรุณาเคลื่อนไหวและใช้ภาษามือเป็นธรรมชาติ
+6. โปรดตรวจสอบให้แน่ใจว่าวิดีโอของคุณมีความยาวอย่างน้อย 2 นาที
+"""
+)
+for training_video in TRAINING_VIDEOS:
+    title = str(training_video.get("title") or "").strip()
+    training_key = str(training_video.get("key") or "").strip()
+    if title:
+        st.markdown(f"### {title}")
+    if training_key and s3_key_exists(training_key):
+        st.video(presigned_get_url(training_key, expires=3600))
+    else:
+        st.warning(f"ไม่พบวิดีโอใน S3: {training_key}")
 
 st.divider()
 st.link_button(

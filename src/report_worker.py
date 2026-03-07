@@ -116,12 +116,13 @@ THAI_PDF_IMAGE_CAPTURE_STRICT = str(
 THAI_CAPTURE_FROM_DOCX_DIRECT = str(
     os.getenv("THAI_CAPTURE_FROM_DOCX_DIRECT", "true")
 ).strip().lower() in ("1", "true", "yes", "on")
-POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))
+POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "3"))
 PROCESSING_STALE_MINUTES = int(os.getenv("PROCESSING_STALE_MINUTES", "20"))
 PROCESSING_RECOVERY_MAX_ITEMS = int(os.getenv("PROCESSING_RECOVERY_MAX_ITEMS", "50"))
 PROCESSING_RECOVERY_INTERVAL_SECONDS = int(os.getenv("PROCESSING_RECOVERY_INTERVAL_SECONDS", "60"))
 IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
+JOB_MAX_RETRIES = int(os.getenv("JOB_MAX_RETRIES", "3"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
 OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS = int(
@@ -141,8 +142,8 @@ FORCED_NOTIFY_EMAILS = str(
 
 # Defaults (can be overridden per-job)
 DEFAULT_ANALYSIS_MODE = os.getenv("ANALYSIS_MODE", "real").strip().lower()  # "real" or "fallback"
-DEFAULT_SAMPLE_FPS = float(os.getenv("SAMPLE_FPS", "5"))
-DEFAULT_MAX_FRAMES = int(os.getenv("MAX_FRAMES", "300"))
+DEFAULT_SAMPLE_FPS = float(os.getenv("SAMPLE_FPS", "3"))
+DEFAULT_MAX_FRAMES = int(os.getenv("MAX_FRAMES", "150"))
 DEFAULT_POSE_MODEL_COMPLEXITY = int(os.getenv("POSE_MODEL_COMPLEXITY", "1"))
 DEFAULT_POSE_MIN_DET = float(os.getenv("POSE_MIN_DET", "0.5"))
 DEFAULT_POSE_MIN_TRACK = float(os.getenv("POSE_MIN_TRACK", "0.5"))
@@ -422,10 +423,14 @@ def _find_libreoffice_bin() -> str:
         if resolved:
             return resolved
     for candidate in (
+        # macOS (local dev)
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        # Linux
         "/usr/bin/libreoffice",
         "/usr/bin/soffice",
         "/usr/lib/libreoffice/program/soffice",
         "/usr/lib/libreoffice/program/soffice.bin",
+        # Render buildpack
         "/opt/render/project/src/.apt/usr/bin/libreoffice",
         "/opt/render/project/src/.apt/usr/bin/soffice",
         "/opt/render/project/src/.apt/usr/lib/libreoffice/program/soffice",
@@ -438,6 +443,7 @@ def _find_libreoffice_bin() -> str:
         import glob
 
         for pat in (
+            "/Applications/LibreOffice.app/**/soffice",
             "/opt/render/project/src/.apt/**/soffice",
             "/opt/render/project/src/.apt/**/libreoffice",
         ):
@@ -493,25 +499,40 @@ def _find_chrome_bin() -> str:
 def _convert_docx_to_pdf_via_libreoffice(
     docx_path: str, pdf_path: str, timeout: int = DOCX_TO_PDF_TIMEOUT_SECONDS
 ) -> None:
-    """Convert DOCX to PDF using LibreOffice headless."""
+    """Convert DOCX to PDF using LibreOffice headless.
+    Uses unique UserInstallation per run to avoid concurrent conversion conflicts
+    (multiple instances sharing the same profile cause intermittent failures).
+    """
     lo_bin = _find_libreoffice_bin()
     if not lo_bin:
         raise RuntimeError("LibreOffice binary not found (expected libreoffice/soffice)")
     out_dir = os.path.dirname(pdf_path)
-    cmd = [
-        lo_bin,
-        "--headless",
-        "--nologo",
-        "--nofirststartwizard",
-        "--convert-to",
-        "pdf:writer_pdf_Export",
-        "--outdir",
-        out_dir,
-        os.path.abspath(docx_path),
-    ]
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, check=False, timeout=timeout
-    )
+    # Unique profile dir per conversion — prevents "sometimes works, sometimes doesn't"
+    # when TH+EN or multiple jobs run in parallel.
+    profile_dir = os.path.join(out_dir, f"lo_profile_{os.getpid()}_{id(docx_path)}")
+    os.makedirs(profile_dir, exist_ok=True)
+    try:
+        profile_uri = Path(profile_dir).resolve().as_uri()  # e.g. file:///tmp/.../lo_profile_xxx
+        cmd = [
+            lo_bin,
+            f"-env:UserInstallation={profile_uri}",
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--convert-to",
+            "pdf:writer_pdf_Export",
+            "--outdir",
+            out_dir,
+            os.path.abspath(docx_path),
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=timeout
+        )
+    finally:
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        except Exception:
+            pass
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"LibreOffice failed (rc={proc.returncode}): {err[:500]}")
@@ -538,6 +559,9 @@ def _convert_docx_to_pdf_via_docx2pdf(docx_path: str, pdf_path: str) -> None:
     docx2pdf_convert(os.path.abspath(docx_path), os.path.abspath(pdf_path))
 
 
+DOCX_TO_PDF_RETRIES = int(os.getenv("DOCX_TO_PDF_RETRIES", "2"))  # Retry once on transient failure
+
+
 def convert_docx_bytes_to_pdf_bytes(docx_bytes: bytes, filename_stem: str = "report") -> bytes:
     if not docx_bytes:
         raise RuntimeError("DOCX bytes are empty")
@@ -548,20 +572,28 @@ def convert_docx_bytes_to_pdf_bytes(docx_bytes: bytes, filename_stem: str = "rep
         with open(input_path, "wb") as f:
             f.write(docx_bytes)
 
-        # Try LibreOffice first (cross-platform).
-        try:
-            _convert_docx_to_pdf_via_libreoffice(
-                input_path, pdf_path, timeout=DOCX_TO_PDF_TIMEOUT_SECONDS
-            )
-        except Exception as e:
+        last_err = None
+        for attempt in range(max(1, DOCX_TO_PDF_RETRIES)):
+            try:
+                _convert_docx_to_pdf_via_libreoffice(
+                    input_path, pdf_path, timeout=DOCX_TO_PDF_TIMEOUT_SECONDS
+                )
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt + 1 < max(1, DOCX_TO_PDF_RETRIES):
+                    logger.warning("[pdf] docx->pdf attempt %s failed, retrying: %s", attempt + 1, e)
+                    time.sleep(1)  # Brief pause before retry
+
+        if last_err:
             if USE_DOCX2PDF_FALLBACK:
-                # Fallback: docx2pdf (Windows + Word).
                 try:
                     _convert_docx_to_pdf_via_docx2pdf(input_path, pdf_path)
                 except Exception as e2:
-                    raise RuntimeError(f"LibreOffice failed: {e} | docx2pdf fallback failed: {e2}")
+                    raise RuntimeError(f"LibreOffice failed: {last_err} | docx2pdf fallback failed: {e2}")
             else:
-                raise
+                raise last_err
 
         if not os.path.exists(pdf_path):
             raise RuntimeError("PDF conversion succeeded but output not found")
@@ -1002,12 +1034,18 @@ def convert_docx_bytes_to_image_pdf_bytes(docx_bytes: bytes, filename_stem: str 
             raise RuntimeError("DOCX image-capture PDF output is empty")
         return result
 
-def s3_key_exists(key: str) -> bool:
-    try:
-        s3.head_object(Bucket=AWS_BUCKET, Key=key)
-        return True
-    except Exception:
-        return False
+def s3_key_exists(key: str, retries: int = 3) -> bool:
+    """Check if S3 key exists. Retries on transient errors (eventual consistency, network)."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            s3.head_object(Bucket=AWS_BUCKET, Key=key)
+            return True
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(0.3 * (attempt + 1))
+    return False
 
 def guess_content_type(filename: str) -> str:
     fn = (filename or "").lower()
@@ -1331,7 +1369,8 @@ def send_result_email(
 <html>
   <body>
     <p><b>Job ID:</b> {escape(job_id)}<br/>
-       <b>Group ID:</b> {escape(group_id)}</p>
+       <b>Group ID / Submission ID:</b> {escape(group_id)}<br/>
+       <small>(วางรหัสนี้ในหน้าเว็บเพื่อดาวน์โหลดผลลัพธ์)</small></p>
     {attached_html}
     {videos_html}
     {reports_html}
@@ -1970,6 +2009,15 @@ def find_one_pending_job_key() -> Optional[str]:
 
         mode = str(job.get("mode") or "").strip().lower()
         if mode in ("report", "report_th_en", "report_generator"):
+            # Skip jobs that are in retry backoff
+            retry_after = job.get("retry_after")
+            if retry_after is not None:
+                try:
+                    ts = float(retry_after)
+                    if time.time() < ts:
+                        continue
+                except (TypeError, ValueError):
+                    pass
             priority = int(job.get("priority") or 0)
             created_at = str(job.get("created_at") or "")
             if (
@@ -2112,7 +2160,7 @@ def generate_reports_for_lang(
 
     # Run First Impression analysis (guard against MediaPipe runtime/import issues).
     try:
-        first_impression = analyze_first_impression_from_video(video_path, sample_every_n=5, max_frames=200)
+        first_impression = analyze_first_impression_from_video(video_path, sample_every_n=3, max_frames=100)
     except Exception as e:
         logger.warning("[first_impression] analysis failed, using zero fallback: %s", e)
         first_impression = FirstImpressionData(
@@ -2228,25 +2276,8 @@ def generate_reports_for_lang(
             logger.warning("[pdf] docx->pdf conversion failed for lang=%s: %s", lang_code, e)
             pdf_bytes = None
 
-        if (not pdf_bytes) and PDF_VIA_HTML_FIRST:
-            if html_out_path:
-                try:
-                    pdf_bytes = convert_html_file_to_pdf_bytes(
-                        html_path=html_out_path,
-                        filename_stem=f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}",
-                    )
-                    logger.info("[pdf] generated via html->pdf conversion lang=%s", lang_code)
-                    pdf_generation_mode = f"html_{HTML_PDF_ENGINE}"
-                except Exception as e:
-                    logger.warning("[pdf] html->pdf conversion failed for lang=%s: %s", lang_code, e)
-                    pdf_bytes = None
-
-        if strict_html_pdf and (not pdf_bytes):
-            raise RuntimeError(
-                "operation_test strict html->pdf enabled: html->pdf conversion failed; "
-                "fallback to docx/reportlab is disabled"
-            )
-
+        # When DOCX fails: try ReportLab first (reliable multi-page + sub-bullets).
+        # HTML->PDF can produce single-page or missing sub-bullets due to Chrome print quirks.
         if not pdf_bytes:
             pdf_out_path = os.path.join(out_dir, f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf")
             try:
@@ -2263,8 +2294,28 @@ def generate_reports_for_lang(
                         pdf_bytes = f.read()
                     if pdf_bytes:
                         pdf_generation_mode = "reportlab"
+                        logger.info("[pdf] generated via reportlab fallback lang=%s (full layout)", lang_code)
             except Exception as e:
-                logger.warning("[pdf] PDF build failed for lang=%s: %s", lang_code, e)
+                logger.warning("[pdf] reportlab fallback failed for lang=%s: %s", lang_code, e)
+                pdf_bytes = None
+
+        if strict_html_pdf and (not pdf_bytes):
+            raise RuntimeError(
+                "operation_test strict mode: docx->pdf and reportlab both failed; "
+                "html->pdf fallback is disabled"
+            )
+
+        # Last resort: HTML -> PDF (can have print/layout quirks).
+        if (not pdf_bytes) and PDF_VIA_HTML_FIRST and html_out_path:
+            try:
+                pdf_bytes = convert_html_file_to_pdf_bytes(
+                    html_path=html_out_path,
+                    filename_stem=f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}",
+                )
+                logger.info("[pdf] generated via html->pdf conversion lang=%s (last resort)", lang_code)
+                pdf_generation_mode = f"html_{HTML_PDF_ENGINE}"
+            except Exception as e:
+                logger.warning("[pdf] html->pdf conversion failed for lang=%s: %s", lang_code, e)
                 pdf_bytes = None
 
     key_map = {
@@ -2389,6 +2440,13 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     docx_bytes,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
+                if report_style == "operation_test" and group_id:
+                    ui_docx = f"jobs/output/groups/{group_id}/report_{lang_code}.docx"
+                    upload_bytes(
+                        ui_docx,
+                        docx_bytes,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
 
             # Upload HTML (when generated) for debug/preview.
             html_key = None
@@ -2459,6 +2517,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     if canonical_pdf_key != pdf_key:
                         upload_bytes(canonical_pdf_key, pdf_bytes, "application/pdf")
                     pdf_key = canonical_pdf_key
+                # Always upload to jobs/output/groups/ so local web and UI default paths (report_en.pdf, report_th.pdf) work
+                if group_id:
+                    ui_canonical = f"jobs/output/groups/{group_id}/report_{lang_code}.pdf"
+                    upload_bytes(ui_canonical, pdf_bytes, "application/pdf")
 
             outputs["graphs"][lang_code.upper()] = {"graph1_key": g1_key, "graph2_key": g2_key}
             outputs["reports"][lang_code.upper()] = {
@@ -2662,6 +2724,15 @@ def process_job(job_json_key: str) -> None:
         logger.info("[process_job] Skipping job_id=%s group_id=%s mode=%s (not a report job)", job_id, group_id, mode)
         return  # Leave job in pending for other workers
 
+    # Verify input video exists before taking the job (avoids processing when upload not ready)
+    input_key = str(raw_job.get("input_key") or "").strip()
+    if not input_key:
+        logger.warning("[process_job] job_id=%s missing input_key, skipping", job_id)
+        return
+    if not s3_key_exists(input_key):
+        logger.warning("[process_job] job_id=%s input_key=%s not found in S3, leaving in pending (will retry)", job_id, input_key)
+        return
+
     # Move to processing
     job = dict(raw_job)
     job = update_status(job, "processing", error=None)
@@ -2679,9 +2750,21 @@ def process_job(job_json_key: str) -> None:
 
     except Exception as exc:
         logger.exception("[process_job] job_id=%s group_id=%s FAILED: %s", job_id, group_id, exc)
-        job = update_status(job, "failed", error=str(exc))
-        failed_key = f"{FAILED_PREFIX}/{job_id}.json"
-        move_json(processing_key, failed_key, job)
+        retry_count = int(job.get("retry_count") or 0)
+        if retry_count < JOB_MAX_RETRIES:
+            job["retry_count"] = retry_count + 1
+            job["last_error"] = str(exc)
+            # Backoff: wait before retry (30s, 60s, 90s) so transient issues can resolve
+            backoff_sec = 30 * (retry_count + 1)
+            job["retry_after"] = (datetime.now(timezone.utc).timestamp() + backoff_sec)
+            job = update_status(job, "pending", error=None)
+            pending_key = f"{PENDING_PREFIX}/{job_id}.json"
+            move_json(processing_key, pending_key, job)
+            logger.info("[process_job] job_id=%s retry %d/%d, moved to pending (retry_after +%ds)", job_id, retry_count + 1, JOB_MAX_RETRIES, backoff_sec)
+        else:
+            job = update_status(job, "failed", error=str(exc))
+            failed_key = f"{FAILED_PREFIX}/{job_id}.json"
+            move_json(processing_key, failed_key, job)
 
 
 # -----------------------------------------
@@ -2692,12 +2775,17 @@ def main() -> None:
     logger.info("Using bucket: %s", AWS_BUCKET)
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)
+    lo_bin = _find_libreoffice_bin()
     logger.info(
         "PDF config   : via_html_first=%s html_engine=%s thai_image_capture=%s thai_docx_direct=%s",
         PDF_VIA_HTML_FIRST,
         HTML_PDF_ENGINE,
         THAI_PDF_IMAGE_CAPTURE,
         THAI_CAPTURE_FROM_DOCX_DIRECT,
+    )
+    logger.info(
+        "LibreOffice  : %s (DOCX->PDF primary path; if empty, will fallback to ReportLab)",
+        lo_bin or "(not found - install LibreOffice for local: https://www.libreoffice.org/download)",
     )
     logger.info(
         "PDF strict   : html_strict_for_operation_test=%s",

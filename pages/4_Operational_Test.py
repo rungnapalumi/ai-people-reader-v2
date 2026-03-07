@@ -478,6 +478,8 @@ def ensure_session_defaults() -> None:
         st.session_state["operation_test_group_id"] = ""
     if "operation_test_upload_nonce" not in st.session_state:
         st.session_state["operation_test_upload_nonce"] = 0
+    if "clear_upload_counter" not in st.session_state:
+        st.session_state["clear_upload_counter"] = 0
 
 
 def read_group_id_from_url() -> str:
@@ -521,12 +523,10 @@ components.html(
 )
 
 st.markdown("# Operational Test")
+
+st.divider()
 st.caption("Select specific functions to test. Useful when debugging — run only what you need.")
-manual_group_id = st.text_input(
-    "Check result by Submission ID (optional)",
-    value=read_group_id_from_url(),
-    placeholder="Paste submission_id from email to fetch result on this page",
-).strip()
+_op_clear = st.session_state.get("clear_upload_counter", 0)
 
 name = st.text_input("Name (optional)", value="", placeholder="e.g., John Doe")
 st.markdown("### Email Recipients")
@@ -563,7 +563,7 @@ uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
-    key=f"operation_test_uploader_{st.session_state['operation_test_upload_nonce']}",
+    key=f"operation_test_uploader_{_op_clear}_{st.session_state.get('operation_test_upload_nonce', 0)}",
 )
 
 if uploaded is not None:
@@ -574,10 +574,8 @@ run = st.button("Run selected functions", type="primary", width="stretch", disab
 st.caption(SUPPORT_CONTACT_TEXT)
 notice = st.empty()
 
-op_group_hint = str(manual_group_id or st.session_state.get("operation_test_group_id") or read_group_id_from_url() or "").strip()
-st.markdown("### สถานะการอัปโหลด/ส่งงาน")
-if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="optest_refresh_status_top", width="content"):
-    st.rerun()
+op_top_group_id = str(st.session_state.get("operation_test_group_id") or read_group_id_from_url() or "").strip()
+op_group_hint = op_top_group_id
 if run and not uploaded:
     st.warning("ยังไม่ได้เลือกไฟล์วิดีโอ กรุณาเลือกไฟล์ก่อนกด Run selected functions")
 elif run and uploaded is not None:
@@ -589,6 +587,70 @@ elif op_group_hint:
 else:
     st.caption("ยังไม่เริ่มอัปโหลด กรุณาเลือกไฟล์และกด Run selected functions")
 
+# --- ดาวน์โหลดผลจากอีเมล (แสดงด้านล่างปุ่ม Run selected functions) ---
+st.divider()
+st.markdown("### 📥 ดาวน์โหลดผลลัพธ์ (ได้รับอีเมลแล้ว)")
+st.caption("วาง Group ID จากอีเมล (บรรทัด 'Group ID: ...') ด้านล่าง แล้วกดรีเฟรช")
+manual_group_id = st.text_input(
+    "Submission ID / Group ID (วางจากอีเมลได้)",
+    value=read_group_id_from_url(),
+    placeholder="Paste submission_id from email to fetch result on this page",
+    key=f"operation_test_manual_group_id_{_op_clear}",
+).strip()
+if manual_group_id:
+    st.session_state["operation_test_group_id"] = manual_group_id
+    persist_group_id_to_url(manual_group_id)
+_op_btn1, _op_btn2 = st.columns(2)
+with _op_btn1:
+    if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="optest_refresh_status_top", width="content"):
+        st.rerun()
+with _op_btn2:
+    _op_has_prev = bool(manual_group_id or st.session_state.get("operation_test_group_id") or read_group_id_from_url())
+    if _op_has_prev and st.button("🗑️ ล้างผลลัพธ์เพื่ออัปโหลดวิดีโอใหม่", key="optest_clear_results_top", type="secondary"):
+        for _k in ("operation_test_group_id", "operation_test_queued", "operation_test_queued_keys", "last_uploaded_filename"):
+            st.session_state.pop(_k, None)
+        st.session_state["clear_upload_counter"] = st.session_state.get("clear_upload_counter", 0) + 1
+        try:
+            if "group_id" in st.query_params:
+                del st.query_params["group_id"]
+        except Exception:
+            pass
+        st.rerun()
+
+op_top_group_id = str(manual_group_id or st.session_state.get("operation_test_group_id") or read_group_id_from_url() or "").strip()
+if op_top_group_id:
+    st.caption(f"กำลังตรวจไฟล์จาก Submission ID: `{op_top_group_id}`")
+    op_outputs = build_output_keys(op_top_group_id)
+    op_found_videos = find_dots_skeleton_keys(op_top_group_id)
+    op_found_reports = find_report_keys_in_s3(op_top_group_id)
+    op_dots_key = op_outputs.get("dots_video", "") or op_found_videos.get("dots_video", "")
+    op_skel_key = op_outputs.get("skeleton_video", "") or op_found_videos.get("skeleton_video", "")
+    op_th_key = op_found_reports.get("pdf_th") or op_found_reports.get("docx_th", "")
+    op_en_key = op_found_reports.get("pdf_en") or op_found_reports.get("docx_en", "")
+    op_items = [
+        ("Dots Video", op_dots_key, "dots.mp4"),
+        ("Skeleton Video", op_skel_key, "skeleton.mp4"),
+        ("Report TH (PDF/DOCX)", op_th_key, "report_th.pdf" if (op_found_reports.get("pdf_th") or "").strip() else "report_th.docx"),
+        ("Report EN (PDF/DOCX)", op_en_key, "report_en.pdf" if (op_found_reports.get("pdf_en") or "").strip() else "report_en.docx"),
+    ]
+    op_ready = any(key and s3_key_exists(key) for _, key, _ in op_items)
+    if op_ready:
+        st.success("พบไฟล์พร้อมดาวน์โหลด")
+    else:
+        st.caption("หากได้รับอีเมลแล้ว ลิงก์ด้านล่างจะทำงานเมื่อไฟล์พร้อม (กดรีเฟรชหลัง 2–5 นาที)")
+    st.markdown("**ลิงก์ดาวน์โหลด**")
+    for label, key, fn in op_items:
+        if key:
+            fn_use = fn if fn in ("dots.mp4", "skeleton.mp4") else (os.path.basename(key) or fn)
+            try:
+                url = presigned_get_url(key, expires=3600, filename=fn_use)
+                st.link_button(f"⬇️ {label}", url, width="stretch")
+            except Exception:
+                pass
+elif not op_top_group_id:
+    st.caption("กรุณาวาง Group ID จากอีเมลด้านบนเพื่อดูปุ่มดาวน์โหลด")
+
+st.divider()
 if run:
     if not uploaded:
         notice.error("Please upload a video first.")
@@ -696,8 +758,8 @@ if run:
                 "languages": report_pdf_languages,
                 "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
                 "analysis_mode": "real",
-                "sample_fps": 5,
-                "max_frames": 300,
+                "sample_fps": 3,
+                "max_frames": 150,
                 "report_style": "operation_test",
                 "report_format": "pdf",
                 "notify_email": notify_email.strip(),
@@ -720,8 +782,8 @@ if run:
                 "languages": report_docx_languages,
                 "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
                 "analysis_mode": "real",
-                "sample_fps": 5,
-                "max_frames": 300,
+                "sample_fps": 3,
+                "max_frames": 150,
                 "report_style": "operation_test",
                 "report_format": "docx",
                 "notify_email": notify_email.strip(),
@@ -746,8 +808,8 @@ if run:
                 "languages": report_html_languages,
                 "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
                 "analysis_mode": "real",
-                "sample_fps": 5,
-                "max_frames": 300,
+                "sample_fps": 3,
+                "max_frames": 150,
                 "report_style": "operation_test",
                 "report_format": "html",
                 "notify_email": notify_email.strip(),

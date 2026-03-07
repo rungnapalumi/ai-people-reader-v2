@@ -539,8 +539,8 @@ def enqueue_report_only_job(
         "languages": ["th"],
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",
-        "sample_fps": 5,
-        "max_frames": 300,
+        "sample_fps": 3,
+        "max_frames": 150,
         "report_style": report_style,
         "report_format": report_format,
         "expect_skeleton": False,
@@ -756,20 +756,21 @@ def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
         for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
             for item in page.get("Contents", []):
                 key = item["Key"]
+                kl = key.lower()
                 if key.endswith(".docx"):
-                    if "_EN.docx" in key:
+                    if "report_en.docx" in kl or "_en.docx" in kl:
                         result["report_en_docx"] = key
-                    elif "_TH.docx" in key:
+                    elif "report_th.docx" in kl or "_th.docx" in kl:
                         result["report_th_docx"] = key
                 elif key.endswith(".pdf"):
-                    if "_EN.pdf" in key:
+                    if "report_en.pdf" in kl or "_en.pdf" in kl:
                         result["report_en_pdf"] = key
-                    elif "_TH.pdf" in key:
+                    elif "report_th.pdf" in kl or "_th.pdf" in kl:
                         result["report_th_pdf"] = key
                 elif key.endswith(".html"):
-                    if "_EN.html" in key:
+                    if "report_en.html" in kl or "_en.html" in kl:
                         result["report_en_html"] = key
-                    elif "_TH.html" in key:
+                    elif "report_th.html" in kl or "_th.html" in kl:
                         result["report_th_html"] = key
         
         return result
@@ -793,6 +794,10 @@ def ensure_session_defaults() -> None:
         st.session_state["last_jobs"] = {}
     if "last_job_json_keys" not in st.session_state:
         st.session_state["last_job_json_keys"] = {}
+    if "clear_upload_counter" not in st.session_state:
+        st.session_state["clear_upload_counter"] = 0
+    if "ttb_submission_id_override" not in st.session_state:
+        st.session_state["ttb_submission_id_override"] = ""
 
 def _read_group_id_from_url() -> str:
     try:
@@ -839,6 +844,68 @@ def infer_job_bucket_status(job_key: str) -> str:
     return "unknown"
 
 
+def list_jobs_for_group(group_id: str) -> list:
+    gid = str(group_id or "").strip()
+    if not gid:
+        return []
+    rows = []
+    prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
+    try:
+        for prefix in prefixes:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = str(item.get("Key") or "")
+                    if not key.endswith(".json"):
+                        continue
+                    job_data = s3_read_json(key) or {}
+                    if str(job_data.get("group_id") or "").strip() != gid:
+                        continue
+                    rows.append(
+                        {
+                            "status": infer_job_bucket_status(key),
+                            "mode": str(job_data.get("mode") or "").strip() or "-",
+                            "job_id": str(job_data.get("job_id") or "").strip() or "-",
+                            "job_key": key,
+                            "updated_at": str(job_data.get("updated_at") or job_data.get("created_at") or "").strip() or "-",
+                        }
+                    )
+    except Exception:
+        return []
+    rows.sort(key=lambda x: (str(x.get("updated_at") or ""), str(x.get("job_key") or "")), reverse=True)
+    return rows
+
+
+def enqueue_video_only_job(
+    group_id: str,
+    mode: str,
+    notify_email: str = "",
+    employee_id: str = "",
+    enterprise_folder: str = "",
+) -> str:
+    mode_norm = str(mode or "").strip().lower()
+    if mode_norm not in ("dots", "skeleton"):
+        raise ValueError("mode must be 'dots' or 'skeleton'")
+    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+    if not s3_key_exists(input_key):
+        raise RuntimeError(f"Input video not found for group_id={group_id}")
+    output_key = f"{JOBS_OUTPUT_PREFIX}groups/{group_id}/{mode_norm}.mp4"
+    job = {
+        "job_id": new_job_id(),
+        "group_id": group_id,
+        "created_at": utc_now_iso(),
+        "status": "pending",
+        "mode": mode_norm,
+        "input_key": input_key,
+        "output_key": output_key,
+        "notify_email": (notify_email or "").strip(),
+        "enterprise_folder": (enterprise_folder or "").strip() or "TTB",
+        "employee_id": (employee_id or "").strip(),
+        "employee_email": (notify_email or "").strip(),
+    }
+    return enqueue_legacy_job(job)
+
+
 # -------------------------
 # UI
 # -------------------------
@@ -863,11 +930,16 @@ components.html(
 )
 
 url_group_id = _read_group_id_from_url()
-if url_group_id and not st.session_state.get("last_group_id"):
-    st.session_state["last_group_id"] = url_group_id
+if url_group_id:
+    if not st.session_state.get("last_group_id"):
+        st.session_state["last_group_id"] = url_group_id
+    if not st.session_state.get("ttb_submission_id_override"):
+        st.session_state["ttb_submission_id_override"] = url_group_id
 
 st.markdown("# Video Analysis (วิเคราะห์วิดีโอ)")
-st.caption("Upload your video once, then click **Run Analysis** to generate skeleton + reports (EN/TH).")
+
+st.divider()
+st.caption("อัปโหลดวิดีโอ 1 ครั้ง แล้วกด **Run Analysis** เพื่อสร้างผลลัพธ์")
 
 page_default_org = get_default_org_for_page("ttb")
 enterprise_folder = st.text_input(
@@ -899,6 +971,7 @@ uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
+    key=f"ttb_file_uploader_{st.session_state.get('clear_upload_counter', 0)}",
 )
 if uploaded is not None:
     uploaded_name = str(uploaded.name or "input.mp4")
@@ -908,10 +981,8 @@ if uploaded is not None:
 run = st.button("🎬 Run Analysis", type="primary", width="stretch", disabled=(uploaded is None))
 st.caption(SUPPORT_CONTACT_TEXT)
 
-last_group_hint = str(st.session_state.get("last_group_id") or url_group_id or "").strip()
-st.markdown("### สถานะการอัปโหลด/ส่งงาน")
-if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="ttb_refresh_status_top", width="content"):
-    st.rerun()
+ttb_direct_group_id = str(st.session_state.get("ttb_submission_id_override") or _read_group_id_from_url() or st.session_state.get("last_group_id") or "").strip()
+last_group_hint = str(st.session_state.get("last_group_id") or url_group_id or ttb_direct_group_id or "").strip()
 if run and not uploaded:
     st.warning("ยังไม่ได้เลือกไฟล์วิดีโอ กรุณาเลือกไฟล์ก่อนกด Run Analysis")
 elif run and uploaded is not None:
@@ -923,12 +994,122 @@ elif last_group_hint:
 else:
     st.caption("ยังไม่เริ่มอัปโหลด กรุณาเลือกไฟล์และกด Run Analysis")
 
+# --- ดาวน์โหลดผลจากอีเมล (แสดงด้านล่างปุ่ม Run Analysis) ---
+st.divider()
+st.markdown("### 📥 ดาวน์โหลดผลลัพธ์ (ได้รับอีเมลแล้ว)")
+st.caption("วาง Group ID จากอีเมล (บรรทัด 'Group ID: ...') ด้านล่าง แล้วกดรีเฟรช")
+_ttb_sub_id_key = f"ttb_submission_id_top_{st.session_state.get('clear_upload_counter', 0)}"
+ttb_submission_id_override = st.text_input(
+    "Submission ID / Group ID (วางจากอีเมลได้)",
+    value=str(st.session_state.get("ttb_submission_id_override") or ""),
+    placeholder="เช่น 20260306_094309_e7d062_user",
+    key=_ttb_sub_id_key,
+    help="คัดลอก Group ID จากอีเมล วางตรงนี้ แล้วกดรีเฟรช",
+).strip()
+if ttb_submission_id_override:
+    st.session_state["ttb_submission_id_override"] = ttb_submission_id_override
+    st.session_state["last_group_id"] = ttb_submission_id_override
+    _persist_group_id_to_url(ttb_submission_id_override)
+_ttb_btn1, _ttb_btn2 = st.columns(2)
+with _ttb_btn1:
+    if st.button("🔄 รีเฟรชสถานะผลลัพธ์", key="ttb_refresh_status_top", width="content"):
+        st.rerun()
+with _ttb_btn2:
+    _ttb_has_prev = bool(
+        ttb_submission_id_override
+        or st.session_state.get("ttb_submission_id_override")
+        or st.session_state.get("last_group_id")
+        or _read_group_id_from_url()
+    )
+    if _ttb_has_prev and st.button("🗑️ ล้างผลลัพธ์เพื่ออัปโหลดวิดีโอใหม่", key="ttb_clear_results_top", type="secondary"):
+        for _k in ("ttb_submission_id_override", "last_group_id", "last_outputs", "last_jobs", "last_job_json_keys", "last_uploaded_filename"):
+            st.session_state.pop(_k, None)
+        st.session_state["clear_upload_counter"] = st.session_state.get("clear_upload_counter", 0) + 1
+        try:
+            if "group_id" in st.query_params:
+                del st.query_params["group_id"]
+        except Exception:
+            pass
+        st.rerun()
+
+ttb_direct_group_id = str(ttb_submission_id_override or _read_group_id_from_url() or st.session_state.get("last_group_id") or "").strip()
+if ttb_direct_group_id:
+    st.caption(f"กำลังตรวจไฟล์จาก Submission ID: `{ttb_direct_group_id}`")
+    ttb_direct_outputs = build_output_keys(ttb_direct_group_id)
+    ttb_job_report_outputs = get_report_outputs_from_job(ttb_direct_group_id)
+    ttb_direct_reports = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{ttb_direct_group_id}")
+    if not ttb_direct_reports.get("report_en_pdf") or not ttb_direct_reports.get("report_th_pdf"):
+        ttb_scanned = find_report_files_in_s3(f"{JOBS_GROUP_PREFIX}{ttb_direct_group_id}")
+        for k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
+            if ttb_scanned.get(k) and not ttb_direct_reports.get(k):
+                ttb_direct_reports[k] = ttb_scanned[k]
+    for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
+        if ttb_job_report_outputs.get(_k):
+            ttb_direct_outputs[_k] = str(ttb_job_report_outputs.get(_k) or "").strip()
+        elif ttb_direct_reports.get(_k):
+            ttb_direct_outputs[_k] = str(ttb_direct_reports.get(_k) or "").strip()
+    ttb_discovered_keys: set = set()
+    for _pfx in (f"{JOBS_GROUP_PREFIX}{ttb_direct_group_id}/", f"{JOBS_OUTPUT_PREFIX}groups/{ttb_direct_group_id}/"):
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=_pfx):
+                for item in page.get("Contents", []):
+                    k = str(item.get("Key") or "").strip()
+                    kl = k.lower() if k else ""
+                    if k and (kl.endswith(".mp4") or kl.endswith(".pdf") or kl.endswith(".docx")) and "/input/" not in kl:
+                        ttb_discovered_keys.add(k)
+        except Exception:
+            pass
+    ttb_ready = [
+        (label, key, fn)
+        for label, key, fn in [
+            ("Dots Video", str(ttb_direct_outputs.get("dots_video") or "").strip(), "dots.mp4"),
+            ("Skeleton Video", str(ttb_direct_outputs.get("skeleton_video") or "").strip(), "skeleton.mp4"),
+            ("Report TH", str(ttb_direct_outputs.get("report_th_pdf") or ttb_direct_outputs.get("report_th_docx") or "").strip(), "report_th.pdf"),
+            ("Report EN", str(ttb_direct_outputs.get("report_en_pdf") or ttb_direct_outputs.get("report_en_docx") or "").strip(), "report_en.pdf"),
+        ]
+        if key and (key in ttb_discovered_keys or s3_key_exists(key))
+    ]
+    if ttb_ready:
+        st.success("พบไฟล์พร้อมดาวน์โหลด")
+    else:
+        st.caption("หากได้รับอีเมลแล้ว ลิงก์ด้านล่างจะทำงานเมื่อไฟล์พร้อม (กดรีเฟรชหลัง 2–5 นาที)")
+    st.markdown("**ลิงก์ดาวน์โหลด**")
+    for label, key, fn in [
+        ("Dots Video", str(ttb_direct_outputs.get("dots_video") or "").strip(), "dots.mp4"),
+        ("Skeleton Video", str(ttb_direct_outputs.get("skeleton_video") or "").strip(), "skeleton.mp4"),
+        ("Report TH (PDF/DOCX)", str(ttb_direct_outputs.get("report_th_pdf") or ttb_direct_outputs.get("report_th_docx") or "").strip(), "report_th.pdf"),
+        ("Report EN (PDF/DOCX)", str(ttb_direct_outputs.get("report_en_pdf") or ttb_direct_outputs.get("report_en_docx") or "").strip(), "report_en.pdf"),
+    ]:
+        if key:
+            fn_use = os.path.basename(key) or fn
+            try:
+                url = presigned_get_url(key, expires=3600, filename=fn_use)
+                st.link_button(f"⬇️ {label}", url, width="stretch")
+            except Exception:
+                pass
+    ttb_skel_ready = bool(ttb_direct_outputs.get("skeleton_video")) and (str(ttb_direct_outputs.get("skeleton_video") or "") in ttb_discovered_keys or s3_key_exists(str(ttb_direct_outputs.get("skeleton_video") or "")))
+    if not ttb_skel_ready:
+        _ttb_notify = str(st.session_state.get("last_notify_email") or "").strip()
+        ttb_rows = list_jobs_for_group(ttb_direct_group_id)
+        skel_active = any(str(r.get("mode") or "").strip().lower() == "skeleton" and str(r.get("status") or "").strip().lower() in ("pending", "processing") for r in ttb_rows)
+        st.warning("ยังไม่ครบทุกวิดีโอ สามารถกดส่งงานซ้ำเฉพาะรายการที่ขาดได้")
+        if st.button("Force ส่งงาน Skeleton" if skel_active else "ส่งงาน Skeleton ใหม่", key=f"ttb_force_skeleton_{ttb_direct_group_id}", width="stretch"):
+            try:
+                new_key = enqueue_video_only_job(group_id=ttb_direct_group_id, mode="skeleton", notify_email=_ttb_notify, employee_id=_ttb_notify, enterprise_folder=get_default_org_for_page("ttb") or "TTB")
+                st.success(f"ส่งงาน Skeleton แล้ว: {new_key}")
+            except Exception as e:
+                st.error(f"ส่งงาน Skeleton ไม่สำเร็จ: {format_submit_error_message(e)}")
+elif not ttb_direct_group_id:
+    st.caption("กรุณาวาง Group ID จากอีเมลด้านบนเพื่อดูปุ่มดาวน์โหลด")
+
+st.divider()
 has_identity_input = bool(employee_id.strip() and notify_email)
 identity_verified = False
 if has_identity_input:
     identity_verified = is_employee_identity_verified(employee_id, notify_email)
 
-candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id
+candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id or ttb_direct_group_id
 active_group_id = ""
 blocked_group_id = ""
 if candidate_group_id:
@@ -1012,8 +1193,8 @@ if run:
         "languages": report_languages,
         "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
         "analysis_mode": "real",  # Use real MediaPipe analysis
-        "sample_fps": 5,
-        "max_frames": 300,
+        "sample_fps": 3,
+        "max_frames": 150,
         "report_style": effective_report_style,
         "report_format": effective_report_format,
         "expect_skeleton": bool(enable_skeleton),
