@@ -2815,6 +2815,8 @@ def process_job(job_json_key: str) -> None:
 def main() -> None:
     logger.info("====== AI People Reader Report Worker (TH/EN) ======")
     logger.info("report_core version: %s", getattr(_report_core, "REPORT_CORE_VERSION", "unknown"))
+    mp_status = "available" if mp is not None else "UNAVAILABLE (placeholder only)"
+    logger.info("MediaPipe: %s", mp_status)
     logger.info("Using bucket: %s", AWS_BUCKET)
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)

@@ -29,18 +29,24 @@ try:
     from mediapipe.python.solutions import pose as mp_pose_module
     from mediapipe.python.solutions.pose import Pose, PoseLandmark
     mp = True
-except ImportError:
+except ImportError as e1:
     try:
         import mediapipe as mp
         mp_pose_module = mp.solutions.pose
         Pose = mp_pose_module.Pose
         PoseLandmark = mp_pose_module.PoseLandmark
         mp = True
-    except Exception:
+    except Exception as e2:
         mp = None
         mp_pose_module = None
         Pose = None
         PoseLandmark = None
+        logger.warning(
+            "[MediaPipe] Import failed (mp=None). Real analysis disabled; using placeholder. "
+            "ImportError: %s | Fallback error: %s. "
+            "Tip: Use Python 3.10 on Linux (Render) if 3.11 fails.",
+            e1, e2,
+        )
 
 # Dataclasses
 @dataclass
