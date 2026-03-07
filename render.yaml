@@ -1,3 +1,5 @@
+# Report worker: after code changes to src/report_core.py, use "Clear build cache & deploy"
+# in Render Dashboard to ensure new code is used. Check logs for "report_core version: 2026-03-07-relaxed"
 - type: worker
   name: ai-people-reader-v2-report-worker
   runtime: python

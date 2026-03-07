@@ -973,7 +973,12 @@ def generate_reports_for_lang(
     total = int(result.get("total_indicators") or 0) or 1
 
     # Run First Impression analysis
-    first_impression = analyze_first_impression_from_video(video_path, sample_every_n=5, max_frames=200)
+    audience_mode = str(job.get("audience_mode") or "one").strip().lower()
+    if audience_mode not in ("one", "many"):
+        audience_mode = "one"
+    first_impression = analyze_first_impression_from_video(
+        video_path, sample_every_n=5, max_frames=200, audience_mode=audience_mode
+    )
     
     # Log the actual detected values for debugging
     logger.info("[first_impression] Eye Contact: %.1f%%, Uprightness: %.1f%%, Stance: %.1f%%", 

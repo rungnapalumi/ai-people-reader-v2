@@ -55,6 +55,26 @@ def _cap_high_to_moderate(level: str, is_thai: bool) -> str:
     return level
 
 
+def first_impression_level(value: float, metric: str = "") -> str:
+    """High/Moderate/Low. Eye contact, uprightness, stance: relaxed thresholds (60/35)."""
+    v = float(value or 0.0)
+    if metric in ("eye_contact", "uprightness", "stance"):
+        if v >= 60.0:
+            raw = "High"
+        elif v >= 35.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+    else:
+        if v >= 70.0:
+            raw = "High"
+        elif v >= 30.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+    return _cap_high_to_moderate(raw, is_thai=False)
+
+
 def _display_scale(scale: str, is_thai: bool) -> str:
     """Convert scale for display (High/Moderate/Low)."""
     s = str(scale or "").strip().lower()
@@ -133,12 +153,9 @@ def analyze_first_impression_from_video(
     ankle_dist = []
     ankle_center_x = []
     stance_width_ratios = []
-    prev_nose_offset_ratio = None
-    prev_torso_angle = None
 
     is_many_audience = str(audience_mode or "").strip().lower() == "many"
-    symmetry_divisor = 1.2 if is_many_audience else 0.75
-    jitter_divisor = 0.55 if is_many_audience else 0.35
+    nose_offset_max = 0.50 if is_many_audience else 0.35  # Simple: one=look at camera, many=look around
 
     with Pose(static_image_mode=False, model_complexity=1) as pose:
         i = 0
@@ -171,20 +188,17 @@ def analyze_first_impression_from_video(
 
             total += 1
 
-            # Eye contact: one audience = strict, many = relaxed (allow scanning)
+            # Eye contact (simple): face toward camera/audience. One=look at camera, many=look around.
             eye_dist = abs(leye.x - reye.x)
             if eye_dist > 1e-4:
                 mid_eye_x = (leye.x + reye.x) / 2.0
                 nose_offset_ratio = abs(nose.x - mid_eye_x) / eye_dist
-                symmetry_score = max(0.0, 1.0 - (nose_offset_ratio / symmetry_divisor))
-                stability_bonus = 1.0
-                if prev_nose_offset_ratio is not None:
-                    jitter = abs(nose_offset_ratio - prev_nose_offset_ratio)
-                    stability_bonus = max(0.70, 1.0 - (jitter / jitter_divisor))
-                prev_nose_offset_ratio = nose_offset_ratio
-                eye_frame_scores.append(100.0 * symmetry_score * stability_bonus)
+                if nose_offset_ratio <= nose_offset_max:
+                    eye_frame_scores.append(100.0)
+                else:
+                    eye_frame_scores.append(0.0)
 
-            # Uprightness (continuous): torso vertical angle + shoulder level + abrupt tilt penalty.
+            # Uprightness (simple): torso roughly vertical = upright. Relaxed threshold.
             mid_sh = np.array([(lsh.x + rsh.x) / 2.0, (lsh.y + rsh.y) / 2.0])
             mid_hip = np.array([(lhip.x + rhip.x) / 2.0, (lhip.y + rhip.y) / 2.0])
             v = mid_sh - mid_hip
@@ -192,20 +206,11 @@ def analyze_first_impression_from_video(
             v_norm = np.linalg.norm(v) + 1e-9
             cosang = float(np.dot(v / v_norm, vert))
             ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
-            shoulder_tilt = abs(lsh.y - rsh.y)
-            shoulder_tilt_ratio = shoulder_tilt / v_norm
-
-            angle_score = max(0.0, 1.0 - (ang / 28.0))
-            shoulder_score = max(0.0, 1.0 - (shoulder_tilt_ratio / 0.20))
-            temporal_bonus = 1.0
-            if prev_torso_angle is not None:
-                angle_jump = abs(ang - prev_torso_angle)
-                temporal_bonus = max(0.75, 1.0 - (angle_jump / 45.0))
-            prev_torso_angle = ang
-
-            upright_frame_scores.append(
-                100.0 * (0.75 * angle_score + 0.25 * shoulder_score) * temporal_bonus
-            )
+            # Simple: torso angle <= 50° = upright (100). No penalty for natural movement.
+            if ang <= 50.0:
+                upright_frame_scores.append(100.0)
+            else:
+                upright_frame_scores.append(0.0)
 
             # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
             if min(lank.visibility, rank.visibility) >= 0.5:
@@ -229,34 +234,23 @@ def analyze_first_impression_from_video(
     eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
     upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
 
+    # Stance (simple): lower ankle-distance variance = more stable. Relaxed thresholds.
     if len(ankle_dist) >= 10:
         dist_arr = np.array(ankle_dist)
         dist_std = float(np.std(dist_arr))
         dist_mean = float(np.mean(dist_arr)) + 1e-9
         rel_std = dist_std / dist_mean
 
-        # Lower relative ankle-distance variance -> better lower-body stability.
-        base_stability = max(0.0, min(100.0, 100.0 * (1.0 - (rel_std / 0.35))))
+        # Relaxed: rel_std/0.60 (was 0.35)
+        base_stability = max(0.0, min(100.0, 100.0 * (1.0 - (rel_std / 0.60))))
 
         sway_score = 0.0
         if len(ankle_center_x) >= 10:
             sway_std = float(np.std(np.array(ankle_center_x)))
-            sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.06))))
+            # Relaxed: sway_std/0.12 (was 0.06)
+            sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.12))))
 
-        width_score = 0.0
-        if stance_width_ratios:
-            ratios = np.array(stance_width_ratios)
-            ratio_mean = float(np.mean(ratios))
-            ratio_std = float(np.std(ratios))
-            # Preferred stance is around shoulder width to slightly wider.
-            width_pref = max(0.0, 1.0 - (abs(ratio_mean - 1.10) / 0.90))
-            width_stability = max(0.0, 1.0 - (ratio_std / 0.35))
-            width_score = 100.0 * (0.65 * width_pref + 0.35 * width_stability)
-
-        stability = max(
-            0.0,
-            min(100.0, 0.50 * base_stability + 0.30 * sway_score + 0.20 * width_score),
-        )
+        stability = max(0.0, min(100.0, 0.70 * base_stability + 0.30 * sway_score))
     else:
         stability = 0.0
 
@@ -1267,14 +1261,7 @@ def build_docx_report(
     section1.paragraph_format.space_after = Pt(4)
 
     def _fi_level_en(value: float, metric: str = "") -> str:
-        v = float(value or 0.0)
-        if v >= 70.0:
-            raw = "High"
-        elif v >= 30.0:
-            raw = "Moderate"
-        else:
-            raw = "Low"
-        return _cap_high_to_moderate(raw, is_thai=False)
+        return first_impression_level(value, metric=metric)
 
     def _fi_level_th(value: float, metric: str = "") -> str:
         lv = _fi_level_en(value, metric=metric).lower()
@@ -1325,33 +1312,38 @@ def build_docx_report(
         else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
     )
     doc.add_paragraph()
+    doc.add_paragraph()  # Blank line: move Combination Explanation down 1 line
     combo_label = "คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:"
     doc.add_paragraph(combo_label)
+    doc.add_paragraph()  # Blank line after combo label
     if is_thai:
         doc.add_paragraph("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ")
         doc.add_paragraph("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ")
+    else:
+        doc.add_paragraph("1. Low Eye Contact + Low Uprightness + Low Stance.")
+        doc.add_paragraph("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.")
+
+    # PAGE BREAK TO PAGE 2 — points 2, 3 (combo) + sections 2, 3, 4 on page 2 only
+    doc.add_page_break()
+    # Page 2: Combination points 2, 3 + sections 2, 3, 4 (compact)
+    doc.add_paragraph()
+    if is_thai:
         doc.add_paragraph("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง")
         doc.add_paragraph("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ")
         doc.add_paragraph("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง")
         doc.add_paragraph("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น")
     else:
-        doc.add_paragraph("1. Low Eye Contact + Low Uprightness + Low Stance.")
-        doc.add_paragraph("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.")
         doc.add_paragraph("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.")
         doc.add_paragraph("The person tends to appear approachable, and has adequate level of confidence and authority.")
         doc.add_paragraph("3. High Eye Contact + High Uprightness + High Stance.")
         doc.add_paragraph("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.")
-
-    # PAGE BREAK TO PAGE 2
-    doc.add_page_break()
-    # Add one extra line of top spacing on the next page.
     doc.add_paragraph()
     
     # ============================================================
-    # PAGE 2: Engaging & Connecting + Confidence
+    # PAGE 2: Engaging & Connecting + Confidence + Authority
     # ============================================================
     
-    # Section 2: Engaging & Connecting (EN: move down 1 line)
+    # Section 2: Engaging & Connecting (compact spacing)
     engaging_cat = report.categories[0]
     if not is_thai:
         doc.add_paragraph()
@@ -1760,14 +1752,7 @@ def build_pdf_report(
     )
 
     def _fi_level_en(value: float, metric: str = "") -> str:
-        v = float(value or 0.0)
-        if v >= 70.0:
-            raw = "High"
-        elif v >= 30.0:
-            raw = "Moderate"
-        else:
-            raw = "Low"
-        return _cap_high_to_moderate(raw, is_thai=False)
+        return first_impression_level(value, metric=metric)
 
     def _fi_level_th(value: float, metric: str = "") -> str:
         lv = _fi_level_en(value, metric=metric).lower()
@@ -1799,22 +1784,28 @@ def build_pdf_report(
         write_line(f"{scale_label}: {st_level}", bold=True, gap=14)
         write_line(remark_label, bold=True, gap=14)
         write_line(remark_text, gap=18)
-        write_line("", gap=8)
-        write_line("คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:", gap=4)
+        write_line("", gap=10)  # Blank line: move Combination Explanation down 1 line
+        write_line("คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:", gap=6)
         if is_thai:
             write_line("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", gap=4)
             write_line("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", gap=8)
-            write_line("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", gap=4)
-            write_line("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", gap=8)
-            write_line("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", gap=4)
-            write_line("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", gap=8)
         else:
             write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
             write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=8)
+        # Page 2: combo points 2, 3 + categories
+        c.showPage()
+        draw_header_footer()
+        y = top_content_y - 10
+        if is_thai:
+            write_line("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", gap=4)
+            write_line("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", gap=8)
+            write_line("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", gap=4)
+            write_line("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", gap=12)
+        else:
             write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)
             write_line("The person tends to appear approachable, and has adequate level of confidence and authority.", gap=8)
             write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
-            write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=8)
+            write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=12)
     else:
         write_line("- Not available", gap=20)
 

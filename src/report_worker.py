@@ -81,6 +81,7 @@ try:
     generate_shape_graph = _report_core.generate_shape_graph
     build_docx_report = _report_core.build_docx_report
     build_pdf_report = _report_core.build_pdf_report
+    first_impression_level = _report_core.first_impression_level
     mp = _report_core.mp
 except Exception as e:
     raise RuntimeError(
@@ -691,28 +692,35 @@ def build_html_report_file(
         if is_th
         else "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception."
     )
-    remark_extra_en = (
+    remark_extra_page1 = (
         """
-      <div style="margin-top: 10px;">
-        <div><b>คำอธิบายการผสมผสาน:</b></div>
-        <div><b>1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ</b></div>
-        <div>บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ</div>
-        <div style="margin-top: 8px;"><b>2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง</b></div>
-        <div>บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ</div>
-        <div style="margin-top: 8px;"><b>3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง</b></div>
-        <div>บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น</div>
-      </div>"""
+      <div style="margin-top: 12px;"></div>
+      <div><b>คำอธิบายการผสมผสาน:</b></div>
+      <div style="margin-top: 6px;"></div>
+      <div><b>1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ</b></div>
+      <div>บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ</div>"""
         if is_th
         else """
-      <div style="margin-top: 10px;">
-        <div><b>Combination Explanation:</b></div>
-        <div><b>1. Low Eye Contact + Low Uprightness + Low Stance.</b></div>
-        <div>The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.</div>
-        <div style="margin-top: 8px;"><b>2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.</b></div>
-        <div>The person tends to appear approachable, and has adequate level of confidence and authority.</div>
-        <div style="margin-top: 8px;"><b>3. High Eye Contact + High Uprightness + High Stance.</b></div>
-        <div>The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.</div>
-      </div>"""
+      <div style="margin-top: 12px;"></div>
+      <div><b>Combination Explanation:</b></div>
+      <div style="margin-top: 6px;"></div>
+      <div><b>1. Low Eye Contact + Low Uprightness + Low Stance.</b></div>
+      <div>The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.</div>"""
+    )
+    remark_extra_page2 = (
+        """
+      <div><b>2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง</b></div>
+      <div>บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ</div>
+      <div style="margin-top: 8px;"><b>3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง</b></div>
+      <div>บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น</div>
+      <div style="margin-top: 14px;"></div>"""
+        if is_th
+        else """
+      <div><b>2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.</b></div>
+      <div>The person tends to appear approachable, and has adequate level of confidence and authority.</div>
+      <div style="margin-top: 8px;"><b>3. High Eye Contact + High Uprightness + High Stance.</b></div>
+      <div>The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.</div>
+      <div style="margin-top: 14px;"></div>"""
     )
 
     def cat_scale(i: int) -> str:
@@ -807,12 +815,13 @@ def build_html_report_file(
       <div class="scale">{escape(scale_label)}: {escape(st_lv)}</div>
       <div><b>{escape(note_label)}</b></div>
       <div>{escape(remark_text)}</div>
-      {remark_extra_en}
+      {remark_extra_page1}
     </div>
   </div>
 
   <div class="page">
     <div class="section">
+      {remark_extra_page2}
       <b>{"2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_th else "2. Engaging & Connecting"}</b>
       <ul>
         <li>{"ความเป็นกันเอง" if is_th else "Approachability"}</li>
@@ -2151,14 +2160,9 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
     return analyze_video_placeholder(video_path=video_path, seed=42)
 
 
-# First impression: Low < 30, Moderate 30-69, High >= 70
 def _first_impression_level(value: float, metric: str = "") -> str:
-    score = float(value or 0.0)
-    if score >= 70.0:
-        return "high"
-    if score >= 30.0:
-        return "moderate"
-    return "low"
+    """Uses report_core.first_impression_level (eye contact: 60/35 thresholds)."""
+    return first_impression_level(value, metric=metric).lower()
 
 
 def generate_reports_for_lang(
@@ -2807,6 +2811,7 @@ def process_job(job_json_key: str) -> None:
 # -----------------------------------------
 def main() -> None:
     logger.info("====== AI People Reader Report Worker (TH/EN) ======")
+    logger.info("report_core version: %s", getattr(_report_core, "REPORT_CORE_VERSION", "unknown"))
     logger.info("Using bucket: %s", AWS_BUCKET)
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)

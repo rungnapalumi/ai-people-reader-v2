@@ -1,4 +1,5 @@
 # report_core.py — shared report logic for report generation
+REPORT_CORE_VERSION = "2026-03-07-relaxed"  # Bump when changing first-impression logic (verify deploy)
 CAP_HIGH_TO_MODERATE = False  # Allow High/สูง to display (no cap to Moderate)
 
 import os
@@ -56,6 +57,26 @@ def _cap_high_to_moderate(level: str, is_thai: bool) -> str:
     if s.startswith("high") or s == "สูง":
         return "กลาง" if is_thai else "Moderate"
     return level
+
+
+def first_impression_level(value: float, metric: str = "") -> str:
+    """High/Moderate/Low. Eye contact, uprightness, stance: relaxed thresholds (60/35)."""
+    v = float(value or 0.0)
+    if metric in ("eye_contact", "uprightness", "stance"):
+        if v >= 60.0:
+            raw = "High"
+        elif v >= 35.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+    else:
+        if v >= 70.0:
+            raw = "High"
+        elif v >= 30.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+    return _cap_high_to_moderate(raw, is_thai=False)
 
 
 def _display_scale(scale: str, is_thai: bool) -> str:
@@ -256,13 +277,11 @@ def analyze_first_impression_from_video(
     ankle_dist = []
     ankle_center_x = []
     stance_width_ratios = []
-    prev_nose_offset_ratio = None
-    prev_torso_angle = None
 
-    # Eye contact thresholds: one audience = strict (look at camera), many = relaxed (allow scanning)
+    # Simple eye contact: one audience = look at camera. many = look around (scanning).
     is_many_audience = str(audience_mode or "").strip().lower() == "many"
-    symmetry_divisor = 1.2 if is_many_audience else 0.75  # allow more head movement when many
-    jitter_divisor = 0.55 if is_many_audience else 0.35   # allow more frame-to-frame movement when scanning
+    # One: face toward camera (nose centered). Many: allow head turn when scanning audience.
+    nose_offset_max = 0.50 if is_many_audience else 0.35  # max nose offset from eye center (ratio of eye dist)
 
     for s in frame_samples:
         nose = _rotate_point(s["nose"])
@@ -275,44 +294,19 @@ def analyze_first_impression_from_video(
         lank = _rotate_point(s["lank"])
         rank = _rotate_point(s["rank"])
 
-        # Eye contact (continuous): frontal face symmetry + gaze stability
-        # with extra penalties for looking down, closing/occluding eyes, and head-down posture.
-        # One audience: strict - look at camera. Many: relaxed - allow scanning across room.
+        # Eye contact (simple): face facing camera/audience = High when "always" looking.
+        # One audience: look at camera. Many: look around (scanning). Less = Moderate or Low.
         eye_dist = abs(leye[0] - reye[0])
         if eye_dist > 1e-4:
             mid_eye_x = (leye[0] + reye[0]) / 2.0
-            mid_eye_y = (leye[1] + reye[1]) / 2.0
             nose_offset_ratio = abs(nose[0] - mid_eye_x) / eye_dist
-            symmetry_score = max(0.0, 1.0 - (nose_offset_ratio / symmetry_divisor))
-            stability_bonus = 1.0
-            if prev_nose_offset_ratio is not None:
-                jitter = abs(nose_offset_ratio - prev_nose_offset_ratio)
-                stability_bonus = max(0.70, 1.0 - (jitter / jitter_divisor))
-            prev_nose_offset_ratio = nose_offset_ratio
-            base_eye_score = 100.0 * symmetry_score * stability_bonus
+            # Looking = nose reasonably centered (facing camera/audience)
+            if nose_offset_ratio <= nose_offset_max:
+                eye_frame_scores.append(100.0)
+            else:
+                eye_frame_scores.append(0.0)
 
-            nose_eye_ratio = (nose[1] - mid_eye_y) / eye_dist
-            look_down_penalty = max(0.0, min(1.0, (nose_eye_ratio - 0.55) / 0.50))
-
-            mid_sh_y = (lsh[1] + rsh[1]) / 2.0
-            mid_sh_xy = np.array([(lsh[0] + rsh[0]) / 2.0, (lsh[1] + rsh[1]) / 2.0])
-            mid_hip_xy = np.array([(lhip[0] + rhip[0]) / 2.0, (lhip[1] + rhip[1]) / 2.0])
-            torso_len = float(np.linalg.norm(mid_sh_xy - mid_hip_xy)) + 1e-9
-            head_raise_ratio = (mid_sh_y - nose[1]) / torso_len
-            head_down_penalty = max(0.0, min(1.0, (0.28 - head_raise_ratio) / 0.18))
-
-            eye_visibility = min(float(s["leye_vis"]), float(s["reye_vis"]))
-            eye_closed_penalty = max(0.0, min(1.0, (0.85 - eye_visibility) / 0.35))
-
-            attention_penalty = (
-                0.28 * look_down_penalty
-                + 0.22 * head_down_penalty
-                + 0.18 * eye_closed_penalty
-            )
-            attention_factor = max(0.55, 1.0 - attention_penalty)
-            eye_frame_scores.append(base_eye_score * attention_factor)
-
-        # Uprightness (continuous): torso vertical angle + shoulder level + abrupt tilt penalty.
+        # Uprightness (simple): torso roughly vertical = upright. Relaxed threshold.
         mid_sh = np.array([(lsh[0] + rsh[0]) / 2.0, (lsh[1] + rsh[1]) / 2.0])
         mid_hip = np.array([(lhip[0] + rhip[0]) / 2.0, (lhip[1] + rhip[1]) / 2.0])
         v = mid_sh - mid_hip
@@ -320,19 +314,11 @@ def analyze_first_impression_from_video(
         v_norm = np.linalg.norm(v) + 1e-9
         cosang = float(np.dot(v / v_norm, vert))
         ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
-        shoulder_tilt = abs(lsh[1] - rsh[1])
-        shoulder_tilt_ratio = shoulder_tilt / v_norm
-
-        angle_score = max(0.0, 1.0 - (ang / 28.0))
-        shoulder_score = max(0.0, 1.0 - (shoulder_tilt_ratio / 0.20))
-        temporal_bonus = 1.0
-        if prev_torso_angle is not None:
-            angle_jump = abs(ang - prev_torso_angle)
-            temporal_bonus = max(0.75, 1.0 - (angle_jump / 45.0))
-        prev_torso_angle = ang
-        upright_frame_scores.append(
-            100.0 * (0.75 * angle_score + 0.25 * shoulder_score) * temporal_bonus
-        )
+        # Simple: torso angle <= 50° = upright (100). No penalty for natural movement.
+        if ang <= 50.0:
+            upright_frame_scores.append(100.0)
+        else:
+            upright_frame_scores.append(0.0)
 
         # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
         if min(float(s["lank_vis"]), float(s["rank_vis"])) >= 0.5:
@@ -348,36 +334,24 @@ def analyze_first_impression_from_video(
     eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
     upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
 
+    # Stance (simple): lower ankle-distance variance = more stable. Relaxed thresholds.
     if len(ankle_dist) >= 10:
         dist_arr = np.array(ankle_dist)
         dist_std = float(np.std(dist_arr))
         dist_mean = float(np.mean(dist_arr)) + 1e-9
         rel_std = dist_std / dist_mean
 
-        # Lower relative ankle-distance variance -> better lower-body stability.
-        base_stability = max(0.0, min(100.0, 100.0 * (1.0 - (rel_std / 0.35))))
+        # Relaxed: rel_std/0.60 (was 0.35) — easier to get high score
+        base_stability = max(0.0, min(100.0, 100.0 * (1.0 - (rel_std / 0.60))))
 
         sway_score = 0.0
         if len(ankle_center_x) >= 10:
             sway_std = float(np.std(np.array(ankle_center_x)))
-            sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.06))))
+            # Relaxed: sway_std/0.12 (was 0.06)
+            sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.12))))
 
-        # Width should have limited influence because perspective/tilt can make
-        # feet look narrower than reality. Prioritize stillness first.
-        width_score = 75.0
-        if stance_width_ratios:
-            ratios = np.array(stance_width_ratios)
-            ratio_mean = float(np.mean(ratios))
-            ratio_std = float(np.std(ratios))
-            # Use a wider tolerance so camera angle/zoom does not over-penalize.
-            width_pref = max(0.70, 1.0 - (abs(ratio_mean - 1.10) / 1.80))
-            width_stability = max(0.0, 1.0 - (ratio_std / 0.35))
-            width_score = 100.0 * (0.65 * width_pref + 0.35 * width_stability)
-
-        stability = max(
-            0.0,
-            min(100.0, 0.62 * base_stability + 0.30 * sway_score + 0.08 * width_score),
-        )
+        # Simple blend: base + sway, no strict width penalty
+        stability = max(0.0, min(100.0, 0.70 * base_stability + 0.30 * sway_score))
     else:
         stability = 0.0
 
@@ -1267,14 +1241,7 @@ def build_docx_report(
         return raw
 
     def _fi_level_en(value: float, metric: str = "") -> str:
-        v = float(value or 0.0)
-        if v >= 70.0:
-            raw = "High"
-        elif v >= 30.0:
-            raw = "Moderate"
-        else:
-            raw = "Low"
-        return _cap_high_to_moderate(raw, is_thai=False)
+        return first_impression_level(value, metric=metric)
 
     def _fi_level_th(value: float, metric: str = "") -> str:
         lv = _fi_level_en(value, metric=metric).lower()
@@ -1325,17 +1292,17 @@ def build_docx_report(
     def _square_bullet_text(text: str) -> str:
         return f"▪ {_strip_bullet(text)}"
 
-    def _apply_bullet_layout(paragraph) -> None:
+    def _apply_bullet_layout(paragraph, compact: bool = False) -> None:
         if paragraph is None:
             return
         pf = paragraph.paragraph_format
         pf.left_indent = Pt(28)
         pf.first_line_indent = Pt(-14)
         pf.space_before = Pt(0)
-        pf.space_after = Pt(6 if not is_thai else 4)  # EN: more space between lines
-        pf.line_spacing = 1.25 if not is_thai else 1.15
+        pf.space_after = Pt(3 if compact else (6 if not is_thai else 4))
+        pf.line_spacing = 1.15 if compact else (1.25 if not is_thai else 1.15)
 
-    def _apply_scale_layout(paragraph, left_indent_pt: float = 28, space_before_pt: float = None) -> None:
+    def _apply_scale_layout(paragraph, left_indent_pt: float = 28, space_before_pt: float = None, compact: bool = False) -> None:
         if paragraph is None:
             return
         pf = paragraph.paragraph_format
@@ -1345,8 +1312,13 @@ def build_docx_report(
             pf.space_before = Pt(space_before_pt)
         else:
             pf.space_before = Pt(0)
-        pf.space_after = Pt(8 if not is_thai else 6)
-        pf.line_spacing = 1.25 if not is_thai else 1.15
+        pf.space_after = Pt(3 if compact else (8 if not is_thai else 6))
+        pf.line_spacing = 1.15 if compact else (1.25 if not is_thai else 1.15)
+
+    def _set_para_font_size(paragraph, size_pt: int) -> None:
+        if paragraph and paragraph.runs:
+            for r in paragraph.runs:
+                r.font.size = Pt(size_pt)
     
     # Add header and footer images to all pages
     section = doc.sections[0]
@@ -1488,90 +1460,101 @@ def build_docx_report(
         else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
     )
     doc.add_paragraph()
+    # Page 2: Combination Explanation 1, 2, 3 — use page_break_before so LibreOffice respects it
     combo_label = "คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:"
-    doc.add_paragraph(combo_label)
-    if is_thai:
-        doc.add_paragraph("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ")
-        doc.add_paragraph("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ")
-        doc.add_paragraph("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง")
-        doc.add_paragraph("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ")
-        doc.add_paragraph("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง")
-        doc.add_paragraph("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น")
-    else:
-        doc.add_paragraph("1. Low Eye Contact + Low Uprightness + Low Stance.")
-        doc.add_paragraph("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.")
-        doc.add_paragraph("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.")
-        doc.add_paragraph("The person tends to appear approachable, and has adequate level of confidence and authority.")
-        doc.add_paragraph("3. High Eye Contact + High Uprightness + High Stance.")
-        doc.add_paragraph("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.")
+    p_combo = doc.add_paragraph(combo_label)
+    p_combo.runs[0].bold = True
+    p_combo.paragraph_format.page_break_before = True  # Force new page (page 2)
+    p_combo.paragraph_format.keep_with_next = True
+    doc.add_paragraph()  # Blank line after combo label
 
-    # PAGE BREAK TO PAGE 2
-    doc.add_page_break()
-    # Page 2 top spacing: Thai section 2 up 1 line.
-    if is_operation_test:
-        for _ in range(1 if is_thai else 2):
-            doc.add_paragraph()
-    elif not is_thai:
-        doc.add_paragraph()
-    
+    # Combination Explanation points 1, 2, 3 — keep together on page 2
+    combo_paras = []
+    if is_thai:
+        combo_paras = [
+            doc.add_paragraph("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ"),
+            doc.add_paragraph("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ"),
+            doc.add_paragraph("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง"),
+            doc.add_paragraph("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ"),
+            doc.add_paragraph("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง"),
+            doc.add_paragraph("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น"),
+        ]
+    else:
+        combo_paras = [
+            doc.add_paragraph("1. Low Eye Contact + Low Uprightness + Low Stance."),
+            doc.add_paragraph("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority."),
+            doc.add_paragraph("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance."),
+            doc.add_paragraph("The person tends to appear approachable, and has adequate level of confidence and authority."),
+            doc.add_paragraph("3. High Eye Contact + High Uprightness + High Stance."),
+            doc.add_paragraph("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible."),
+        ]
+    for p in combo_paras[:-1]:
+        p.paragraph_format.keep_with_next = True  # Keep combo block together
+
+    # Page 3: Engaging & Connecting, Confidence, Authority — page_break_before forces new page
+
     # ============================================================
-    # PAGE 2: Engaging & Connecting + Confidence
+    # PAGE 3: Engaging & Connecting + Confidence + Authority
     # ============================================================
     
-    # Section 2: Engaging & Connecting — move up 2 lines
+    # Section 2: Engaging & Connecting — start page 3
     engaging_cat = report.categories[0]
     section2 = doc.add_paragraph(texts["engaging"])
     section2.runs[0].bold = True
-    section2.paragraph_format.space_before = Pt(6)  # Reduced from 18 (moved up 2 lines)
-    section2.paragraph_format.space_after = Pt(4)  # Noticeable gap to first bullet per reference
+    section2.paragraph_format.page_break_before = True  # Force page 3
+    section2.paragraph_format.space_before = Pt(8)
+    section2.paragraph_format.space_after = Pt(2)
+    section2.paragraph_format.keep_with_next = True
     p_approach = doc.add_paragraph(_square_bullet_text(texts["approachability"]))
-    _apply_bullet_layout(p_approach)
+    _apply_bullet_layout(p_approach, compact=False)
+    p_approach.paragraph_format.keep_with_next = True
     p_relate = doc.add_paragraph(_square_bullet_text(texts["relatability"]))
-    _apply_bullet_layout(p_relate)
+    _apply_bullet_layout(p_relate, compact=False)
+    p_relate.paragraph_format.keep_with_next = True
     p_engage = doc.add_paragraph(_square_bullet_text(texts["engagement"]))
-    _apply_bullet_layout(p_engage)
+    _apply_bullet_layout(p_engage, compact=False)
+    p_engage.paragraph_format.keep_with_next = True
     scale_para1 = doc.add_paragraph(f"{texts['scale']} {_display_scale(engaging_cat.scale, is_thai)}")
     scale_para1.runs[0].bold = True
-    _apply_scale_layout(scale_para1, left_indent_pt=28, space_before_pt=6)  # Align with bullet points
-    
-    doc.add_paragraph()
-    
+    _apply_scale_layout(scale_para1, left_indent_pt=28, space_before_pt=4, compact=False)
+    scale_para1.paragraph_format.keep_with_next = True
+
     # Section 3: Confidence
     confidence_cat = report.categories[1]
     section3 = doc.add_paragraph(texts["confidence"])
     section3.runs[0].bold = True
-    section3.paragraph_format.space_before = Pt(18)
-    section3.paragraph_format.space_after = Pt(4)
+    section3.paragraph_format.space_before = Pt(8)
+    section3.paragraph_format.space_after = Pt(2)
+    section3.paragraph_format.keep_with_next = True
     p_opt = doc.add_paragraph(_square_bullet_text(texts["optimistic"]))
-    _apply_bullet_layout(p_opt)
+    _apply_bullet_layout(p_opt, compact=False)
+    p_opt.paragraph_format.keep_with_next = True
     p_focus = doc.add_paragraph(_square_bullet_text(texts["focus"]))
-    _apply_bullet_layout(p_focus)
+    _apply_bullet_layout(p_focus, compact=False)
+    p_focus.paragraph_format.keep_with_next = True
     p_persuade = doc.add_paragraph(_square_bullet_text(texts["persuade"]))
-    _apply_bullet_layout(p_persuade)
+    _apply_bullet_layout(p_persuade, compact=False)
+    p_persuade.paragraph_format.keep_with_next = True
     scale_para2 = doc.add_paragraph(f"{texts['scale']} {_display_scale(confidence_cat.scale, is_thai)}")
     scale_para2.runs[0].bold = True
-    _apply_scale_layout(scale_para2, left_indent_pt=28, space_before_pt=6)  # Align with bullet points
-    
-    # Spacing between Section 3 and Section 4 — same as Section 2→3 (move 4 up 1 line)
-    doc.add_paragraph()
-    
-    # ============================================================
-    # Section 4: Authority (same page as Section 3)
-    # ============================================================
-    
+    _apply_scale_layout(scale_para2, left_indent_pt=28, space_before_pt=4, compact=False)
+    scale_para2.paragraph_format.keep_with_next = True
+
     # Section 4: Authority
     authority_cat = report.categories[2]
     section4 = doc.add_paragraph(texts["authority"])
     section4.runs[0].bold = True
-    section4.paragraph_format.space_before = Pt(18)  # Same as Section 3 (match 2→3 spacing)
-    section4.paragraph_format.space_after = Pt(4)
+    section4.paragraph_format.space_before = Pt(8)
+    section4.paragraph_format.space_after = Pt(2)
+    section4.paragraph_format.keep_with_next = True
     p_importance = doc.add_paragraph(_square_bullet_text(texts["importance"]))
-    _apply_bullet_layout(p_importance)
+    _apply_bullet_layout(p_importance, compact=False)
+    p_importance.paragraph_format.keep_with_next = True
     p_pressing = doc.add_paragraph(_square_bullet_text(texts["pressing"]))
-    _apply_bullet_layout(p_pressing)
+    _apply_bullet_layout(p_pressing, compact=False)
     scale_para3 = doc.add_paragraph(f"{texts['scale']} {_display_scale(authority_cat.scale, is_thai)}")
     scale_para3.runs[0].bold = True
-    _apply_scale_layout(scale_para3, left_indent_pt=28, space_before_pt=6)  # Align with bullet points
+    _apply_scale_layout(scale_para3, left_indent_pt=28, space_before_pt=4, compact=False)
 
     if not is_simple:
         # PAGE BREAK TO PAGE 4
@@ -2364,7 +2347,7 @@ def build_pdf_report(
             _draw_text_line(x, y, font, size, line)
             y -= effective_gap if idx == len(initial_lines) - 1 else wrapped_gap
 
-    def write_bullet(text: str, indent: int = 28, space_after: int = 4, bullet_text: str = "•"):
+    def write_bullet(text: str, indent: int = 28, space_after: int = 4, bullet_text: str = "•", font_size: int = None):
         nonlocal y
         x = x_left + max(0, int(indent))
         local_width = max(80, usable_width - max(0, int(indent)))
@@ -2373,6 +2356,9 @@ def build_pdf_report(
             parent=BULLET_STYLE,
             spaceAfter=float(space_after),
         )
+        if font_size is not None:
+            bullet_style.fontSize = font_size
+            bullet_style.leading = max(12, int(font_size * (2.0 if is_thai else 1.35)))
         safe = escape(_safe_text_for_font(text)).replace("\n", "<br/>")
         para = Paragraph(safe, bullet_style, bulletText=bullet_text)
         y -= float(getattr(bullet_style, "spaceBefore", 0) or 0)
@@ -2522,14 +2508,7 @@ def build_pdf_report(
     write_line(detailed_analysis_label, size=13, bold=True, gap=20)
 
     def _first_impression_level(value: float, metric: str = "") -> str:
-        v = float(value or 0.0)
-        if v >= 70.0:
-            raw = "High"
-        elif v >= 30.0:
-            raw = "Moderate"
-        else:
-            raw = "Low"
-        return _cap_high_to_moderate(raw, is_thai=False)
+        return first_impression_level(value, metric=metric)
 
     def _first_impression_level_th(value: float, metric: str = "") -> str:
         level_en = _first_impression_level(value, metric=metric).strip().lower()
@@ -2604,22 +2583,28 @@ def build_pdf_report(
                 else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
             )
             write_line(remark_text, gap=6 if is_thai else 18)  # Thai: section 2 up 1 line
-            write_line("", gap=8)
-            write_line("คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:", gap=4)
+            write_line("", gap=10)  # Blank line: move Combination Explanation down 1 line
+            write_line("คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:", gap=6)
             if is_thai:
                 write_line("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", gap=4)
                 write_line("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", gap=8)
-                write_line("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", gap=4)
-                write_line("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", gap=8)
-                write_line("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", gap=4)
-                write_line("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", gap=8)
             else:
                 write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
                 write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=8)
+            # Page 2: combo points 2, 3 + categories
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y - 10
+            if is_thai:
+                write_line("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", gap=4)
+                write_line("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", gap=8)
+                write_line("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", gap=4)
+                write_line("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", gap=12)
+            else:
                 write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)
                 write_line("The person tends to appear approachable, and has adequate level of confidence and authority.", gap=8)
                 write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
-                write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=8)
+                write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=12)
     else:
         write_line(first_impression_label, size=12, bold=True, gap=18)
         write_line("- Not available", gap=20)
@@ -2636,101 +2621,102 @@ def build_pdf_report(
                 THAI_NOTE_STYLE,
                 extra_gap=6,
             )
-            write_paragraph_block("คำอธิบายการผสมผสาน:", THAI_NOTE_STYLE, extra_gap=4)
-            write_paragraph_block("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", THAI_NOTE_STYLE, extra_gap=4)
-            write_paragraph_block("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", THAI_NOTE_STYLE, extra_gap=8)
-            write_paragraph_block("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", THAI_NOTE_STYLE, extra_gap=4)
-            write_paragraph_block("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", THAI_NOTE_STYLE, extra_gap=8)
-            write_paragraph_block("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", THAI_NOTE_STYLE, extra_gap=4)
-            write_paragraph_block("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", THAI_NOTE_STYLE, extra_gap=6)
-            # Keep page 1 focused on first impression + note.
-            # Section 2 should start at the top of page 2. Thai: move section 2 up 1 line.
+            # Page 2: Combination Explanation 1, 2, 3 อยู่รวมกัน
             c.showPage()
             draw_header_footer()
-            y = top_content_y + 12
+            y = top_content_y
+
+            write_paragraph_block("คำอธิบายการผสมผสาน:", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", THAI_NOTE_STYLE, extra_gap=8)
+
+            # Page 3: Engaging & Connecting, Confidence, Authority
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
 
             write_paragraph_block("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", SECTION_STYLE, extra_gap=0)
-            write_bullet("ความเป็นกันเอง", indent=28, space_after=6, bullet_text="▪")
-
-            # Keep section 2 contiguous before section 3.
-            write_paragraph_block("", SUBITEM_STYLE, extra_gap=0)
+            write_bullet("ความเป็นกันเอง", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ความเข้าถึงได้", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=4, bullet_text="▪")
 
             engaging_scale = _scale_th(report.categories[0].scale) if len(report.categories) > 0 else "-"
             confidence_scale = _scale_th(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_th(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_bullet("ความเข้าถึงได้", indent=28, space_after=6, bullet_text="▪")
-            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=6, bullet_text="▪")
-            write_line_indented(f"ระดับ: {engaging_scale}", indent=28, bold=True, gap=10)  # Align with bullet points
+            write_line_indented(f"ระดับ: {engaging_scale}", indent=28, bold=True, gap=6)
 
             write_paragraph_block("3. ความมั่นใจ:", SECTION_STYLE, extra_gap=0)
             write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=4, bullet_text="▪")
             write_bullet("ความมีสมาธิ", indent=28, space_after=4, bullet_text="▪")
             write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=4, bullet_text="▪")
-            write_line_indented(f"ระดับ: {confidence_scale}", indent=28, bold=True, gap=10)  # Align with bullet points
+            write_line_indented(f"ระดับ: {confidence_scale}", indent=28, bold=True, gap=6)
 
             write_paragraph_block("4. ความเป็นผู้นำและความดูมีอำนาจ:", SECTION_STYLE, extra_gap=0)
             write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=4, bullet_text="▪")
             write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=4, bullet_text="▪")
-            write_line_indented(f"ระดับ: {authority_scale}", indent=28, bold=True, gap=10)  # Align with bullet points
+            write_line_indented(f"ระดับ: {authority_scale}", indent=28, bold=True, gap=6)
         else:
             if thai_font_fallback and lang_name == "th":
                 write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
             def _scale_en(scale: str) -> str:
                 return _display_scale(scale, is_thai=False)
 
-            # EN PDF: spacing per reference format
-            en_section_gap = 12
-            en_section2_item_gap = 10
-            en_section2_scale_gap = 10
-            en_section34_item_gap = 10
-            en_section34_scale_gap = 8
+            # EN PDF: Page 3 sections use normal spacing
+            en_section_gap = 8
+            en_section2_item_gap = 6
+            en_section2_scale_gap = 6
+            en_section34_item_gap = 6
+            en_section34_scale_gap = 6
 
             write_line("", gap=14)  # Significant space before Remark per reference
-            write_line("Remark", bold=True, gap=en_section2_item_gap)
+            write_line("Remark", bold=True, gap=8)
             write_line(
                 "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration.",
-                gap=10,
+                gap=8,
             )
-            write_line("Combination Explanation:", gap=4)
-            write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
-            write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=8)
-            write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)
-            write_line("The person tends to appear approachable, and has adequate level of confidence and authority.", gap=8)
-            write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
-            write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=10)
-            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=en_section_gap)  # Moved up 2 lines
-            write_line_indented("▪ Approachability.", indent=28, gap=en_section2_item_gap)
+            # Page 2: Combination Explanation 1, 2, 3 อยู่รวมกัน
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
 
-            # Keep section 2 on page 1; do not force a page break after the first bullet.
-            write_line("", gap=2)
+            write_line("Combination Explanation:", gap=6)
+            write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
+            write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=6)
+            write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)
+            write_line("The person tends to appear approachable, and has adequate level of confidence and authority.", gap=6)
+            write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
+            write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=8)
+
+            # Page 3: Engaging & Connecting, Confidence, Authority
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
 
             engaging_scale = _scale_en(report.categories[0].scale) if len(report.categories) > 0 else "-"
             confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line_indented("▪ Relatability.", indent=28, gap=4)
-            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=6)
-            write_line("", gap=4)  # Clear space between last bullet and Scale per reference
-            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=en_section2_scale_gap)  # Align with bullet points
-
-            # Requested EN layout: page 1 ends after section 2, sections 3-4 on page 2.
-            c.showPage()
-            draw_header_footer()
-            y = top_content_y - 14  # Move section 3 up 1 line
+            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Approachability.", indent=28, gap=en_section2_item_gap)
+            write_line_indented("▪ Relatability.", indent=28, gap=en_section2_item_gap)
+            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=en_section2_item_gap)
+            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=en_section2_scale_gap)
 
             write_line("3. Confidence:", size=12, bold=True, gap=en_section_gap)
             write_line_indented("▪ Optimistic Presence.", indent=28, gap=en_section34_item_gap)
             write_line_indented("▪ Focus.", indent=28, gap=en_section34_item_gap)
-            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=6)
-            write_line("", gap=4)  # Clear space between last bullet and Scale
-            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=12)  # Same as 2→3, Section 4 up 1 line
+            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_section34_item_gap)
+            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
 
             write_line("4. Authority:", size=12, bold=True, gap=en_section_gap)
             write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
-            write_line_indented("▪ Pressing for action.", indent=28, gap=6)
-            write_line("", gap=4)  # Clear space between last bullet and Scale
-            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)  # Align with bullet points
+            write_line_indented("▪ Pressing for action.", indent=28, gap=en_section34_item_gap)
+            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
             # Generated by — right-aligned per reference format
             y -= 16
             gen_text = _safe_text_for_font("Generated by AI People Reader™")
