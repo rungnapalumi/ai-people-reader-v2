@@ -677,6 +677,27 @@ def build_html_report_file(
         if is_th
         else "First impression forms quickly, usually within the first 5 seconds. After that, the overall movement and communication cues shape perception."
     )
+    remark_extra_en = (
+        """
+      <div style="margin-top: 10px;">
+        <div><b>1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ</b></div>
+        <div>บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ</div>
+        <div style="margin-top: 8px;"><b>2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง</b></div>
+        <div>บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ</div>
+        <div style="margin-top: 8px;"><b>3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง</b></div>
+        <div>บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น</div>
+      </div>"""
+        if is_th
+        else """
+      <div style="margin-top: 10px;">
+        <div><b>1. Low Eye Contact + Low Uprightness + Low Stance.</b></div>
+        <div>The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.</div>
+        <div style="margin-top: 8px;"><b>2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.</b></div>
+        <div>The person tends to appear approachable, and has adequate level of confidence and authority.</div>
+        <div style="margin-top: 8px;"><b>3. High Eye Contact + High Uprightness + High Stance.</b></div>
+        <div>The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.</div>
+      </div>"""
+    )
 
     def cat_scale(i: int) -> str:
         if i < len(report.categories):
@@ -770,6 +791,7 @@ def build_html_report_file(
       <div class="scale">{escape(scale_label)}: {escape(st_lv)}</div>
       <div><b>{escape(note_label)}</b></div>
       <div>{escape(remark_text)}</div>
+      {remark_extra_en}
     </div>
   </div>
 

@@ -1487,6 +1487,21 @@ def build_docx_report(
         if is_thai
         else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
     )
+    doc.add_paragraph()
+    if is_thai:
+        doc.add_paragraph("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ")
+        doc.add_paragraph("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ")
+        doc.add_paragraph("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง")
+        doc.add_paragraph("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ")
+        doc.add_paragraph("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง")
+        doc.add_paragraph("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น")
+    else:
+        doc.add_paragraph("1. Low Eye Contact + Low Uprightness + Low Stance.")
+        doc.add_paragraph("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.")
+        doc.add_paragraph("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.")
+        doc.add_paragraph("The person tends to appear approachable, and has adequate level of confidence and authority.")
+        doc.add_paragraph("3. High Eye Contact + High Uprightness + High Stance.")
+        doc.add_paragraph("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.")
 
     # PAGE BREAK TO PAGE 2
     doc.add_page_break()
@@ -2587,6 +2602,21 @@ def build_pdf_report(
                 else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
             )
             write_line(remark_text, gap=6 if is_thai else 18)  # Thai: section 2 up 1 line
+            write_line("", gap=8)
+            if is_thai:
+                write_line("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", gap=4)
+                write_line("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", gap=8)
+                write_line("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", gap=4)
+                write_line("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", gap=8)
+                write_line("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", gap=4)
+                write_line("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", gap=8)
+            else:
+                write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
+                write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=8)
+                write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)
+                write_line("The person tends to appear approachable, and has adequate level of confidence and authority.", gap=8)
+                write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
+                write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=8)
     else:
         write_line(first_impression_label, size=12, bold=True, gap=18)
         write_line("- Not available", gap=20)
@@ -2603,6 +2633,12 @@ def build_pdf_report(
                 THAI_NOTE_STYLE,
                 extra_gap=6,
             )
+            write_paragraph_block("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", THAI_NOTE_STYLE, extra_gap=8)
+            write_paragraph_block("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", THAI_NOTE_STYLE, extra_gap=8)
+            write_paragraph_block("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", THAI_NOTE_STYLE, extra_gap=6)
             # Keep page 1 focused on first impression + note.
             # Section 2 should start at the top of page 2. Thai: move section 2 up 1 line.
             c.showPage()
@@ -2652,6 +2688,12 @@ def build_pdf_report(
                 "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration.",
                 gap=10,
             )
+            write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
+            write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=8)
+            write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)
+            write_line("The person tends to appear approachable, and has adequate level of confidence and authority.", gap=8)
+            write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
+            write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=10)
             write_line("2. Engaging & Connecting:", size=12, bold=True, gap=en_section_gap)  # Moved up 2 lines
             write_line_indented("▪ Approachability.", indent=28, gap=en_section2_item_gap)
 
