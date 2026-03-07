@@ -22,9 +22,22 @@
 # }
 
 import os
+import sys
 import io
 import json
 import base64
+import importlib.util
+
+# Ensure report_core is loaded from src/ (same dir as this script) — critical for operation_test + remark points
+_worker_dir = os.path.dirname(os.path.abspath(__file__))
+_report_core_path = os.path.join(_worker_dir, "report_core.py")
+if not os.path.exists(_report_core_path):
+    raise RuntimeError(f"report_core.py not found at {_report_core_path}")
+_spec = importlib.util.spec_from_file_location("report_core", _report_core_path)
+if _spec is None:
+    raise RuntimeError(f"Failed to create spec for report_core at {_report_core_path}")
+_report_core = importlib.util.module_from_spec(_spec)
+sys.modules["report_core"] = _report_core
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -49,28 +62,29 @@ from botocore.config import Config
 
 # ------------------------------------------------------------
 # IMPORTANT:
-#   report_worker MUST import report generation logic from report_core.py
+#   report_worker MUST import report generation logic from report_core.py (src/)
 #   (do NOT import app.py, because Streamlit UI runs on import)
 # ------------------------------------------------------------
 try:
-    from report_core import (
-        ReportData,
-        CategoryResult,
-        FirstImpressionData,
-        format_seconds_to_mmss,
-        get_video_duration_seconds,
-        analyze_video_mediapipe,
-        analyze_video_placeholder,
-        analyze_first_impression_from_video,
-        generate_effort_graph,
-        generate_shape_graph,
-        build_docx_report,
-        build_pdf_report,
-        mp,  # mediapipe module or None
-    )
+    if _spec.loader is None:
+        raise RuntimeError("report_core spec has no loader")
+    _spec.loader.exec_module(_report_core)
+    ReportData = _report_core.ReportData
+    CategoryResult = _report_core.CategoryResult
+    FirstImpressionData = _report_core.FirstImpressionData
+    format_seconds_to_mmss = _report_core.format_seconds_to_mmss
+    get_video_duration_seconds = _report_core.get_video_duration_seconds
+    analyze_video_mediapipe = _report_core.analyze_video_mediapipe
+    analyze_video_placeholder = _report_core.analyze_video_placeholder
+    analyze_first_impression_from_video = _report_core.analyze_first_impression_from_video
+    generate_effort_graph = _report_core.generate_effort_graph
+    generate_shape_graph = _report_core.generate_shape_graph
+    build_docx_report = _report_core.build_docx_report
+    build_pdf_report = _report_core.build_pdf_report
+    mp = _report_core.mp
 except Exception as e:
     raise RuntimeError(
-        "Cannot import report_core.py. Create report_core.py and move report logic there.\n"
+        "Cannot import report_core.py from src/. Create src/report_core.py.\n"
         f"Import error: {e}"
     )
 
