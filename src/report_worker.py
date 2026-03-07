@@ -2142,23 +2142,31 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
     max_frames = int(job.get("max_frames") or DEFAULT_MAX_FRAMES)
 
     want_real = analysis_mode.startswith("real")
+    logger.info("[analysis] job_id=%s analysis_mode=%r want_real=%s mp=%s", str(job.get("job_id") or "").strip(), analysis_mode, want_real, "ok" if mp is not None else "None")
+    mediapipe_runtime_failed = False
     if want_real and (mp is not None):
         logger.info("[analysis] Using real mediapipe analysis (sample_fps=%s, max_frames=%s)", sample_fps, max_frames)
-        return analyze_video_mediapipe(
-            video_path=video_path,
-            sample_fps=float(sample_fps),
-            max_frames=int(max_frames),
-            pose_model_complexity=int(job.get("pose_model_complexity") or DEFAULT_POSE_MODEL_COMPLEXITY),
-            pose_min_detection_confidence=float(job.get("pose_min_det") or DEFAULT_POSE_MIN_DET),
-            pose_min_tracking_confidence=float(job.get("pose_min_track") or DEFAULT_POSE_MIN_TRACK),
-            face_min_detection_confidence=float(job.get("face_min_det") or DEFAULT_FACE_MIN_DET),
-            facemesh_min_detection_confidence=float(job.get("facemesh_min_det") or DEFAULT_FACEMESH_MIN_DET),
-            facemesh_min_tracking_confidence=float(job.get("facemesh_min_track") or DEFAULT_FACEMESH_MIN_TRACK),
-        )
+        try:
+            return analyze_video_mediapipe(
+                video_path=video_path,
+                sample_fps=float(sample_fps),
+                max_frames=int(max_frames),
+                pose_model_complexity=int(job.get("pose_model_complexity") or DEFAULT_POSE_MODEL_COMPLEXITY),
+                pose_min_detection_confidence=float(job.get("pose_min_det") or DEFAULT_POSE_MIN_DET),
+                pose_min_tracking_confidence=float(job.get("pose_min_track") or DEFAULT_POSE_MIN_TRACK),
+                face_min_detection_confidence=float(job.get("face_min_det") or DEFAULT_FACE_MIN_DET),
+                facemesh_min_detection_confidence=float(job.get("facemesh_min_det") or DEFAULT_FACEMESH_MIN_DET),
+                facemesh_min_tracking_confidence=float(job.get("facemesh_min_track") or DEFAULT_FACEMESH_MIN_TRACK),
+            )
+        except Exception as e:
+            logger.warning("[analysis] MediaPipe runtime failed, falling back to placeholder: %s", e)
+            logger.exception("[analysis] MediaPipe full traceback:")
+            mediapipe_runtime_failed = True
 
     if want_real and mp is None:
         logger.warning("[analysis] MediaPipe unavailable (mp=None); using placeholder. Install mediapipe for real analysis.")
-    logger.info("[analysis] Using fallback placeholder analysis (video-specific seed)")
+    reason = "mediapipe_runtime_failed" if mediapipe_runtime_failed else ("mp=None" if (want_real and mp is None) else f"analysis_mode={analysis_mode!r} (not real)")
+    logger.info("[analysis] Using fallback placeholder analysis job_id=%s reason=%s", str(job.get("job_id") or "").strip(), reason)
     job_id = str(job.get("job_id") or "").strip()
     return analyze_video_placeholder(video_path=video_path, job_id=job_id)
 
@@ -2440,6 +2448,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     try:
         # Analyze once (shared for both languages)
         result = run_analysis(analysis_video_path, job)
+        engine = str(result.get("analysis_engine") or "unknown")
+        logger.info("[analysis] job_id=%s analysis_engine=%s (real=mediapipe, placeholder=fallback)", job_id, engine)
 
         outputs: Dict[str, Any] = {"reports": {}, "graphs": {}}
 
@@ -2817,6 +2827,7 @@ def main() -> None:
     logger.info("report_core version: %s", getattr(_report_core, "REPORT_CORE_VERSION", "unknown"))
     mp_status = "available" if mp is not None else "UNAVAILABLE (placeholder only)"
     logger.info("MediaPipe: %s", mp_status)
+    logger.info("DEFAULT_ANALYSIS_MODE: %s (env ANALYSIS_MODE=%s)", DEFAULT_ANALYSIS_MODE, os.getenv("ANALYSIS_MODE", "(not set)"))
     logger.info("Using bucket: %s", AWS_BUCKET)
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)
