@@ -858,6 +858,9 @@ def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
     Presentation_Analysis_Report_*_TH.pdf, *_EN.pdf, etc.
     """
     try:
+        if not (prefix or "").strip():
+            return {"report_en_docx": "", "report_th_docx": "", "report_en_pdf": "", "report_th_pdf": "", "report_en_html": "", "report_th_html": ""}
+        _prefix = (prefix or "").rstrip("/") + "/"
         result = {
             "report_en_docx": "",
             "report_th_docx": "",
@@ -868,7 +871,7 @@ def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
         }
         paginator = s3.get_paginator("list_objects_v2")
 
-        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=_prefix):
             for item in page.get("Contents", []):
                 key = item["Key"]
                 kl = key.lower()
@@ -1130,6 +1133,19 @@ if direct_group_id:
                         _dout[_k] = str(_sc[_k] or "").strip()
     except Exception:
         pass
+def _resolve_download_key(dout: Dict[str, str], key_name: str, base: str, filename: str, gid_variants: List[str]) -> str:
+    """Resolve S3 key: use discovered key, or try each group_id variant path."""
+    k = str(dout.get(key_name) or "").strip()
+    if k:
+        return k
+    if not base and not gid_variants:
+        return ""
+    for gid in gid_variants or []:
+        cand = f"{JOBS_OUTPUT_PREFIX}groups/{gid}/{filename}"
+        if s3_key_exists(cand):
+            return cand
+    return f"{JOBS_OUTPUT_PREFIX}groups/{gid_variants[0]}/{filename}" if gid_variants else (base + filename if base else "")
+
 _items = [
     ("Dots Video", "dots_video", "dots.mp4", "video/mp4"),
     ("Skeleton Video", "skeleton_video", "skeleton.mp4", "video/mp4"),
@@ -1137,7 +1153,7 @@ _items = [
     ("Report EN (PDF)", "report_en_pdf", "report_en.pdf", "application/pdf"),
 ]
 for _idx, (_lab, _key_name, _f, _mime) in enumerate(_items):
-    _k = str(_dout.get(_key_name) or "").strip() or (_base + _f if _base else "")
+    _k = _resolve_download_key(_dout, _key_name, _base, _f, _gid_variants)
     if _k:
         _bytes = s3_get_bytes(_k)
         if _bytes:
@@ -1163,13 +1179,24 @@ st.caption("กดปุ่มด้านบนเพื่อดาวน์�
 st.divider()
 if direct_group_id:
     direct_outputs_top = build_output_keys(direct_group_id)
-    job_report_outputs = get_report_outputs_from_job(direct_group_id)
-    direct_reports_top = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{direct_group_id}")
-    if not direct_reports_top.get("report_en_pdf") or not direct_reports_top.get("report_th_pdf"):
-        scanned = find_report_files_in_s3(f"{JOBS_GROUP_PREFIX}{direct_group_id}")
+    job_report_outputs = {}
+    for _gid in _group_id_variants(direct_group_id) or [direct_group_id]:
+        _jro = get_report_outputs_from_job(_gid)
+        for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
+            if _jro.get(_k) and not job_report_outputs.get(_k):
+                job_report_outputs[_k] = _jro[_k]
+    direct_reports_top = {}
+    for _gid in _group_id_variants(direct_group_id) or [direct_group_id]:
+        scanned = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{_gid}")
         for k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
             if scanned.get(k) and not direct_reports_top.get(k):
                 direct_reports_top[k] = scanned[k]
+    if not direct_reports_top.get("report_en_pdf") or not direct_reports_top.get("report_th_pdf"):
+        for _gid in _group_id_variants(direct_group_id) or [direct_group_id]:
+            scanned = find_report_files_in_s3(f"{JOBS_GROUP_PREFIX}{_gid}")
+            for k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
+                if scanned.get(k) and not direct_reports_top.get(k):
+                    direct_reports_top[k] = scanned[k]
     for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
         if job_report_outputs.get(_k):
             direct_outputs_top[_k] = str(job_report_outputs.get(_k) or "").strip()
@@ -1183,35 +1210,37 @@ if direct_group_id:
     ]
     discovered_direct_items: List[tuple[str, str, str]] = []
     discovered_seen: set[str] = set()
-    for _pfx in (f"{JOBS_GROUP_PREFIX}{direct_group_id}/", f"{JOBS_OUTPUT_PREFIX}groups/{direct_group_id}/"):
-        try:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=_pfx):
-                for item in page.get("Contents", []):
-                    k = str(item.get("Key") or "").strip()
-                    if not k or k in discovered_seen:
-                        continue
-                    kl = k.lower()
-                    if not (kl.endswith(".mp4") or kl.endswith(".pdf")):
-                        continue
-                    if "/input/" in kl:
-                        continue
-                    fname = os.path.basename(k)
-                    label = f"File: {fname}"
-                    if "dots.mp4" in kl:
-                        label = "Dots Video"
-                    elif "skeleton.mp4" in kl:
-                        label = "Skeleton Video"
-                    elif "_th.pdf" in kl:
-                        label = "Report TH (PDF)"
-                    elif "_en.pdf" in kl:
-                        label = "Report EN (PDF)"
-                    else:
-                        continue
-                    discovered_direct_items.append((label, k, fname))
-                    discovered_seen.add(k)
-        except Exception:
-            pass
+    _gid_vars = _group_id_variants(direct_group_id) or [direct_group_id]
+    for _gid in _gid_vars:
+        for _pfx in (f"{JOBS_GROUP_PREFIX}{_gid}/", f"{JOBS_OUTPUT_PREFIX}groups/{_gid}/"):
+            try:
+                paginator = s3.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=_pfx):
+                    for item in page.get("Contents", []):
+                        k = str(item.get("Key") or "").strip()
+                        if not k or k in discovered_seen:
+                            continue
+                        kl = k.lower()
+                        if not (kl.endswith(".mp4") or kl.endswith(".pdf")):
+                            continue
+                        if "/input/" in kl:
+                            continue
+                        fname = os.path.basename(k)
+                        label = f"File: {fname}"
+                        if "dots.mp4" in kl:
+                            label = "Dots Video"
+                        elif "skeleton.mp4" in kl:
+                            label = "Skeleton Video"
+                        elif "_th.pdf" in kl:
+                            label = "Report TH (PDF)"
+                        elif "_en.pdf" in kl:
+                            label = "Report EN (PDF)"
+                        else:
+                            continue
+                        discovered_direct_items.append((label, k, fname))
+                        discovered_seen.add(k)
+            except Exception:
+                pass
     if discovered_direct_items:
         direct_items_top.extend(discovered_direct_items)
     _tmp_items: List[tuple[str, str, str]] = []
@@ -1541,7 +1570,7 @@ if _show_group_id:
         ("Report TH (PDF)", "report_th_pdf", "report_th.pdf", "application/pdf"),
         ("Report EN (PDF)", "report_en_pdf", "report_en.pdf", "application/pdf"),
     ]):
-        _key = str(_out.get(_key_name) or "").strip() or _base + _fn
+        _key = _resolve_download_key(_out, _key_name, _base, _fn, _gid_vars)
         if _key:
             _bytes = s3_get_bytes(_key)
             if _bytes:

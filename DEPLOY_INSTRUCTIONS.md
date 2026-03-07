@@ -8,6 +8,15 @@
 ## วิธีแก้: Deploy โค้ดไป Render
 
 ### 1. Push โค้ดขึ้น Git
+
+**วิธีที่ 1: ใช้สคริปต์ deploy (แนะนำ)**
+```bash
+./deploy.sh "Fix EN report format to match Thai (bullet, spacing)"
+# หรือใช้ข้อความ default
+./deploy.sh
+```
+
+**วิธีที่ 2: รันคำสั่งเอง**
 ```bash
 git add .
 git commit -m "Fix EN report format to match Thai (bullet, spacing)"

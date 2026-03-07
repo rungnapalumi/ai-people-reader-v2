@@ -1785,62 +1785,56 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             statuses: List[str] = []
             sent_any = False
 
-            # Stage 1: TH report first.
+            # ส่งแยกกัน: Report 1 เมล์, Skeleton 1 เมล์, Dots 1 เมล์
+            job_info = {
+                "job_id": job_id,
+                "group_id": payload.get("group_id", ""),
+                "notify_email": notify_email,
+                "report_style": report_style,
+            }
+            video_keys_report: Dict[str, str] = {}
+            if is_operation_test and str(payload.get("input_video_key") or "").strip():
+                video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
+
+            # 1) Report email (TH + EN)
+            report_links: Dict[str, str] = {}
             if (not report_th_sent) and email_payload_report_th_ready(payload):
                 th_pdf = str(payload.get("report_th_pdf_key") or payload.get("report_th_key") or "").strip()
-                th_links = {"Report TH (PDF)": th_pdf} if (th_pdf and th_pdf.lower().endswith(".pdf")) else {}
-                if th_links:
-                    sent, status = send_result_email(
-                        {
-                            "job_id": job_id,
-                            "group_id": payload.get("group_id", ""),
-                            "notify_email": notify_email,
-                            "report_style": report_style,
-                        },
-                        (
-                            {"Uploaded video (MP4)": payload.get("input_video_key", "")}
-                            if is_operation_test
-                            else {}
-                        ),
-                        th_links,
-                    )
-                    statuses.append(f"report_th:{status}")
-                    if sent:
-                        report_th_sent = True
-                        payload["report_th_email_sent"] = True
-                        sent_any = True
-
-            # Stage 2: EN report later.
+                if th_pdf and th_pdf.lower().endswith(".pdf"):
+                    report_links["Report TH (PDF)"] = th_pdf
             if (not report_en_sent) and email_payload_report_en_ready(payload):
                 en_pdf = str(payload.get("report_en_pdf_key") or payload.get("report_en_key") or "").strip()
-                en_links = {"Report EN (PDF)": en_pdf} if (en_pdf and en_pdf.lower().endswith(".pdf")) else {}
-                if en_links:
-                    sent, status = send_result_email(
-                        {
-                            "job_id": job_id,
-                            "group_id": payload.get("group_id", ""),
-                            "notify_email": notify_email,
-                            "report_style": report_style,
-                        },
-                        (
-                            {"Uploaded video (MP4)": payload.get("input_video_key", "")}
-                            if is_operation_test
-                            else {}
-                        ),
-                        en_links,
-                    )
-                    statuses.append(f"report_en:{status}")
-                    if sent:
-                        report_en_sent = True
-                        payload["report_en_email_sent"] = True
-                        sent_any = True
+                if en_pdf and en_pdf.lower().endswith(".pdf"):
+                    report_links["Report EN (PDF)"] = en_pdf
+            if report_links:
+                sent, status = send_result_email(job_info, video_keys_report, report_links)
+                statuses.append(f"reports:{status}")
+                if sent:
+                    report_th_sent = True
+                    report_en_sent = True
+                    payload["report_th_email_sent"] = True
+                    payload["report_en_email_sent"] = True
+                    sent_any = True
 
-            # Video emails are handled in src/worker.py as soon as each mode finishes.
-            skeleton_sent = True
-            dots_sent = True
-            payload["skeleton_email_sent"] = True
-            payload["dots_email_sent"] = True
-            statuses.append("video_emails:handled_by_worker")
+            # 2) Skeleton email แยก
+            if (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload):
+                sk_key = str(payload.get("skeleton_key") or "").strip()
+                sent, status = send_result_email(job_info, {"Skeleton video (MP4)": sk_key}, {})
+                statuses.append(f"skeleton:{status}")
+                if sent:
+                    skeleton_sent = True
+                    payload["skeleton_email_sent"] = True
+                    sent_any = True
+
+            # 3) Dots email แยก
+            if (not dots_sent) and expect_dots and email_payload_dots_ready(payload):
+                d_key = str(payload.get("dots_key") or "").strip()
+                sent, status = send_result_email(job_info, {"Dots video (MP4)": d_key}, {})
+                statuses.append(f"dots:{status}")
+                if sent:
+                    dots_sent = True
+                    payload["dots_email_sent"] = True
+                    sent_any = True
 
             if not statuses:
                 waiting = []
@@ -2585,56 +2579,59 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 expects_report_th = bool(str(payload.get("report_th_key") or "").strip())
                 expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
 
-                if email_payload_report_th_ready(payload):
-                    th_report_links: Dict[str, str] = {}
-                    if str(payload.get("report_th_pdf_key") or "").strip():
-                        th_report_links["Report TH (PDF)"] = str(payload.get("report_th_pdf_key") or "").strip()
-                    sent, status = send_result_email(
-                        {
-                            "job_id": payload["job_id"],
-                            "group_id": payload.get("group_id", ""),
-                            "notify_email": payload["notify_email"],
-                            "report_style": report_style,
-                        },
-                        (
-                            {"Uploaded video (MP4)": payload.get("input_video_key", "")}
-                            if is_operation_test
-                            else {}
-                        ),
-                        th_report_links,
-                    )
-                    statuses.append(f"report_th:{status}")
-                    report_th_sent = bool(sent)
-                    payload["report_th_email_sent"] = report_th_sent
+                # ส่งแยกกัน: Report 1 เมล์, Skeleton 1 เมล์, Dots 1 เมล์
+                job_info = {
+                    "job_id": payload["job_id"],
+                    "group_id": payload.get("group_id", ""),
+                    "notify_email": payload["notify_email"],
+                    "report_style": report_style,
+                }
+                video_keys_report: Dict[str, str] = {}
+                if is_operation_test and str(payload.get("input_video_key") or "").strip():
+                    video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
 
-                if email_payload_report_en_ready(payload):
-                    en_report_links: Dict[str, str] = {}
-                    if str(payload.get("report_en_pdf_key") or "").strip():
-                        en_report_links["Report EN (PDF)"] = str(payload.get("report_en_pdf_key") or "").strip()
-                    sent, status = send_result_email(
-                        {
-                            "job_id": payload["job_id"],
-                            "group_id": payload.get("group_id", ""),
-                            "notify_email": payload["notify_email"],
-                            "report_style": report_style,
-                        },
-                        (
-                            {"Uploaded video (MP4)": payload.get("input_video_key", "")}
-                            if is_operation_test
-                            else {}
-                        ),
-                        en_report_links,
-                    )
-                    statuses.append(f"report_en:{status}")
-                    report_en_sent = bool(sent)
-                    payload["report_en_email_sent"] = report_en_sent
+                # 1) Report email (TH + EN)
+                th_ready = email_payload_report_th_ready(payload)
+                en_ready = email_payload_report_en_ready(payload)
+                report_links: Dict[str, str] = {}
+                if th_ready and str(payload.get("report_th_pdf_key") or "").strip():
+                    report_links["Report TH (PDF)"] = str(payload.get("report_th_pdf_key") or "").strip()
+                if en_ready and str(payload.get("report_en_pdf_key") or "").strip():
+                    report_links["Report EN (PDF)"] = str(payload.get("report_en_pdf_key") or "").strip()
+                if report_links and (not report_th_sent or not report_en_sent):
+                    sent, status = send_result_email(job_info, video_keys_report, report_links)
+                    statuses.append(f"reports:{status}")
+                    if sent:
+                        report_th_sent = True
+                        report_en_sent = True
+                        payload["report_th_email_sent"] = True
+                        payload["report_en_email_sent"] = True
 
-                # Video emails are handled directly by src/worker.py for independent delivery.
-                skeleton_sent = True
-                dots_sent = True
-                payload["skeleton_email_sent"] = True
-                payload["dots_email_sent"] = True
-                statuses.append("video_emails:handled_by_worker")
+                # 2) Skeleton email แยก
+                if (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload):
+                    sk_key = str(payload.get("skeleton_key") or "").strip()
+                    sent, status = send_result_email(
+                        job_info,
+                        {"Skeleton video (MP4)": sk_key},
+                        {},
+                    )
+                    statuses.append(f"skeleton:{status}")
+                    if sent:
+                        skeleton_sent = True
+                        payload["skeleton_email_sent"] = True
+
+                # 3) Dots email แยก
+                if (not dots_sent) and expect_dots and email_payload_dots_ready(payload):
+                    d_key = str(payload.get("dots_key") or "").strip()
+                    sent, status = send_result_email(
+                        job_info,
+                        {"Dots video (MP4)": d_key},
+                        {},
+                    )
+                    statuses.append(f"dots:{status}")
+                    if sent:
+                        dots_sent = True
+                        payload["dots_email_sent"] = True
 
                 report_th_done = report_th_sent or (not expects_report_th)
                 report_en_done = report_en_sent or (not expect_report_en)
