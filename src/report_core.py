@@ -1488,6 +1488,8 @@ def build_docx_report(
         else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
     )
     doc.add_paragraph()
+    combo_label = "คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:"
+    doc.add_paragraph(combo_label)
     if is_thai:
         doc.add_paragraph("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ")
         doc.add_paragraph("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ")
@@ -2603,6 +2605,7 @@ def build_pdf_report(
             )
             write_line(remark_text, gap=6 if is_thai else 18)  # Thai: section 2 up 1 line
             write_line("", gap=8)
+            write_line("คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:", gap=4)
             if is_thai:
                 write_line("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", gap=4)
                 write_line("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", gap=8)
@@ -2633,6 +2636,7 @@ def build_pdf_report(
                 THAI_NOTE_STYLE,
                 extra_gap=6,
             )
+            write_paragraph_block("คำอธิบายการผสมผสาน:", THAI_NOTE_STYLE, extra_gap=4)
             write_paragraph_block("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", THAI_NOTE_STYLE, extra_gap=4)
             write_paragraph_block("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", THAI_NOTE_STYLE, extra_gap=8)
             write_paragraph_block("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", THAI_NOTE_STYLE, extra_gap=4)
@@ -2688,6 +2692,7 @@ def build_pdf_report(
                 "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration.",
                 gap=10,
             )
+            write_line("Combination Explanation:", gap=4)
             write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
             write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=8)
             write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)

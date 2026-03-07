@@ -1325,6 +1325,8 @@ def build_docx_report(
         else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
     )
     doc.add_paragraph()
+    combo_label = "คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:"
+    doc.add_paragraph(combo_label)
     if is_thai:
         doc.add_paragraph("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ")
         doc.add_paragraph("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ")
@@ -1798,6 +1800,7 @@ def build_pdf_report(
         write_line(remark_label, bold=True, gap=14)
         write_line(remark_text, gap=18)
         write_line("", gap=8)
+        write_line("คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:", gap=4)
         if is_thai:
             write_line("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", gap=4)
             write_line("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", gap=8)

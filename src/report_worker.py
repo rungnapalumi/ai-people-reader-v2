@@ -694,6 +694,7 @@ def build_html_report_file(
     remark_extra_en = (
         """
       <div style="margin-top: 10px;">
+        <div><b>คำอธิบายการผสมผสาน:</b></div>
         <div><b>1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ</b></div>
         <div>บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ</div>
         <div style="margin-top: 8px;"><b>2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง</b></div>
@@ -704,6 +705,7 @@ def build_html_report_file(
         if is_th
         else """
       <div style="margin-top: 10px;">
+        <div><b>Combination Explanation:</b></div>
         <div><b>1. Low Eye Contact + Low Uprightness + Low Stance.</b></div>
         <div>The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.</div>
         <div style="margin-top: 8px;"><b>2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.</b></div>
