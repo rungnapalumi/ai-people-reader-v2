@@ -2156,8 +2156,11 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
             facemesh_min_tracking_confidence=float(job.get("facemesh_min_track") or DEFAULT_FACEMESH_MIN_TRACK),
         )
 
-    logger.info("[analysis] Using fallback placeholder analysis")
-    return analyze_video_placeholder(video_path=video_path, seed=42)
+    if want_real and mp is None:
+        logger.warning("[analysis] MediaPipe unavailable (mp=None); using placeholder. Install mediapipe for real analysis.")
+    logger.info("[analysis] Using fallback placeholder analysis (video-specific seed)")
+    job_id = str(job.get("job_id") or "").strip()
+    return analyze_video_placeholder(video_path=video_path, job_id=job_id)
 
 
 def _first_impression_level(value: float, metric: str = "") -> str:

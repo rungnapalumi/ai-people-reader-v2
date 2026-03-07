@@ -1062,31 +1062,43 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         "shape_detection": shape_detection,
     }
 
-def analyze_video_placeholder(video_path: str, seed: int = 42) -> Dict[str, Any]:
-    """Fallback placeholder analysis"""
+def analyze_video_placeholder(video_path: str, seed: int = None, job_id: str = None) -> Dict[str, Any]:
+    """Fallback placeholder analysis. Uses video_path/job_id to derive unique seed so different videos get different results."""
+    # Derive seed from video path or job_id so each video gets different (but deterministic) placeholder data
+    if seed is None:
+        seed_src = str(job_id or video_path or "").strip() or str(time.time())
+        seed = hash(seed_src) % (2**31 - 1)  # deterministic per video/job
     random.seed(seed)
     duration = get_video_duration_seconds(video_path)
-    
-    effort_detection = {
+
+    # Base values — randomize slightly per video so graphs and categories vary
+    base_effort = {
         "Directing": 23.9, "Enclosing": 11.9, "Punching": 11.5, "Spreading": 11.3,
         "Pressing": 10.8, "Dabbing": 8.4, "Indirecting": 7.4, "Gliding": 6.2,
         "Flicking": 3.5, "Advancing": 2.6, "Retreating": 2.5
     }
-    shape_detection = {"Directing": 40.1, "Enclosing": 20.0, "Spreading": 18.9, "Indirecting": 12.4, "Advancing": 4.4, "Retreating": 4.1}
+    base_shape = {"Directing": 40.1, "Enclosing": 20.0, "Spreading": 18.9, "Indirecting": 12.4, "Advancing": 4.4, "Retreating": 4.1}
+    effort_detection = {k: max(1.0, min(50.0, v + (random.random() - 0.5) * 12)) for k, v in base_effort.items()}
+    shape_detection = {k: max(1.0, min(50.0, v + (random.random() - 0.5) * 10)) for k, v in base_shape.items()}
     effort_detection = _apply_default_retreating_share(effort_detection, retreat_default_pct=1.0)
     shape_detection = _apply_default_retreating_share(shape_detection, retreat_default_pct=1.0)
-    
+
+    # Category scores 1–7 — vary per video
+    engaging_score = min(7, max(1, int(3 + random.random() * 4)))
+    convince_score = min(7, max(1, int(3 + random.random() * 4)))
+    authority_score = min(7, max(1, int(3 + random.random() * 4)))
+
     return {
         "analysis_engine": "placeholder",
         "duration_seconds": duration,
         "analyzed_frames": 100,
-        "total_indicators": 450 + 475 + 445,  # = 1370 (real total)
-        "engaging_score": 5,
-        "engaging_pos": 431,
-        "convince_score": 5,
-        "convince_pos": 475,
-        "authority_score": 5,
-        "authority_pos": 445,
+        "total_indicators": 450 + 475 + 445,
+        "engaging_score": engaging_score,
+        "engaging_pos": int(engaging_score / 7 * 450),
+        "convince_score": convince_score,
+        "convince_pos": int(convince_score / 7 * 475),
+        "authority_score": authority_score,
+        "authority_pos": int(authority_score / 7 * 445),
         "effort_detection": effort_detection,
         "shape_detection": shape_detection,
     }
