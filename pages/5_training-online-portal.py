@@ -1024,6 +1024,17 @@ if notify_email:
     st.session_state["last_notify_email"] = notify_email
 org_settings = get_org_settings(enterprise_folder)
 
+st.markdown("**รูปแบบการนำเสนอ**")
+audience_mode = st.radio(
+    "คุณนำเสนอต่อผู้ชมกี่คน?",
+    options=["one", "many"],
+    format_func=lambda x: "นำเสนอต่อผู้ชม 1 คน" if x == "one" else "นำเสนอต่อผู้ชมหลายคน",
+    index=0,
+    key="training_portal_audience_mode",
+    help="การวิเคราะห์ Eye Contact จะแตกต่างกัน: ผู้ชม 1 คน = มองตรงไปที่ผู้ชม, ผู้ชมหลายคน = สายตาสแกนทั่วห้องได้",
+)
+st.caption("ผู้ชม 1 คน: วิเคราะห์การสบตากับผู้ชมโดยตรง | ผู้ชมหลายคน: อนุญาตให้สแกนสายตาไปทั่วห้อง")
+
 _upload_key = f"training_portal_upload_{st.session_state.get('clear_upload_counter', 0)}"
 uploaded = st.file_uploader(
     "วิดีโอ (MP4/MOV/M4V/WEBM)",
@@ -1448,6 +1459,7 @@ if run:
         "enterprise_folder": (enterprise_folder or "").strip(),
         "employee_id": (employee_id or "").strip(),
         "employee_email": notify_email,
+        "audience_mode": audience_mode,  # "one" or "many" - affects eye contact analysis
     }
 
     try:

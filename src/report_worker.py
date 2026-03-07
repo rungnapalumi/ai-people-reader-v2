@@ -629,9 +629,8 @@ def _brand_asset_data_uri(filename: str) -> str:
 def _scale_display_for_lang(scale: str, lang_code: str) -> str:
     s = str(scale or "").strip().lower()
     is_th = str(lang_code or "").strip().lower().startswith("th")
-    # Temporary policy alignment: high -> moderate/กลาง
     if s.startswith("high"):
-        return "กลาง" if is_th else "Moderate"
+        return "สูง" if is_th else "High"
     if s.startswith("moderate"):
         return "กลาง" if is_th else "Moderate"
     if s.startswith("low"):
@@ -2114,18 +2113,14 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
     return analyze_video_placeholder(video_path=video_path, seed=42)
 
 
-# Cap High/สูง to Moderate/กลาง for this period (matches report_core.CAP_HIGH_TO_MODERATE)
+# First impression: Low < 30, Moderate 30-69, High >= 70
 def _first_impression_level(value: float, metric: str = "") -> str:
     score = float(value or 0.0)
     if score >= 70.0:
-        raw = "high"
-    elif score >= 40.0:
-        raw = "moderate"
-    else:
-        raw = "low"
-    if raw == "high":
+        return "high"
+    if score >= 30.0:
         return "moderate"
-    return raw
+    return "low"
 
 
 def generate_reports_for_lang(
@@ -2153,8 +2148,13 @@ def generate_reports_for_lang(
     total = int(result.get("total_indicators") or 0) or 1
 
     # Run First Impression analysis (guard against MediaPipe runtime/import issues).
+    audience_mode = str(job.get("audience_mode") or "one").strip().lower()
+    if audience_mode not in ("one", "many"):
+        audience_mode = "one"
     try:
-        first_impression = analyze_first_impression_from_video(video_path, sample_every_n=3, max_frames=100)
+        first_impression = analyze_first_impression_from_video(
+            video_path, sample_every_n=3, max_frames=100, audience_mode=audience_mode
+        )
     except Exception as e:
         logger.warning("[first_impression] analysis failed, using zero fallback: %s", e)
         first_impression = FirstImpressionData(

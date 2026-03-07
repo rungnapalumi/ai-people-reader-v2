@@ -1,6 +1,5 @@
 # report_core.py — shared report logic for report generation
-# TEMPORARY: Cap High/สูง to Moderate/กลาง for all categories in reports
-CAP_HIGH_TO_MODERATE = True
+CAP_HIGH_TO_MODERATE = False  # Allow High/สูง to display (no cap to Moderate)
 
 import os
 import io
@@ -60,10 +59,10 @@ def _cap_high_to_moderate(level: str, is_thai: bool) -> str:
 
 
 def _display_scale(scale: str, is_thai: bool) -> str:
-    """Convert scale for display and cap High/สูง to Moderate/กลาง."""
+    """Convert scale for display (High/Moderate/Low)."""
     s = str(scale or "").strip().lower()
     if s.startswith("high"):
-        return "กลาง" if is_thai else "Moderate"
+        return "สูง" if is_thai else "High"
     if s.startswith("moderate"):
         return "กลาง" if is_thai else "Moderate"
     if s.startswith("low"):
@@ -143,8 +142,16 @@ def _apply_default_retreating_share(
     out[retreat_key] = round(fixed, 1)
     return out
 
-def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5, max_frames: int = 200) -> FirstImpressionData:
-    """Real First Impression analysis with MediaPipe using continuous scoring."""
+def analyze_first_impression_from_video(
+    video_path: str,
+    sample_every_n: int = 5,
+    max_frames: int = 200,
+    audience_mode: str = "one",
+) -> FirstImpressionData:
+    """Real First Impression analysis with MediaPipe using continuous scoring.
+    audience_mode: "one" = present to one person (strict eye contact - look at camera/audience)
+                   "many" = present to many (relaxed - allow scanning across room)
+    """
     if (Pose is None) or (PoseLandmark is None) or (not callable(Pose)):
         logger.warning("[first_impression] MediaPipe Pose unavailable; using zero fallback scores")
         return FirstImpressionData(eye_contact_pct=0.0, upright_pct=0.0, stance_stability=0.0)
@@ -252,6 +259,11 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
     prev_nose_offset_ratio = None
     prev_torso_angle = None
 
+    # Eye contact thresholds: one audience = strict (look at camera), many = relaxed (allow scanning)
+    is_many_audience = str(audience_mode or "").strip().lower() == "many"
+    symmetry_divisor = 1.2 if is_many_audience else 0.75  # allow more head movement when many
+    jitter_divisor = 0.55 if is_many_audience else 0.35   # allow more frame-to-frame movement when scanning
+
     for s in frame_samples:
         nose = _rotate_point(s["nose"])
         leye = _rotate_point(s["leye"])
@@ -265,16 +277,17 @@ def analyze_first_impression_from_video(video_path: str, sample_every_n: int = 5
 
         # Eye contact (continuous): frontal face symmetry + gaze stability
         # with extra penalties for looking down, closing/occluding eyes, and head-down posture.
+        # One audience: strict - look at camera. Many: relaxed - allow scanning across room.
         eye_dist = abs(leye[0] - reye[0])
         if eye_dist > 1e-4:
             mid_eye_x = (leye[0] + reye[0]) / 2.0
             mid_eye_y = (leye[1] + reye[1]) / 2.0
             nose_offset_ratio = abs(nose[0] - mid_eye_x) / eye_dist
-            symmetry_score = max(0.0, 1.0 - (nose_offset_ratio / 0.75))
+            symmetry_score = max(0.0, 1.0 - (nose_offset_ratio / symmetry_divisor))
             stability_bonus = 1.0
             if prev_nose_offset_ratio is not None:
                 jitter = abs(nose_offset_ratio - prev_nose_offset_ratio)
-                stability_bonus = max(0.70, 1.0 - (jitter / 0.35))
+                stability_bonus = max(0.70, 1.0 - (jitter / jitter_divisor))
             prev_nose_offset_ratio = nose_offset_ratio
             base_eye_score = 100.0 * symmetry_score * stability_bonus
 
@@ -1255,9 +1268,9 @@ def build_docx_report(
 
     def _fi_level_en(value: float, metric: str = "") -> str:
         v = float(value or 0.0)
-        if v >= 75.0:
+        if v >= 70.0:
             raw = "High"
-        elif v >= 40.0:
+        elif v >= 30.0:
             raw = "Moderate"
         else:
             raw = "Low"
@@ -1266,7 +1279,7 @@ def build_docx_report(
     def _fi_level_th(value: float, metric: str = "") -> str:
         lv = _fi_level_en(value, metric=metric).lower()
         if lv.startswith("high"):
-            return "กลาง" if CAP_HIGH_TO_MODERATE else "สูง"
+            return "สูง"
         if lv.startswith("moderate"):
             return "กลาง"
         return "ต่ำ"
@@ -2495,7 +2508,7 @@ def build_pdf_report(
         v = float(value or 0.0)
         if v >= 70.0:
             raw = "High"
-        elif v >= 40.0:
+        elif v >= 30.0:
             raw = "Moderate"
         else:
             raw = "Low"
@@ -2504,7 +2517,7 @@ def build_pdf_report(
     def _first_impression_level_th(value: float, metric: str = "") -> str:
         level_en = _first_impression_level(value, metric=metric).strip().lower()
         if level_en.startswith("high"):
-            return "กลาง" if CAP_HIGH_TO_MODERATE else "สูง"
+            return "สูง"
         if level_en.startswith("moderate"):
             return "กลาง"
         if level_en.startswith("low"):
