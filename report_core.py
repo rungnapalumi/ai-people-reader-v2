@@ -1121,7 +1121,43 @@ def build_docx_report(
     
     # Language-specific text
     is_thai = (lang == "th")
-    
+
+    # Set Thai font at document level BEFORE adding content — ป้องกันสระ/วรรณยุกต์ทับกัน
+    if is_thai:
+        thai_font = os.getenv("DOCX_THAI_FONT_FAMILY", "TH Sarabun New").strip() or "TH Sarabun New"
+
+        def _set_rfonts(el, font_name: str) -> None:
+            r_fonts = el.find(qn("w:rFonts"))
+            if r_fonts is None:
+                r_fonts = OxmlElement("w:rFonts")
+                el.append(r_fonts)
+            r_fonts.set(qn("w:ascii"), font_name)
+            r_fonts.set(qn("w:hAnsi"), font_name)
+            r_fonts.set(qn("w:eastAsia"), font_name)
+            r_fonts.set(qn("w:cs"), font_name)
+
+        try:
+            styles_root = doc.styles.element
+            doc_defaults = styles_root.find(qn("w:docDefaults"))
+            if doc_defaults is None:
+                doc_defaults = OxmlElement("w:docDefaults")
+                styles_root.insert(0, doc_defaults)
+            r_pr_default = doc_defaults.find(qn("w:rPrDefault"))
+            if r_pr_default is None:
+                r_pr_default = OxmlElement("w:rPrDefault")
+                doc_defaults.append(r_pr_default)
+            r_pr = r_pr_default.find(qn("w:rPr"))
+            if r_pr is None:
+                r_pr = OxmlElement("w:rPr")
+                r_pr_default.append(r_pr)
+            _set_rfonts(r_pr, thai_font)
+            normal = doc.styles["Normal"]
+            normal.font.name = thai_font
+            n_rpr = normal._element.get_or_add_rPr()
+            _set_rfonts(n_rpr, thai_font)
+        except Exception:
+            pass
+
     texts = {
         "title": "รายงานการวิเคราะห์การนำเสนอ" if is_thai else "Movement in Communication\nwith AI People Reader Report",
         "client_name": "ชื่อลูกค้า:" if is_thai else "Client Name:",
