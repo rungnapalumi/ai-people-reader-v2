@@ -140,6 +140,7 @@ MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
 JOB_MAX_RETRIES = int(os.getenv("JOB_MAX_RETRIES", "3"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
+PENDING_STALE_HOURS = float(os.getenv("PENDING_STALE_HOURS", "2"))  # Move to failed if input missing for this long
 OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS = int(
     os.getenv("OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS", "24")
 )
@@ -2779,10 +2780,22 @@ def process_job(job_json_key: str) -> None:
     # Verify input video exists before taking the job (avoids processing when upload not ready)
     input_key = str(raw_job.get("input_key") or "").strip()
     if not input_key:
-        logger.warning("[process_job] job_id=%s missing input_key, skipping", job_id)
+        job = update_status(dict(raw_job), "failed", error="missing input_key")
+        failed_key = f"{FAILED_PREFIX}/{job_id}.json"
+        move_json(job_json_key, failed_key, job)
+        logger.warning("[process_job] job_id=%s missing input_key, moved to failed", job_id)
         return
     if not s3_key_exists(input_key):
-        logger.warning("[process_job] job_id=%s input_key=%s not found in S3, leaving in pending (will retry)", job_id, input_key)
+        job_created = parse_job_id_datetime_utc(job_id) or parse_iso_datetime_utc(raw_job.get("created_at"))
+        age_hours = (datetime.now(timezone.utc) - job_created).total_seconds() / 3600.0 if job_created else 999.0
+        if age_hours >= PENDING_STALE_HOURS:
+            err_msg = f"input_key not found in S3 after {age_hours:.0f}h: {input_key}"
+            job = update_status(dict(raw_job), "failed", error=err_msg)
+            failed_key = f"{FAILED_PREFIX}/{job_id}.json"
+            move_json(job_json_key, failed_key, job)
+            logger.warning("[process_job] job_id=%s input_key missing for %.0fh, moved to failed: %s", job_id, age_hours, input_key)
+        else:
+            logger.info("[process_job] job_id=%s input_key=%s not found (age=%.1fh), will retry", job_id, input_key, age_hours)
         return
 
     # Move to processing
@@ -2828,6 +2841,11 @@ def main() -> None:
     mp_status = "available" if mp is not None else "UNAVAILABLE (placeholder only)"
     logger.info("MediaPipe: %s", mp_status)
     logger.info("DEFAULT_ANALYSIS_MODE: %s (env ANALYSIS_MODE=%s)", DEFAULT_ANALYSIS_MODE, os.getenv("ANALYSIS_MODE", "(not set)"))
+    if not DEFAULT_ANALYSIS_MODE.startswith("real"):
+        logger.warning(
+            "ANALYSIS_MODE=%s → reports will use PLACEHOLDER (not real MediaPipe). Set ANALYSIS_MODE=real on Render for real analysis.",
+            DEFAULT_ANALYSIS_MODE,
+        )
     logger.info("Using bucket: %s", AWS_BUCKET)
     logger.info("Region       : %s", AWS_REGION)
     logger.info("Poll every   : %s seconds", POLL_INTERVAL)
@@ -2852,8 +2870,9 @@ def main() -> None:
         DOCX_FALLBACK_ON_PDF_FAIL,
     )
     logger.info(
-        "Recovery cfg : processing_stale_minutes=%s processing_recovery_max_items=%s",
+        "Recovery cfg : processing_stale_minutes=%s pending_stale_hours=%s processing_recovery_max_items=%s",
         PROCESSING_STALE_MINUTES,
+        PENDING_STALE_HOURS,
         PROCESSING_RECOVERY_MAX_ITEMS,
     )
     logger.info(
