@@ -21,3 +21,5 @@
       value: 3.11.9
     - key: ANALYSIS_MODE
       value: real
+    - key: DOCX_THAI_FONT_FAMILY
+      value: Garuda

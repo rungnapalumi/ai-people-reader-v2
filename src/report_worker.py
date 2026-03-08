@@ -741,7 +741,7 @@ def build_html_report_file(
   <style>
     @page {{ size: A4; margin: 24mm 13mm 22mm 13mm; }}
     body {{
-      font-family: "Noto Sans Thai", "TH Sarabun New", "Sarabun", "Tahoma", Arial, Helvetica, sans-serif;
+      font-family: "TH Sarabun New", "Sarabun", "Noto Sans Thai", "Tahoma", Arial, Helvetica, sans-serif;
       font-size: 13px;
       line-height: {("1.55" if not is_th else "1.50")};
       color: #111;

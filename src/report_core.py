@@ -359,6 +359,7 @@ def analyze_first_impression_from_video(
     upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
 
     # Stance (simple): lower ankle-distance variance = more stable. Relaxed thresholds.
+    # When insufficient ankle data (< 10 frames), use 50 (Moderate) — วิเคราะห์ไม่ได้ = Moderate
     if len(ankle_dist) >= 10:
         dist_arr = np.array(ankle_dist)
         dist_std = float(np.std(dist_arr))
@@ -377,7 +378,7 @@ def analyze_first_impression_from_video(
         # Simple blend: base + sway, no strict width penalty
         stability = max(0.0, min(100.0, 0.70 * base_stability + 0.30 * sway_score))
     else:
-        stability = 0.0
+        stability = 50.0  # วิเคราะห์ไม่ได้ → Moderate (ไม่ใช้ 0 ที่จะได้ Low)
 
     return FirstImpressionData(eye_contact_pct=eye_pct, upright_pct=upright_pct, stance_stability=stability)
 
@@ -1679,10 +1680,10 @@ def build_docx_report(
     generated_run.italic = True
     generated_run.font.size = Pt(11)
 
-    if is_thai and str(os.getenv("DOCX_FORCE_THAI_FONT", "false")).strip().lower() in ("1", "true", "yes", "on"):
-        # Optional override only. Keep disabled by default so DOCX uses the
-        # previous behavior that users validated as correct.
-        thai_font_family = os.getenv("DOCX_THAI_FONT_FAMILY", "Noto Sans Thai UI").strip() or "Noto Sans Thai UI"
+    # Always apply Thai font for Thai reports — ป้องกันสระและวรรณยุกต์ทับกันใน PDF
+    # TH Sarabun New / Sarabun มี glyph ครบสำหรับ Thai diacritics
+    if is_thai:
+        thai_font_family = os.getenv("DOCX_THAI_FONT_FAMILY", "TH Sarabun New").strip() or "TH Sarabun New"
 
         def _apply_run_font(run, font_name: str) -> None:
             if run is None:

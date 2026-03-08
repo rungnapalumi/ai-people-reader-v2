@@ -18,6 +18,8 @@ import matplotlib.pyplot as plt
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 logger = logging.getLogger("report_core.analysis")
 
@@ -244,6 +246,7 @@ def analyze_first_impression_from_video(
     upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
 
     # Stance (simple): lower ankle-distance variance = more stable. Relaxed thresholds.
+    # When insufficient ankle data (< 10 frames), use 50 (Moderate) — วิเคราะห์ไม่ได้ = Moderate
     if len(ankle_dist) >= 10:
         dist_arr = np.array(ankle_dist)
         dist_std = float(np.std(dist_arr))
@@ -261,7 +264,7 @@ def analyze_first_impression_from_video(
 
         stability = max(0.0, min(100.0, 0.70 * base_stability + 0.30 * sway_score))
     else:
-        stability = 0.0
+        stability = 50.0  # วิเคราะห์ไม่ได้ → Moderate (ไม่ใช้ 0 ที่จะได้ Low)
 
     return FirstImpressionData(eye_contact_pct=eye_pct, upright_pct=upright_pct, stance_stability=stability)
 
@@ -1490,7 +1493,36 @@ def build_docx_report(
     generated_run = generated_para.runs[0]
     generated_run.italic = True
     generated_run.font.size = Pt(11)
-    
+
+    # Always apply Thai font for Thai reports — ป้องกันสระและวรรณยุกต์ทับกันใน PDF
+    if is_thai:
+        thai_font_family = os.getenv("DOCX_THAI_FONT_FAMILY", "TH Sarabun New").strip() or "TH Sarabun New"
+
+        def _apply_run_font(run, font_name: str) -> None:
+            if run is None:
+                return
+            run.font.name = font_name
+            r_pr = run._element.get_or_add_rPr()
+            r_fonts = r_pr.rFonts
+            if r_fonts is None:
+                r_fonts = OxmlElement("w:rFonts")
+                r_pr.append(r_fonts)
+            r_fonts.set(qn("w:ascii"), font_name)
+            r_fonts.set(qn("w:hAnsi"), font_name)
+            r_fonts.set(qn("w:eastAsia"), font_name)
+            r_fonts.set(qn("w:cs"), font_name)
+
+        for p in doc.paragraphs:
+            for run in p.runs:
+                _apply_run_font(run, thai_font_family)
+        for sec in doc.sections:
+            for p in sec.header.paragraphs:
+                for run in p.runs:
+                    _apply_run_font(run, thai_font_family)
+            for p in sec.footer.paragraphs:
+                for run in p.runs:
+                    _apply_run_font(run, thai_font_family)
+
     # Save
     doc.save(output_bio)
 
