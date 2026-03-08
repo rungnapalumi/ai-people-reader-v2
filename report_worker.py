@@ -889,13 +889,17 @@ def _t(lang: str, en: str, th: str) -> str:
 
 
 def _build_categories_from_result(result: Dict[str, Any], total: int) -> List[CategoryResult]:
-    # Keep exactly the same 3 categories as your current app.py
+    """Build categories; Low is capped to Moderate so report never shows Low."""
+    def _scale(score: int) -> str:
+        raw = "moderate" if score in [3, 4] else ("high" if score >= 5 else "low")
+        return "moderate" if raw == "low" else raw
+
     categories = [
         CategoryResult(
             name_en="Engaging & Connecting",
             name_th="การสร้างความเป็นมิตรและสร้างสัมพันธภาพ",
             score=int(result["engaging_score"]),
-            scale=("moderate" if int(result["engaging_score"]) in [3, 4] else ("high" if int(result["engaging_score"]) >= 5 else "low")),
+            scale=_scale(int(result["engaging_score"])),
             positives=int(result["engaging_pos"]),
             total=int(total),
         ),
@@ -903,7 +907,7 @@ def _build_categories_from_result(result: Dict[str, Any], total: int) -> List[Ca
             name_en="Confidence",
             name_th="ความมั่นใจ",
             score=int(result["convince_score"]),
-            scale=("moderate" if int(result["convince_score"]) in [3, 4] else ("high" if int(result["convince_score"]) >= 5 else "low")),
+            scale=_scale(int(result["convince_score"])),
             positives=int(result["convince_pos"]),
             total=int(total),
         ),
@@ -911,7 +915,7 @@ def _build_categories_from_result(result: Dict[str, Any], total: int) -> List[Ca
             name_en="Authority",
             name_th="ความเป็นผู้นำและอำนาจ",
             score=int(result["authority_score"]),
-            scale=("moderate" if int(result["authority_score"]) in [3, 4] else ("high" if int(result["authority_score"]) >= 5 else "low")),
+            scale=_scale(int(result["authority_score"])),
             positives=int(result["authority_pos"]),
             total=int(total),
         ),

@@ -55,6 +55,14 @@ def _cap_high_to_moderate(level: str, is_thai: bool) -> str:
     return level
 
 
+def _cap_low_to_moderate(level: str, is_thai: bool) -> str:
+    """Cap Low/ต่ำ to Moderate/กลาง so report never shows Low."""
+    s = str(level or "").strip().lower()
+    if s.startswith("low") or s == "ต่ำ":
+        return "กลาง" if is_thai else "Moderate"
+    return level
+
+
 def first_impression_level(value: float, metric: str = "") -> str:
     """High/Moderate/Low. Eye contact, uprightness, stance: relaxed thresholds (60/35)."""
     v = float(value or 0.0)
@@ -72,18 +80,19 @@ def first_impression_level(value: float, metric: str = "") -> str:
             raw = "Moderate"
         else:
             raw = "Low"
-    return _cap_high_to_moderate(raw, is_thai=False)
+    raw = _cap_high_to_moderate(raw, is_thai=False)
+    return _cap_low_to_moderate(raw, is_thai=False)
 
 
 def _display_scale(scale: str, is_thai: bool) -> str:
-    """Convert scale for display (High/Moderate/Low)."""
+    """Convert scale for display (High/Moderate/Low). Low is capped to Moderate."""
     s = str(scale or "").strip().lower()
     if s.startswith("high"):
         return "สูง" if is_thai else "High"
     if s.startswith("moderate"):
         return "กลาง" if is_thai else "Moderate"
     if s.startswith("low"):
-        return "ต่ำ" if is_thai else "Low"
+        return _cap_low_to_moderate("Low", is_thai)
     return "-"
 
 
