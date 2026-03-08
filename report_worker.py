@@ -730,14 +730,13 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             statuses: List[str] = []
             sent_any = False
 
-            # Stage 1: TH report first.
+            # ส่งตามลำดับ: Report → Dots
+            # Stage 1: TH report
             if (not report_th_sent) and email_payload_report_th_ready(payload):
                 sent, status = send_result_email(
                     {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
                     {},
-                    {
-                        "Report TH": payload.get("report_th_key", ""),
-                    },
+                    {"Report TH": payload.get("report_th_key", "")},
                 )
                 statuses.append(f"report_th:{status}")
                 if sent:
@@ -745,14 +744,12 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     payload["report_th_email_sent"] = True
                     sent_any = True
 
-            # Stage 2: EN report later.
+            # Stage 2: EN report
             if (not report_en_sent) and email_payload_report_en_ready(payload):
                 sent, status = send_result_email(
                     {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
                     {},
-                    {
-                        "Report EN": payload.get("report_en_key", ""),
-                    },
+                    {"Report EN": payload.get("report_en_key", "")},
                 )
                 statuses.append(f"report_en:{status}")
                 if sent:
@@ -760,14 +757,12 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     payload["report_en_email_sent"] = True
                     sent_any = True
 
-            # Stage 3: Dots later, independent from report readiness.
+            # Stage 3: Dots
             if (not dots_sent) and email_payload_dots_ready(payload):
                 if bool(payload.get("expect_dots", True)):
                     sent, status = send_result_email(
                         {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
-                        {
-                            "Dots video (MP4)": payload.get("dots_key", ""),
-                        },
+                        {"Dots video (MP4)": payload.get("dots_key", "")},
                         {},
                     )
                     statuses.append(f"dots:{status}")

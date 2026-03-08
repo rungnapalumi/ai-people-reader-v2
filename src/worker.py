@@ -209,9 +209,8 @@ def send_mode_ready_email(job: Dict[str, Any], result: Dict[str, Any]) -> Tuple[
 
 def list_pending(limit: int = 200) -> List[str]:
     """
-    List more pending keys to avoid starvation when queue is crowded with
-    report jobs (handled by report_worker). This worker then picks non-report
-    jobs like skeleton/dots from the same pending queue.
+    List pending keys; dots jobs first (ทำ dots ก่อนเสมอ), then skeleton.
+    Report jobs are skipped (handled by report_worker).
     """
     keys: List[str] = []
     paginator = s3.get_paginator("list_objects_v2")
@@ -221,8 +220,25 @@ def list_pending(limit: int = 200) -> List[str]:
             if key.endswith(".json"):
                 keys.append(key)
                 if len(keys) >= limit:
-                    return keys
-    return keys
+                    break
+        if len(keys) >= limit:
+            break
+    # Sort: dots first, then skeleton (skip report - handled by report_worker)
+    dots_keys: List[str] = []
+    other_keys: List[str] = []
+    for k in keys:
+        try:
+            job = s3_read_json(k)
+            mode = str(job.get("mode") or "").strip().lower()
+            if mode in ("report", "report_th_en", "report_generator"):
+                continue  # report_worker handles these
+            if mode == "dots":
+                dots_keys.append(k)
+            else:
+                other_keys.append(k)
+        except Exception:
+            other_keys.append(k)
+    return dots_keys + other_keys
 
 
 def count_jobs(prefix: str) -> int:
