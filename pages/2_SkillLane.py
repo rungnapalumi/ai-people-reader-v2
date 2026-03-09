@@ -18,6 +18,7 @@
 # - DOCX only (no PDF)
 # - Can paste any group_id to retrieve outputs (no session loss problem)
 
+import hashlib
 import os
 import json
 import uuid
@@ -189,6 +190,8 @@ JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
 ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
 EMPLOYEE_REGISTRY_PREFIX = "jobs/config/employees/"
+SKILLLANE_USERS_PREFIX = "jobs/config/skilllane_users/"
+SKILLLANE_MAX_UPLOADS = 3
 TRAINING_VIDEOS = [
     {
         "title": "คลิปแนะนำการใช้ AI People Reader",
@@ -531,6 +534,96 @@ def is_group_owned_by_employee(group_id: str, employee_id: str, employee_email: 
     except Exception:
         return False
     return False
+
+
+# -------------------------
+# SkillLane user auth (username + password, 3 uploads per user)
+# -------------------------
+def _skilllane_auth_salt() -> str:
+    return str(os.getenv("SKILLLANE_AUTH_SALT", "ai-people-reader-skilllane-v2")).strip()
+
+
+def _hash_password(password: str) -> str:
+    salt = _skilllane_auth_salt()
+    return hashlib.sha256((salt + (password or "")).encode("utf-8")).hexdigest()
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    return bool(stored_hash and _hash_password(password) == stored_hash)
+
+
+def _skilllane_user_key(username: str) -> str:
+    un = safe_slug((username or "").strip().lower(), fallback="")
+    return f"{SKILLLANE_USERS_PREFIX}{un}.json" if un else ""
+
+
+def get_skilllane_user(username: str) -> Optional[Dict[str, Any]]:
+    key = _skilllane_user_key(username)
+    if not key:
+        return None
+    payload = s3_read_json(key) or {}
+    if not payload.get("username"):
+        return None
+    return payload
+
+
+def create_skilllane_user(username: str, password: str, email: str) -> Optional[str]:
+    """Create user. Returns error message or None on success."""
+    un_raw = (username or "").strip()
+    un = un_raw.lower()
+    pw = (password or "").strip()
+    em = (email or "").strip()
+    if not un_raw or len(un_raw) < 2:
+        return "กรุณากรอก Username อย่างน้อย 2 ตัวอักษร"
+    if not pw or len(pw) < 4:
+        return "กรุณากรอก Password อย่างน้อย 4 ตัวอักษร"
+    if not is_valid_email_format(em):
+        return "กรุณากรอกอีเมลให้ถูกต้อง"
+    if is_blocked_typo_domain(em):
+        return "รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง"
+    if get_skilllane_user(un_raw):
+        return "Username นี้มีผู้ใช้แล้ว กรุณาเลือก Username อื่น"
+    key = _skilllane_user_key(un_raw)
+    payload = {
+        "username": un_raw,
+        "password_hash": _hash_password(pw),
+        "email": normalize_email(em),
+        "upload_count": 0,
+        "created_at": utc_now_iso(),
+    }
+    s3_put_json(key, payload)
+    return None
+
+
+def verify_skilllane_login(username: str, password: str) -> Optional[Dict[str, Any]]:
+    """Verify login. Returns user dict or None."""
+    user = get_skilllane_user(username)
+    if not user:
+        return None
+    if not _verify_password(password, str(user.get("password_hash") or "")):
+        return None
+    return user
+
+
+def increment_skilllane_upload_count(username: str) -> int:
+    """Increment upload count and return new count."""
+    user = get_skilllane_user(username)
+    if not user:
+        return 0
+    count = int(user.get("upload_count") or 0) + 1
+    key = _skilllane_user_key(username)
+    payload = dict(user)
+    payload["upload_count"] = count
+    payload["updated_at"] = utc_now_iso()
+    s3_put_json(key, payload)
+    return count
+
+
+def get_skilllane_upload_count(username: str) -> int:
+    user = get_skilllane_user(username)
+    if not user:
+        return 0
+    return int(user.get("upload_count") or 0)
 
 
 def build_output_keys(group_id: str) -> Dict[str, str]:
@@ -936,6 +1029,10 @@ def ensure_session_defaults() -> None:
         st.session_state["skilllane_submission_id_override"] = ""
     if "clear_upload_counter" not in st.session_state:
         st.session_state["clear_upload_counter"] = 0
+    if "skilllane_logged_in_user" not in st.session_state:
+        st.session_state["skilllane_logged_in_user"] = ""
+    if "skilllane_logged_in_email" not in st.session_state:
+        st.session_state["skilllane_logged_in_email"] = ""
 
 def _read_group_id_from_url() -> str:
     try:
@@ -1036,6 +1133,70 @@ components.html(
     height=0,
 )
 
+# -------------------------
+# SkillLane auth gate: login or create before main content
+# -------------------------
+logged_in_user = str(st.session_state.get("skilllane_logged_in_user") or "").strip()
+logged_in_email = str(st.session_state.get("skilllane_logged_in_email") or "").strip()
+
+if not logged_in_user:
+    st.markdown("# วิเคราะห์วิดีโอ (SkillLane)")
+    st.caption("กรุณาเข้าสู่ระบบหรือสร้างบัญชีก่อนใช้งาน")
+    tab_login, tab_create = st.tabs(["เข้าสู่ระบบ", "สร้างบัญชีใหม่"])
+
+    with tab_login:
+        with st.form("skilllane_login_form"):
+            login_username = st.text_input("Username", placeholder="กรอก Username", key="skilllane_login_username")
+            login_password = st.text_input("Password", type="password", placeholder="กรอก Password", key="skilllane_login_password")
+            if st.form_submit_button("เข้าสู่ระบบ"):
+                if login_username and login_password:
+                    user = verify_skilllane_login(login_username.strip(), login_password)
+                    if user:
+                        st.session_state["skilllane_logged_in_user"] = str(user.get("username") or "").strip()
+                        st.session_state["skilllane_logged_in_email"] = str(user.get("email") or "").strip()
+                        st.success("เข้าสู่ระบบสำเร็จ")
+                        st.rerun()
+                    else:
+                        st.error("Username หรือ Password ไม่ถูกต้อง")
+                else:
+                    st.warning("กรุณากรอก Username และ Password")
+
+    with tab_create:
+        with st.form("skilllane_create_form"):
+            create_username = st.text_input("Username", placeholder="กรอก Username (อย่างน้อย 2 ตัวอักษร)", key="skilllane_create_username")
+            create_password = st.text_input("Password", type="password", placeholder="กรอก Password (อย่างน้อย 4 ตัวอักษร)", key="skilllane_create_password")
+            create_email = st.text_input("อีเมล", placeholder="name@example.com", key="skilllane_create_email")
+            st.caption("แต่ละบัญชีสามารถอัปโหลดวิดีโอได้ 3 ครั้ง")
+            if st.form_submit_button("สร้างบัญชี"):
+                err = create_skilllane_user(create_username or "", create_password or "", create_email or "")
+                if err:
+                    st.error(err)
+                else:
+                    user = get_skilllane_user((create_username or "").strip())
+                    if user:
+                        st.session_state["skilllane_logged_in_user"] = str(user.get("username") or "").strip()
+                        st.session_state["skilllane_logged_in_email"] = str(user.get("email") or "").strip()
+                        st.success("สร้างบัญชีสำเร็จ — เข้าสู่ระบบแล้ว")
+                        st.rerun()
+
+    st.divider()
+    st.link_button("กลับไปสู่บทเรียนออนไลน์ (SkillLane)", "https://www.skilllane.com/courses/8076", width="stretch")
+    st.stop()
+
+# Logged in: show logout and main content
+st.markdown("# วิเคราะห์วิดีโอ")
+upload_count = get_skilllane_upload_count(logged_in_user)
+can_upload = upload_count < SKILLLANE_MAX_UPLOADS
+_col1, _col2 = st.columns([3, 1])
+with _col1:
+    st.caption(f"สวัสดี {logged_in_user} | อัปโหลดแล้ว {upload_count}/{SKILLLANE_MAX_UPLOADS} ครั้ง")
+with _col2:
+    if st.button("ออกจากระบบ", key="skilllane_logout"):
+        st.session_state["skilllane_logged_in_user"] = ""
+        st.session_state["skilllane_logged_in_email"] = ""
+        st.rerun()
+st.divider()
+
 url_group_id = _read_group_id_from_url()
 if url_group_id:
     if not st.session_state.get("last_group_id"):
@@ -1043,37 +1204,18 @@ if url_group_id:
     if not st.session_state.get("skilllane_submission_id_override"):
         st.session_state["skilllane_submission_id_override"] = url_group_id
 
-st.markdown("# วิเคราะห์วิดีโอ")
-
-st.divider()
-st.caption("อัปโหลดวิดีโอ 1 ครั้ง แล้วกด **เริ่มวิเคราะห์** เพื่อสร้าง dots + skeleton + รายงาน")
-
 page_default_org = "SkillLane"
-enterprise_folder = st.text_input(
-    "ชื่อองค์กร",
-    value=page_default_org,
-    placeholder="เช่น TTB / ACME Group",
-    disabled=True,
-)
-st.caption("หน้านี้กำหนดชื่อองค์กรเป็น SkillLane อัตโนมัติและไม่สามารถแก้ไขได้")
-user_name = st.text_input(
-    "อีเมลผู้ใช้งาน",
-    value=str(st.session_state.get("last_notify_email") or ""),
-    placeholder="name@example.com",
-    help="ใช้เป็นชื่อโฟลเดอร์งาน และเป็นอีเมลสำหรับส่งผลลัพธ์",
-)
-st.caption("กรุณาตรวจสอบการพิมพ์ e-mail ให้ถูกต้องก่อนกดเริ่มวิเคราะห์")
-notify_email = (user_name or "").strip()
-if notify_email:
-    if not is_valid_email_format(notify_email):
-        st.warning("กรุณาตรวจสอบ e-mail ให้ถูกต้องอีกครั้ง (Please check your e-mail format).")
-    elif is_blocked_typo_domain(notify_email):
-        st.warning("รูปแบบโดเมนอีเมลอาจพิมพ์ผิด กรุณาตรวจสอบ e-mail อีกครั้ง (เช่น .com)")
-# Email-only flow: reuse email as stable identity key.
+enterprise_folder = page_default_org
+# Use logged-in user's email for notifications
+user_name = logged_in_user
+notify_email = logged_in_email
 employee_id = notify_email
-if notify_email:
-    st.session_state["last_notify_email"] = notify_email
+st.session_state["last_notify_email"] = notify_email
 org_settings = get_org_settings(enterprise_folder)
+
+if not can_upload:
+    st.warning(f"คุณได้อัปโหลดครบ {SKILLLANE_MAX_UPLOADS} ครั้งแล้ว — ไม่สามารถอัปโหลดวิดีโอเพิ่มได้")
+st.caption("อัปโหลดวิดีโอ 1 ครั้ง แล้วกด **เริ่มวิเคราะห์** เพื่อสร้าง dots + skeleton + รายงาน (อีเมลสำหรับรับผล: " + (notify_email or "-") + ")")
 
 # Read direct-upload callback flags before rendering upload widget.
 upload_done = str(st.query_params.get("upload_done", "") or "").strip() == "1"
@@ -1096,6 +1238,23 @@ else:
         or os.getenv("RENDER_EXTERNAL_URL")
     )
     use_direct_upload = is_render_runtime
+
+# When user has reached upload limit, clear any in-progress direct upload state.
+if not can_upload:
+    for _k in (
+        "direct_upload_ready",
+        "direct_upload_presigned_url",
+        "direct_upload_group_id",
+        "direct_upload_input_key",
+        "direct_upload_notify_email",
+        "direct_upload_employee_id",
+        "direct_upload_enterprise_folder",
+        "direct_upload_user_name",
+    ):
+        st.session_state.pop(_k, None)
+    direct_ready = False
+    upload_done = False
+    manual_direct_done = False
 
 # If direct mode is disabled (e.g., local), clear stale direct-upload state.
 if not use_direct_upload:
@@ -1296,7 +1455,7 @@ if use_direct_upload:
                 st.rerun()
             upload_clicked = False
     else:
-        upload_clicked = st.button("📤 เลือกวิดีโอและอัปโหลด", type="primary", width="stretch", key="upload_video_btn")
+        upload_clicked = st.button("📤 เลือกวิดีโอและอัปโหลด", type="primary", width="stretch", key="upload_video_btn", disabled=not can_upload)
     st.caption("อัปโหลดตรงไปยัง S3 — เร็วกว่าแบบเดิม (หากอัปโหลดล้มเหลว ให้ใช้แบบสำรองด้านล่าง)")
 else:
     upload_clicked = False
@@ -1307,6 +1466,7 @@ uploaded = st.file_uploader(
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
     key=f"skilllane_file_uploader_{st.session_state.get('clear_upload_counter', 0)}",
+    disabled=not can_upload,
 )
 st.caption("หากอัปโหลดล้มเหลวหรือขึ้นสถานะ 400 กรุณา upload วีดีโอใหม่")
 if uploaded is not None:
@@ -1320,7 +1480,8 @@ run = st.button(
     width="stretch",
     key="run_analyze",
     disabled=(
-        (uploaded is None)
+        (not can_upload)
+        or (uploaded is None)
         or (not notify_email)
         or (not is_valid_email_format(notify_email))
         or is_blocked_typo_domain(notify_email)
@@ -1536,7 +1697,9 @@ if _just_submitted:
 
 # Handle "Upload Video" click -> prepare direct upload
 if use_direct_upload and upload_clicked:
-    if not notify_email:
+    if not can_upload:
+        st.error(f"คุณได้อัปโหลดครบ {SKILLLANE_MAX_UPLOADS} ครั้งแล้ว — ไม่สามารถอัปโหลดวิดีโอเพิ่มได้")
+    elif not notify_email:
         st.error("กรุณากรอกอีเมลผู้ใช้งาน")
     elif (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
         st.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
@@ -1629,6 +1792,9 @@ note = st.empty()
 # Submit jobs
 # -------------------------
 if run:
+    if not can_upload:
+        note.error(f"คุณได้อัปโหลดครบ {SKILLLANE_MAX_UPLOADS} ครั้งแล้ว — ไม่สามารถอัปโหลดวิดีโอเพิ่มได้")
+        st.stop()
     uploaded_filename_for_status = ""
     input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4" if upload_done else None
     if not upload_done and not uploaded:
@@ -1793,6 +1959,7 @@ if run:
     st.session_state["last_uploaded_filename"] = uploaded_filename_for_status
 
     st.session_state["skilllane_show_submission_success"] = group_id
+    increment_skilllane_upload_count(logged_in_user)
     if upload_done:
         try:
             for p in ("upload_done", "notify_email", "uploaded_file"):
