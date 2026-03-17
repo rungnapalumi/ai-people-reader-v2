@@ -152,7 +152,7 @@ EMAIL_RETRY_BACKOFF_SECONDS = int(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1200
 FORCED_NOTIFY_EMAILS = str(
     os.getenv(
         "FORCED_NOTIFY_EMAILS",
-        "alisa@imagematters.at,rungnapa@imagematters.at",
+        "rungnapa@imagematters.at",
     )
 ).strip()
 
