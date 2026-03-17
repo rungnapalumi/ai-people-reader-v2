@@ -630,6 +630,10 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
         notify_email = str(notification.get("notify_email") or payload.get("notify_email") or legacy_notify_email).strip()
         if notify_email:
             g["sent_to_email"] = notify_email
+        # When email was sent, show actual recipients (alert who received it)
+        sent_to = str(notification.get("sent_to") or "").strip()
+        if sent_to:
+            g["sent_to"] = sent_to
 
         legacy_sent = payload.get("email_sent")
         legacy_sent_bool = str(legacy_sent).strip().lower() in ("1", "true", "yes", "y")
@@ -686,6 +690,7 @@ def _list_finished_jobs_with_email(limit: int = 50) -> List[Dict[str, str]]:
                 "job_updated_at_raw": str(g.get("job_updated_at_raw") or ""),
                 "job_updated_at": _to_local_time_display(g.get("job_updated_at_raw")),
                 "sent_to_email": str(g.get("sent_to_email") or ""),
+                "emailed_to": str(g.get("sent_to") or ""),
                 "email_sent": str(g.get("email_sent") or "no"),
                 "email_status": str(g.get("email_status") or ""),
                 "email_updated_at": _to_local_time_display(g.get("email_updated_at_raw")),

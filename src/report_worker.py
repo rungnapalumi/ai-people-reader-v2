@@ -149,12 +149,6 @@ EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE
 EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB", "30"))
 EMAIL_PENDING_MAX_ITEMS_PER_ROUND = int(os.getenv("EMAIL_PENDING_MAX_ITEMS_PER_ROUND", "30"))
 EMAIL_RETRY_BACKOFF_SECONDS = int(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1200"))  # 20 minutes
-FORCED_NOTIFY_EMAILS = str(
-    os.getenv(
-        "FORCED_NOTIFY_EMAILS",
-        "rungnapa@imagematters.at",
-    )
-).strip()
 
 # Defaults (can be overridden per-job)
 DEFAULT_ANALYSIS_MODE = os.getenv("ANALYSIS_MODE", "real").strip().lower()  # "real" or "fallback"
@@ -1149,14 +1143,8 @@ def is_operation_test_style(report_style: str) -> bool:
 
 
 def resolve_notification_recipients(notify_email: str, report_style: str = "") -> List[str]:
-    if is_operation_test_style(report_style):
-        allowed = parse_email_list(FORCED_NOTIFY_EMAILS)
-        selected = parse_email_list(notify_email)
-        # Prefer recipients explicitly provided by the user.
-        # Fallback to forced list only when no recipient is provided.
-        merged = selected if selected else allowed
-    else:
-        merged = parse_email_list(notify_email)
+    """Return valid email recipients. No fallback — only send when user provides email."""
+    merged = parse_email_list(str(notify_email or "").strip())
     out: List[str] = []
     seen = set()
     for email in merged:
@@ -1659,6 +1647,7 @@ def update_finished_job_notification(
     report_en_sent: Optional[bool] = None,
     skeleton_sent: Optional[bool] = None,
     dots_sent: Optional[bool] = None,
+    sent_to: Optional[str] = None,
 ) -> None:
     if not job_id:
         return
@@ -1672,6 +1661,8 @@ def update_finished_job_notification(
         "status": status,
         "updated_at": utc_now_iso(),
     }
+    if sent_to:
+        job["notification"]["sent_to"] = str(sent_to).strip()
     if report_th_sent is not None:
         job["notification"]["report_th_sent"] = bool(report_th_sent)
     if report_en_sent is not None:
@@ -1914,6 +1905,12 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             status_text = " | ".join(statuses)
             overall_sent = bool(report_th_sent or report_en_sent or dots_sent or sent_any)
+            sent_to_str = ""
+            if overall_sent and notify_email:
+                rec = resolve_notification_recipients(notify_email, report_style)
+                sent_to_str = ", ".join(rec) if rec else str(notify_email).strip()
+                if sent_to_str:
+                    status_text = status_text + f" | sent to: {sent_to_str}"
             update_finished_job_notification(
                 job_id,
                 overall_sent,
@@ -1922,6 +1919,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 report_en_sent=report_en_sent,
                 skeleton_sent=skeleton_sent,
                 dots_sent=dots_sent,
+                sent_to=sent_to_str or None,
             )
 
             report_th_done = report_th_sent or (not expects_report_th)
@@ -2714,6 +2712,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 email_sent = bool(primary_done or report_th_sent or report_en_sent or skeleton_sent or dots_sent)
                 email_status = " | ".join(statuses) if statuses else "queued"
+                if email_sent and recipients:
+                    email_status = email_status + f" | sent to: {', '.join(recipients)}"
             else:
                 if is_operation_test:
                     email_sent, email_status = False, "skipped_no_valid_recipients"
@@ -2725,10 +2725,12 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         else:
             email_sent, email_status = False, "disabled_by_config"
             report_th_sent, report_en_sent, skeleton_sent, dots_sent = False, False, False, False
+        sent_to_list = recipients if (email_sent and recipients) else []
         job["notification"] = {
             "notify_email": str(job.get("notify_email") or "").strip(),
             "sent": email_sent,
             "status": email_status,
+            "sent_to": ", ".join(sent_to_list) if sent_to_list else "",
             "updated_at": utc_now_iso(),
             "report_th_sent": bool(report_th_sent),
             "report_en_sent": bool(report_en_sent),
