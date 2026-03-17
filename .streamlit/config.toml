@@ -1,0 +1,5 @@
+[server]
+# 1 GB upload limit for all Streamlit file uploaders in this app.
+maxUploadSize = 1024
+maxMessageSize = 1024
+

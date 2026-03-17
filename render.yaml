@@ -1,0 +1,25 @@
+# Report worker: after code changes to src/report_core.py, use "Clear build cache & deploy"
+# in Render Dashboard to ensure new code is used. Check logs for "report_core version: 2026-03-07-relaxed"
+- type: worker
+  name: ai-people-reader-v2-report-worker
+  runtime: python
+  region: singapore
+  plan: starter
+  buildCommand: |
+    set -e
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y chromium libreoffice libreoffice-writer fonts-noto-core fonts-noto-ui-core fonts-thai-tlwg
+    chromium --version || chromium-browser --version
+    echo "[build] LibreOffice check:" && (which libreoffice || which soffice || find /usr -name "soffice" -o -name "libreoffice" 2>/dev/null | head -5)
+    pip install --upgrade pip
+    pip install "setuptools>=65.0.0" "wheel>=0.38.0"
+    pip cache purge
+    pip install --no-cache-dir -r worker_report_requirements.txt
+  startCommand: sh -c 'export PATH="/usr/bin:/usr/local/bin:$PATH" && python src/report_worker.py'
+  envVars:
+    - key: PYTHON_VERSION
+      value: 3.11.9
+    - key: ANALYSIS_MODE
+      value: real
+    - key: DOCX_THAI_FONT_FAMILY
+      value: Garuda

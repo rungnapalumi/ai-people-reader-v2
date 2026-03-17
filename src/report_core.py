@@ -1,0 +1,2943 @@
+# report_core.py — shared report logic for report generation
+REPORT_CORE_VERSION = "2026-03-07-relaxed"  # Bump when changing first-impression logic (verify deploy)
+CAP_HIGH_TO_MODERATE = False  # Allow High/สูง to display (no cap to Moderate)
+
+import os
+import sys
+import io
+import math
+import random
+import time
+import logging
+import unicodedata
+from xml.sax.saxutils import escape
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, Any, Optional
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+
+logger = logging.getLogger("report_core.analysis")
+
+# Ensure project root is in path so narrative_engine (at project root) can be imported
+_report_core_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_report_core_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+try:
+    from narrative_engine import build_narrative_report
+except ImportError as _e:
+    logger.debug("[narrative] narrative_engine not available: %s", _e)
+    build_narrative_report = None
+
+try:
+    from mediapipe.python.solutions import pose as mp_pose_module
+    from mediapipe.python.solutions.pose import Pose, PoseLandmark
+    mp = True
+except ImportError as e1:
+    try:
+        import mediapipe as mp
+        mp_pose_module = mp.solutions.pose
+        Pose = mp_pose_module.Pose
+        PoseLandmark = mp_pose_module.PoseLandmark
+        mp = True
+    except Exception as e2:
+        mp = None
+        mp_pose_module = None
+        Pose = None
+        PoseLandmark = None
+        logger.warning(
+            "[MediaPipe] Import failed (mp=None). Real analysis disabled; using placeholder. "
+            "ImportError: %s | Fallback error: %s. "
+            "Tip: Use Python 3.10 on Linux (Render) if 3.11 fails.",
+            e1, e2,
+        )
+
+# Dataclasses
+@dataclass
+class FirstImpressionData:
+    eye_contact_pct: float
+    upright_pct: float
+    stance_stability: float
+
+def _cap_high_to_moderate(level: str, is_thai: bool) -> str:
+    """Cap High/สูง to Moderate/กลาง when CAP_HIGH_TO_MODERATE is True."""
+    if not CAP_HIGH_TO_MODERATE:
+        return level
+    s = str(level or "").strip().lower()
+    if s.startswith("high") or s == "สูง":
+        return "กลาง" if is_thai else "Moderate"
+    return level
+
+
+def _cap_low_to_moderate(level: str, is_thai: bool) -> str:
+    """Cap Low/ต่ำ to Moderate/กลาง so report never shows Low."""
+    s = str(level or "").strip().lower()
+    if s.startswith("low") or s == "ต่ำ":
+        return "กลาง" if is_thai else "Moderate"
+    return level
+
+
+def is_first_impression_fallback(fi: Optional["FirstImpressionData"]) -> bool:
+    """True when First Impression used zero fallback (analysis failed) — show N/A instead of Low."""
+    if not fi:
+        return True
+    return (float(fi.eye_contact_pct or 0) == 0 and float(fi.upright_pct or 0) == 0 and float(fi.stance_stability or 0) == 0)
+
+
+def first_impression_level(value: float, metric: str = "", is_fallback: bool = False) -> str:
+    """High/Moderate/Low. When is_fallback and value=0, return N/A (analysis failed)."""
+    v = float(value or 0.0)
+    if is_fallback and v == 0:
+        return "N/A"
+    if metric in ("eye_contact", "uprightness", "stance"):
+        if v >= 60.0:
+            raw = "High"
+        elif v >= 35.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+    else:
+        if v >= 70.0:
+            raw = "High"
+        elif v >= 30.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+    raw = _cap_high_to_moderate(raw, is_thai=False)
+    return _cap_low_to_moderate(raw, is_thai=False)
+
+
+def _display_scale(scale: str, is_thai: bool) -> str:
+    """Convert scale for display (High/Moderate/Low). Low is capped to Moderate."""
+    s = str(scale or "").strip().lower()
+    if s.startswith("high"):
+        return "สูง" if is_thai else "High"
+    if s.startswith("moderate"):
+        return "กลาง" if is_thai else "Moderate"
+    if s.startswith("low"):
+        return _cap_low_to_moderate("Low", is_thai)
+    return "-"
+
+
+@dataclass
+class CategoryResult:
+    name_en: str
+    name_th: str
+    score: int
+    scale: str
+    positives: int
+    total: int
+    description: str = ""
+
+@dataclass
+class ReportData:
+    client_name: str
+    analysis_date: str
+    video_length_str: str
+    overall_score: int
+    categories: list
+    summary_comment: str
+    generated_by: str
+    first_impression: Optional[FirstImpressionData] = None
+
+# Helpers
+def format_seconds_to_mmss(total_seconds: float) -> str:
+    total_seconds = max(0, float(total_seconds))
+    mm = int(total_seconds // 60)
+    ss = int(round(total_seconds - mm * 60))
+    if ss == 60:
+        mm += 1
+        ss = 0
+    return f"{mm:02d}:{ss:02d}"
+
+def get_video_duration_seconds(video_path: str) -> float:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return 0.0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+    cap.release()
+    if fps <= 0:
+        return 0.0
+    return float(frames / fps)
+
+def _apply_default_retreating_share(
+    detection: Dict[str, float],
+    retreat_key: str = "Retreating",
+    retreat_default_pct: float = 1.0,
+) -> Dict[str, float]:
+    """
+    Temporary business override: keep Retreating at a fixed default share,
+    and scale other categories to fill the remaining percentage.
+    """
+    if not isinstance(detection, dict) or retreat_key not in detection:
+        return detection
+
+    fixed = max(0.0, min(100.0, float(retreat_default_pct)))
+    other_keys = [k for k in detection.keys() if k != retreat_key]
+    target_other_total = max(0.0, 100.0 - fixed)
+    current_other_total = sum(max(0.0, float(detection.get(k, 0.0))) for k in other_keys)
+
+    out: Dict[str, float] = {}
+    if other_keys:
+        if current_other_total <= 0.0:
+            even_share = target_other_total / float(len(other_keys))
+            for k in other_keys:
+                out[k] = round(even_share, 1)
+        else:
+            for k in other_keys:
+                raw = max(0.0, float(detection.get(k, 0.0)))
+                out[k] = round((raw / current_other_total) * target_other_total, 1)
+    out[retreat_key] = round(fixed, 1)
+    return out
+
+def analyze_first_impression_from_video(
+    video_path: str,
+    sample_every_n: int = 5,
+    max_frames: int = 200,
+    audience_mode: str = "one",
+) -> FirstImpressionData:
+    """Real First Impression analysis with MediaPipe using continuous scoring.
+    audience_mode: "one" = present to one person (strict eye contact - look at camera/audience)
+                   "many" = present to many (relaxed - allow scanning across room)
+    """
+    if (Pose is None) or (PoseLandmark is None) or (not callable(Pose)):
+        logger.warning("[first_impression] MediaPipe Pose unavailable; using fallback (High/High/Moderate)")
+        return FirstImpressionData(eye_contact_pct=65.0, upright_pct=65.0, stance_stability=50.0)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return FirstImpressionData(eye_contact_pct=65.0, upright_pct=65.0, stance_stability=50.0)
+
+    frame_samples = []
+
+    def _normalize_horizontal_angle(deg: float) -> float:
+        while deg > 180.0:
+            deg -= 360.0
+        while deg <= -180.0:
+            deg += 360.0
+        if deg > 90.0:
+            deg -= 180.0
+        if deg < -90.0:
+            deg += 180.0
+        return deg
+
+    with Pose(static_image_mode=False, model_complexity=1) as pose:
+        i = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            i += 1
+            if i % sample_every_n != 0:
+                continue
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = pose.process(rgb)
+            if not res.pose_landmarks:
+                continue
+
+            lms = res.pose_landmarks.landmark
+            nose = lms[PoseLandmark.NOSE]
+            leye = lms[PoseLandmark.LEFT_EYE]
+            reye = lms[PoseLandmark.RIGHT_EYE]
+            lsh = lms[PoseLandmark.LEFT_SHOULDER]
+            rsh = lms[PoseLandmark.RIGHT_SHOULDER]
+            lhip = lms[PoseLandmark.LEFT_HIP]
+            rhip = lms[PoseLandmark.RIGHT_HIP]
+            lank = lms[PoseLandmark.LEFT_ANKLE]
+            rank = lms[PoseLandmark.RIGHT_ANKLE]
+
+            if min(nose.visibility, leye.visibility, reye.visibility, lsh.visibility, rsh.visibility, lhip.visibility, rhip.visibility) < 0.5:
+                continue
+
+            frame_samples.append(
+                {
+                    "nose": (float(nose.x), float(nose.y)),
+                    "leye": (float(leye.x), float(leye.y)),
+                    "reye": (float(reye.x), float(reye.y)),
+                    "lsh": (float(lsh.x), float(lsh.y)),
+                    "rsh": (float(rsh.x), float(rsh.y)),
+                    "lhip": (float(lhip.x), float(lhip.y)),
+                    "rhip": (float(rhip.x), float(rhip.y)),
+                    "lank": (float(lank.x), float(lank.y)),
+                    "rank": (float(rank.x), float(rank.y)),
+                    "leye_vis": float(leye.visibility),
+                    "reye_vis": float(reye.visibility),
+                    "lank_vis": float(lank.visibility),
+                    "rank_vis": float(rank.visibility),
+                }
+            )
+            if len(frame_samples) >= max_frames:
+                break
+
+    cap.release()
+
+    total = len(frame_samples)
+    if total == 0:
+        return FirstImpressionData(eye_contact_pct=65.0, upright_pct=65.0, stance_stability=50.0)
+
+    # Auto-calibrate camera roll (tilted camera) using median shoulder/hip line angles.
+    roll_candidates = []
+    for s in frame_samples:
+        lsh = s["lsh"]
+        rsh = s["rsh"]
+        lhip = s["lhip"]
+        rhip = s["rhip"]
+        sh_ang = math.degrees(math.atan2(rsh[1] - lsh[1], rsh[0] - lsh[0]))
+        hip_ang = math.degrees(math.atan2(rhip[1] - lhip[1], rhip[0] - lhip[0]))
+        roll_candidates.append(_normalize_horizontal_angle(sh_ang))
+        roll_candidates.append(_normalize_horizontal_angle(hip_ang))
+    camera_roll_deg = float(np.median(np.array(roll_candidates))) if roll_candidates else 0.0
+    camera_roll_deg = max(-20.0, min(20.0, camera_roll_deg))
+    theta = -math.radians(camera_roll_deg)
+
+    def _rotate_point(pt: tuple, cx: float = 0.5, cy: float = 0.5) -> tuple:
+        x, y = pt
+        dx = x - cx
+        dy = y - cy
+        xr = dx * math.cos(theta) - dy * math.sin(theta) + cx
+        yr = dx * math.sin(theta) + dy * math.cos(theta) + cy
+        return (xr, yr)
+
+    eye_frame_scores = []
+    upright_frame_scores = []
+    ankle_dist = []
+    ankle_center_x = []
+    stance_width_ratios = []
+
+    # Simple eye contact: one audience = look at camera. many = look around (scanning).
+    is_many_audience = str(audience_mode or "").strip().lower() == "many"
+    # One: face toward camera (nose centered). Many: allow head turn when scanning audience.
+    nose_offset_max = 0.50 if is_many_audience else 0.35  # max nose offset from eye center (ratio of eye dist)
+
+    for s in frame_samples:
+        nose = _rotate_point(s["nose"])
+        leye = _rotate_point(s["leye"])
+        reye = _rotate_point(s["reye"])
+        lsh = _rotate_point(s["lsh"])
+        rsh = _rotate_point(s["rsh"])
+        lhip = _rotate_point(s["lhip"])
+        rhip = _rotate_point(s["rhip"])
+        lank = _rotate_point(s["lank"])
+        rank = _rotate_point(s["rank"])
+
+        # Eye contact (simple): face facing camera/audience = High when "always" looking.
+        # One audience: look at camera. Many: look around (scanning). Less = Moderate or Low.
+        eye_dist = abs(leye[0] - reye[0])
+        if eye_dist > 1e-4:
+            mid_eye_x = (leye[0] + reye[0]) / 2.0
+            nose_offset_ratio = abs(nose[0] - mid_eye_x) / eye_dist
+            # Looking = nose reasonably centered (facing camera/audience)
+            if nose_offset_ratio <= nose_offset_max:
+                eye_frame_scores.append(100.0)
+            else:
+                eye_frame_scores.append(0.0)
+
+        # Uprightness (simple): torso roughly vertical = upright. Relaxed threshold.
+        mid_sh = np.array([(lsh[0] + rsh[0]) / 2.0, (lsh[1] + rsh[1]) / 2.0])
+        mid_hip = np.array([(lhip[0] + rhip[0]) / 2.0, (lhip[1] + rhip[1]) / 2.0])
+        v = mid_sh - mid_hip
+        vert = np.array([0.0, -1.0])
+        v_norm = np.linalg.norm(v) + 1e-9
+        cosang = float(np.dot(v / v_norm, vert))
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+        # Simple: torso angle <= 50° = upright (100). No penalty for natural movement.
+        if ang <= 50.0:
+            upright_frame_scores.append(100.0)
+        else:
+            upright_frame_scores.append(0.0)
+
+        # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
+        if min(float(s["lank_vis"]), float(s["rank_vis"])) >= 0.5:
+            dx = (lank[0] - rank[0])
+            dy = (lank[1] - rank[1])
+            dist = math.sqrt(dx * dx + dy * dy)
+            ankle_dist.append(dist)
+            ankle_center_x.append((lank[0] + rank[0]) / 2.0)
+            shoulder_width = abs(lsh[0] - rsh[0])
+            if shoulder_width > 1e-4:
+                stance_width_ratios.append(dist / shoulder_width)
+
+    eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
+    upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
+
+    # Stance (simple): lower ankle-distance variance = more stable. Relaxed thresholds.
+    # When insufficient ankle data (< 10 frames), use 50 (Moderate) — วิเคราะห์ไม่ได้ = Moderate
+    if len(ankle_dist) >= 10:
+        dist_arr = np.array(ankle_dist)
+        dist_std = float(np.std(dist_arr))
+        dist_mean = float(np.mean(dist_arr)) + 1e-9
+        rel_std = dist_std / dist_mean
+
+        # Relaxed: rel_std/0.60 (was 0.35) — easier to get high score
+        base_stability = max(0.0, min(100.0, 100.0 * (1.0 - (rel_std / 0.60))))
+
+        sway_score = 0.0
+        if len(ankle_center_x) >= 10:
+            sway_std = float(np.std(np.array(ankle_center_x)))
+            # Relaxed: sway_std/0.12 (was 0.06)
+            sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.12))))
+
+        # Simple blend: base + sway, no strict width penalty
+        stability = max(0.0, min(100.0, 0.70 * base_stability + 0.30 * sway_score))
+    else:
+        stability = 50.0  # วิเคราะห์ไม่ได้ → Moderate (ไม่ใช้ 0 ที่จะได้ Low)
+
+    return FirstImpressionData(eye_contact_pct=eye_pct, upright_pct=upright_pct, stance_stability=stability)
+
+def generate_eye_contact_text(pct: float) -> list:
+    """Generate descriptive text based on eye contact percentage - 10 levels"""
+    if pct >= 90:  # Outstanding
+        return [
+            "• Your eye contact is outstanding — consistently steady, warm, and completely audience-focused throughout the entire presentation.",
+            "• You maintain unwavering direct gaze during key moments, which maximizes trust, clarity, and audience engagement.",
+            "• Every gaze shift is purposeful, natural, and enhances your communication (e.g., thinking pauses, emphasis).",
+            "• Your eye contact is a masterclass in confidence and credibility, with zero signs of avoidance or nervousness."
+        ]
+    elif pct >= 80:  # Excellent
+        return [
+            "• Your eye contact is excellent — steady, engaging, and audience-focused almost throughout the presentation.",
+            "• You consistently maintain direct gaze during key moments, which strongly increases trust and clarity.",
+            "• Gaze shifts are purposeful and natural, never detracting from your professional presence.",
+            "• Your eye contact demonstrates strong confidence and builds exceptional credibility with the audience."
+        ]
+    elif pct >= 70:  # Very Strong
+        return [
+            "• Your eye contact is very strong — steady and audience-focused for most of the time.",
+            "• You maintain direct gaze during key moments effectively, which clearly builds trust and clarity.",
+            "• Occasional gaze shifts are natural and appropriate, showing thoughtfulness without reducing engagement.",
+            "• Overall, your eye contact strongly supports confidence and credibility with the audience."
+        ]
+    elif pct >= 60:  # Strong
+        return [
+            "• Your eye contact is strong — generally steady and audience-focused during important moments.",
+            "• You maintain direct gaze during most key moments, which helps establish trust.",
+            "• Some gaze shifts occur but they're mostly natural and don't significantly impact your presence.",
+            "• Your eye contact effectively supports good confidence and reasonable credibility."
+        ]
+    elif pct >= 50:  # Good
+        return [
+            "• Your eye contact shows a good foundation, with several effective moments of direct audience connection.",
+            "• You maintain direct gaze during many important points, which helps build trust.",
+            "• With slightly longer eye contact in key moments, your delivery will feel even more confident.",
+            "• Overall, your audience engagement is positive and can be strengthened further."
+        ]
+    elif pct >= 40:  # Above Average
+        return [
+            "• Your eye contact is developing well, with regular moments of direct audience connection.",
+            "• You make direct eye contact consistently, and sustaining it slightly longer will increase impact.",
+            "• Some gaze shifts occur more frequently than ideal, but this is very trainable.",
+            "• Improving consistency will noticeably enhance trust and credibility."
+        ]
+    elif pct >= 30:  # Average
+        return [
+            "• Your eye contact is in a developing stage, with clear opportunities to become more consistent.",
+            "• You already connect directly with the audience at times, especially in selected moments.",
+            "• Extending direct gaze a bit longer will strengthen audience connection and engagement.",
+            "• With focused practice, trust and credibility cues will improve clearly."
+        ]
+    else:
+        return [
+            "• Your eye contact is developing and currently inconsistent in several parts of the presentation.",
+            "• You connect with the audience at times, and extending direct gaze during key moments will improve trust.",
+            "• Some gaze shifts are more frequent than ideal, but this can be improved with focused practice.",
+            "• With steadier eye contact, your confidence and credibility will become more apparent."
+        ]
+
+def generate_eye_contact_text_th(pct: float) -> list:
+    """Thai descriptive text based on eye contact percentage - 10 levels"""
+    if pct >= 90:
+        return [
+            "• การสบตาโดดเด่นมาก สม่ำเสมอ อบอุ่น และโฟกัสผู้ฟังตลอดการนำเสนอ",
+            "• คุณรักษาการสบตาในจุดสำคัญได้อย่างยอดเยี่ยม ช่วยเพิ่มความไว้วางใจสูงมาก",
+            "• การเปลี่ยนสายตาเป็นธรรมชาติและมีจุดประสงค์ ไม่ทำให้พลังการสื่อสารลดลง",
+            "• ภาพรวมสะท้อนความมั่นใจและความน่าเชื่อถือในระดับสูงสุด",
+        ]
+    elif pct >= 80:
+        return [
+            "• การสบตายอดเยี่ยม มีความต่อเนื่องและเชื่อมโยงผู้ฟังได้ดีมาก",
+            "• คุณสบตาในประเด็นสำคัญได้ชัดเจน ช่วยสร้างความเชื่อมั่นได้มาก",
+            "• มีการละสายตาบ้างเล็กน้อยแต่ยังเป็นธรรมชาติ",
+            "• ภาพรวมแสดงบุคลิกที่มั่นใจและน่าเชื่อถือมาก",
+        ]
+    elif pct >= 70:
+        return [
+            "• การสบตาแข็งแรงและคงเส้นคงวาในช่วงส่วนใหญ่ของการพูด",
+            "• ช่วงที่เน้นสาระสำคัญมีการสบตาที่ดี ช่วยเสริมความไว้วางใจ",
+            "• มีจังหวะละสายตาเป็นระยะแต่ไม่กระทบการเชื่อมต่อผู้ฟังมาก",
+            "• โดยรวมสนับสนุนภาพลักษณ์มืออาชีพได้ดี",
+        ]
+    elif pct >= 60:
+        return [
+            "• การสบตาอยู่ในระดับดีและค่อนข้างสม่ำเสมอ",
+            "• จุดสำคัญส่วนใหญ่ยังคงสบตาได้เหมาะสม",
+            "• มีการละสายตาบ้างแต่ยังไม่รบกวนภาพรวม",
+            "• โดยรวมช่วยเสริมความมั่นใจได้ชัดเจน",
+        ]
+    elif pct >= 50:
+        return [
+            "• การสบตามีพื้นฐานที่ดี และมีหลายช่วงที่เชื่อมโยงผู้ฟังได้ชัดเจน",
+            "• ในประเด็นสำคัญสามารถสบตาได้พอสมควรและสร้างความไว้วางใจได้",
+            "• หากเพิ่มระยะเวลาการสบตาอีกเล็กน้อย พลังการสื่อสารจะดีขึ้นชัดเจน",
+            "• ภาพรวมเป็นบวกและต่อยอดได้อีกมาก",
+        ]
+    elif pct >= 40:
+        return [
+            "• การสบตากำลังพัฒนาไปได้ดี และมีช่วงที่เชื่อมโยงผู้ฟังได้ต่อเนื่อง",
+            "• มีการสบตาสม่ำเสมอในหลายจังหวะ และสามารถต่อยอดให้คงที่ขึ้นได้",
+            "• การละสายตายังมีอยู่บ้าง แต่สามารถปรับได้ด้วยการฝึก",
+            "• หากเพิ่มความต่อเนื่องของการสบตา จะช่วยเสริมความน่าเชื่อถือมากขึ้น",
+        ]
+    elif pct >= 30:
+        return [
+            "• การสบตาอยู่ในช่วงพัฒนา และยังมีโอกาสเพิ่มความสม่ำเสมอได้อีก",
+            "• มีหลายช่วงที่เชื่อมโยงผู้ฟังได้ดี โดยเฉพาะบางประเด็นสำคัญ",
+            "• หากคุมการละสายตาให้น้อยลง จะทำให้การสื่อสารไหลลื่นขึ้น",
+            "• แนะนำฝึกการสบตาแบบสั้นแต่ต่อเนื่องในจังหวะสำคัญ",
+        ]
+    else:
+        return [
+            "• การสบตายังอยู่ในช่วงพัฒนา และยังไม่สม่ำเสมอในหลายช่วงของการนำเสนอ",
+            "• มีช่วงที่เชื่อมโยงผู้ฟังได้ดี หากเพิ่มระยะเวลาการสบตาในประเด็นสำคัญจะดีขึ้นมาก",
+            "• การละสายตายังเกิดบ่อยกว่าที่ควร แต่สามารถปรับได้ด้วยการฝึกอย่างต่อเนื่อง",
+            "• เมื่อคุมการสบตาได้คงที่ขึ้น ภาพลักษณ์ความมั่นใจและความน่าเชื่อถือจะชัดเจนขึ้น",
+        ]
+
+def generate_uprightness_text(pct: float) -> list:
+    """Generate descriptive text based on uprightness percentage - 10 levels"""
+    if pct >= 90:  # Outstanding
+        return [
+            "• You maintain outstanding upright posture with perfect vertical alignment throughout the entire presentation.",
+            "• Your chest remains fully open, shoulders are optimally relaxed, and head alignment is impeccable — signaling exceptional balance, readiness, and commanding authority.",
+            "• Even during active gesturing, your vertical alignment stays completely stable, demonstrating masterful core control.",
+            "• There is absolutely no visible slouching or collapsing at any point, projecting supreme professional presence."
+        ]
+    elif pct >= 80:  # Excellent
+        return [
+            "• You maintain excellent upright posture consistently throughout the presentation.",
+            "• Your chest stays open, shoulders are naturally relaxed, and head alignment is near-perfect — signaling strong balance, readiness, and authority.",
+            "• Your vertical alignment remains remarkably stable even when gesturing, demonstrating superior core control.",
+            "• There is virtually no slouching or collapsing, which projects a highly professional and confident appearance."
+        ]
+    elif pct >= 70:  # Very Strong
+        return [
+            "• You maintain very strong upright posture throughout most of the presentation.",
+            "• The chest stays open, shoulders remain relaxed, and head is well-aligned — clearly signaling balance, readiness, and authority.",
+            "• Your vertical alignment stays stable during most gestures, showing very good core control.",
+            "• Minimal slouching occurs, which strongly supports a professional and composed appearance."
+        ]
+    elif pct >= 60:  # Strong
+        return [
+            "• You maintain strong upright posture for the majority of the clip.",
+            "• Your chest generally stays open, shoulders relaxed, and head aligned — signaling good balance and authority.",
+            "• Vertical alignment remains fairly stable during gestures, showing solid core control.",
+            "• Occasional minor slouching appears but doesn't detract significantly from your professional presence."
+        ]
+    elif pct >= 50:  # Good
+        return [
+            "• Your posture has a good foundation, with many moments of stable upright alignment.",
+            "• Chest and shoulder alignment are generally positive, with room to make consistency even better.",
+            "• During gestures, vertical alignment is mostly stable and supports clear communication.",
+            "• Overall posture is strong and can be elevated further with small refinements."
+        ]
+    elif pct >= 40:  # Above Average
+        return [
+            "• Your posture is developing well, with a number of solid upright moments throughout the presentation.",
+            "• Chest and shoulder positioning are often acceptable, and greater consistency will add polish.",
+            "• Vertical alignment varies in some gesture phases, which is common and trainable.",
+            "• With steadier posture, your professional image will look even more confident."
+        ]
+    elif pct >= 30:  # Average
+        return [
+            "• Your posture is in a developing stage, alternating between upright moments and less stable alignment.",
+            "• There are several points where shoulder and head position can be brought closer to ideal alignment.",
+            "• Improving vertical consistency will make your presence feel stronger and more composed.",
+            "• With ongoing practice, professional presence and authority will improve clearly."
+        ]
+    else:
+        return [
+            "• Your posture is still developing and varies between upright and less stable alignment.",
+            "• There are several moments where shoulder and head alignment drift from ideal posture.",
+            "• Improving core control and maintaining a taller stance will enhance your professional presence.",
+            "• With consistent practice, your posture can become more stable and confident."
+        ]
+
+def generate_uprightness_text_th(pct: float) -> list:
+    """Thai descriptive text based on uprightness percentage - 10 levels"""
+    if pct >= 90:
+        return [
+            "• ท่าทางตั้งตรงโดดเด่นมาก การจัดแนวลำตัวนิ่งและสมดุลตลอดการพูด",
+            "• หน้าอกเปิด ไหล่ผ่อนคลาย ศีรษะอยู่ในแนวที่ดีอย่างสม่ำเสมอ",
+            "• แม้มีการใช้ท่าทาง มือและลำตัวก็ยังคงความมั่นคงสูง",
+            "• ภาพรวมสื่อความมั่นใจและภาวะผู้นำได้ชัดเจนมาก",
+        ]
+    elif pct >= 80:
+        return [
+            "• ท่าทางตั้งตรงยอดเยี่ยมและคงเส้นคงวาเกือบตลอดคลิป",
+            "• การจัดแนวหัวไหล่และลำตัวอยู่ในเกณฑ์ดีมาก",
+            "• มีการเอนตัวเล็กน้อยบางช่วงแต่ไม่กระทบภาพรวม",
+            "• โดยรวมดูมั่นใจและมืออาชีพมาก",
+        ]
+    elif pct >= 70:
+        return [
+            "• ท่าทางตั้งตรงดีมากในช่วงส่วนใหญ่ของการนำเสนอ",
+            "• โครงลำตัวโดยรวมสมดุลและควบคุมได้ดี",
+            "• มีจังหวะที่แนวลำตัวหลุดเล็กน้อยเป็นครั้งคราว",
+            "• ภาพรวมยังสนับสนุนความน่าเชื่อถือได้ดี",
+        ]
+    elif pct >= 60:
+        return [
+            "• ท่าทางตั้งตรงอยู่ในระดับดีและค่อนข้างสม่ำเสมอ",
+            "• ลำตัวและไหล่ส่วนใหญ่ยังอยู่ในแนวเหมาะสม",
+            "• มีการคล้อยลำตัวบ้างเล็กน้อยในบางช่วง",
+            "• โดยรวมช่วยเสริมบุคลิกมืออาชีพได้ดี",
+        ]
+    elif pct >= 50:
+        return [
+            "• ท่าทางตั้งตรงมีพื้นฐานที่ดี และมีหลายช่วงที่คงแนวลำตัวได้ดี",
+            "• ความต่อเนื่องโดยรวมเป็นบวก และยังมีโอกาสทำให้คงที่ขึ้นอีก",
+            "• หากคุมแกนลำตัวให้ต่อเนื่องขึ้นเล็กน้อย ภาพรวมจะดีขึ้นชัดเจน",
+            "• โดยรวมอยู่ในทิศทางที่ดีและพัฒนาได้อีกมาก",
+        ]
+    elif pct >= 40:
+        return [
+            "• ท่าทางกำลังพัฒนาได้ดี และมีหลายช่วงที่รักษาแนวได้เหมาะสม",
+            "• แนวไหล่/ศีรษะยังมีบางจังหวะที่แกว่งเล็กน้อย ซึ่งปรับได้ไม่ยาก",
+            "• การคุมแกนกลางมีแนวโน้มดีและสามารถเสริมให้มั่นคงขึ้นได้",
+            "• หากเพิ่มความสม่ำเสมออีกเล็กน้อย บุคลิกจะดูมืออาชีพขึ้นมาก",
+        ]
+    elif pct >= 30:
+        return [
+            "• ท่าทางอยู่ในช่วงพัฒนา มีทั้งช่วงที่ตั้งตรงได้ดีและช่วงที่ยังไม่นิ่ง",
+            "• แนวไหล่และศีรษะยังมีบางจังหวะที่หลุดจากแนวเหมาะสม",
+            "• หากคุมแนวลำตัวให้คงที่ขึ้น จะช่วยเสริมความมั่นใจได้ชัดเจน",
+            "• แนะนำฝึกการคุมแกนลำตัวอย่างต่อเนื่องเพื่อเพิ่มความนิ่ง",
+        ]
+    else:
+        return [
+            "• ท่าทางยังอยู่ในช่วงพัฒนา และมีหลายช่วงที่แนวลำตัวยังไม่นิ่ง",
+            "• แนวไหล่และศีรษะหลุดจากแนวที่เหมาะสมเป็นระยะ",
+            "• หากเพิ่มการคุมแกนกลางและรักษาท่ายืนให้ต่อเนื่อง จะช่วยเสริมบุคลิกได้มาก",
+            "• ฝึกอย่างสม่ำเสมอจะทำให้ภาพรวมดูมั่นใจและมืออาชีพขึ้นอย่างชัดเจน",
+        ]
+
+def generate_stance_text(stability: float) -> list:
+    """Generate descriptive text based on stance stability - 10 levels"""
+    if stability >= 90:  # Outstanding
+        return [
+            "• Your stance is outstanding — perfectly symmetrical and solidly grounded, with feet placed optimally at shoulder-width apart.",
+            "• Weight shifts are virtually non-existent, creating an exceptionally stable platform that demonstrates supreme confidence.",
+            "• You maintain flawless forward orientation toward the audience throughout, maximally reinforcing clarity and engagement.",
+            "• Your stance conveys rock-solid stability and commanding, welcoming authority ideal for executive leadership communication."
+        ]
+    elif stability >= 80:  # Excellent
+        return [
+            "• Your stance is excellent — exceptionally symmetrical and grounded, with feet placed perfectly about shoulder-width apart.",
+            "• Weight shifts are extremely controlled and minimal, preventing any distraction and demonstrating strong confidence.",
+            "• You maintain superior forward orientation toward the audience throughout, reinforcing excellent clarity and engagement.",
+            "• Your stance conveys remarkable stability and a welcoming, authoritative presence ideal for professional leadership."
+        ]
+    elif stability >= 70:  # Very Strong
+        return [
+            "• Your stance is very strong — highly symmetrical and well-grounded, with feet well-positioned shoulder-width apart.",
+            "• Weight shifts are well-controlled and quite minimal, showing strong confidence and solid balance.",
+            "• You maintain very good forward orientation toward the audience, clearly reinforcing engagement and clarity.",
+            "• The stance conveys strong stability and a professional, welcoming presence suitable for senior communication roles."
+        ]
+    elif stability >= 60:  # Strong
+        return [
+            "• Your stance is strong — symmetrical and grounded, with feet appropriately placed about shoulder-width apart.",
+            "• Weight shifts are controlled and minimal, preventing distraction and demonstrating good confidence.",
+            "• You maintain solid forward orientation toward the audience, reinforcing clarity and reasonable engagement.",
+            "• The stance effectively conveys stability and a professional presence suitable for most business communication."
+        ]
+    elif stability >= 50:  # Good
+        return [
+            "• Your stance has a good base, with generally stable positioning and only occasional weight shifts.",
+            "• Feet placement is mostly appropriate, supporting balanced delivery through much of the presentation.",
+            "• Weight distribution is mostly steady, with minor adjustments that are common and manageable.",
+            "• Overall stance supports a positive professional presence and can be refined further."
+        ]
+    elif stability >= 40:  # Above Average
+        return [
+            "• Your stance is developing well, with many steady moments across the presentation.",
+            "• Feet placement is generally acceptable, and greater consistency will improve grounding.",
+            "• Some visible shifts occur in parts of the clip, which is normal and can be reduced with practice.",
+            "• Better stability will further strengthen your grounded presence and authority."
+        ]
+    elif stability >= 30:  # Average
+        return [
+            "• Your stance is in a developing stage, with opportunities to become steadier throughout delivery.",
+            "• Feet placement varies at times, and improving consistency will support better balance.",
+            "• Some swaying or shifting appears in parts of the presentation, and this can be improved with focused drills.",
+            "• Enhancing stance stability will clearly strengthen your professional presence."
+        ]
+    else:
+        return [
+            "• Your stance is still developing, with noticeable movement and balance variation in several moments.",
+            "• Feet placement and weight distribution are not yet fully consistent throughout the presentation.",
+            "• Reducing unnecessary shifts will help you appear more grounded and authoritative.",
+            "• With regular practice, your stance can become steadier and more professional."
+        ]
+
+def generate_stance_text_th(stability: float) -> list:
+    """Thai descriptive text based on stance stability - 10 levels"""
+    if stability >= 90:
+        return [
+            "• ท่ายืนมั่นคงยอดเยี่ยม สมมาตร และมีฐานยืนที่แข็งแรงมาก",
+            "• การถ่ายน้ำหนักน้อยมาก ทำให้ภาพรวมดูนิ่งและมั่นใจสูง",
+            "• การวางเท้าเหมาะสมและช่วยเสริมพลังการสื่อสารอย่างชัดเจน",
+            "• สะท้อนบุคลิกผู้นำที่พร้อมและน่าเชื่อถือมาก",
+        ]
+    elif stability >= 80:
+        return [
+            "• ท่ายืนมั่นคงมาก มีความสมดุลต่อเนื่อง",
+            "• การถ่ายน้ำหนักเกิดน้อยและควบคุมได้ดี",
+            "• ฐานยืนช่วยให้ภาพลักษณ์ดูมั่นใจและมืออาชีพ",
+            "• โดยรวมสื่อความน่าเชื่อถือได้ดีมาก",
+        ]
+    elif stability >= 70:
+        return [
+            "• ท่ายืนแข็งแรงและค่อนข้างนิ่งในช่วงส่วนใหญ่",
+            "• มีการปรับน้ำหนักเล็กน้อยแต่ไม่รบกวนผู้ฟังมาก",
+            "• ฐานยืนโดยรวมดีและรองรับการสื่อสารได้ดี",
+            "• ภาพรวมเสริมความมั่นใจได้ชัดเจน",
+        ]
+    elif stability >= 60:
+        return [
+            "• ท่ายืนอยู่ในระดับดี มีความมั่นคงพอเหมาะ",
+            "• มีการเปลี่ยนน้ำหนักเป็นระยะแต่ยังควบคุมได้",
+            "• ฐานยืนโดยรวมยังสนับสนุนภาพลักษณ์มืออาชีพ",
+            "• ปรับความนิ่งเพิ่มอีกเล็กน้อยจะดีขึ้นมาก",
+        ]
+    elif stability >= 50:
+        return [
+            "• ท่ายืนมีพื้นฐานที่ดี และมีหลายช่วงที่ค่อนข้างมั่นคง",
+            "• ความสมดุลโดยรวมเป็นบวก และยังปรับให้คงที่ขึ้นได้อีก",
+            "• มีการขยับน้ำหนักเป็นระยะ ซึ่งสามารถลดลงได้ด้วยการฝึก",
+            "• หากเพิ่มความนิ่งอีกเล็กน้อย ภาพรวมจะดูมืออาชีพขึ้นมาก",
+        ]
+    elif stability >= 40:
+        return [
+            "• ท่ายืนกำลังพัฒนาได้ดี และมีหลายช่วงที่รักษาฐานยืนได้เหมาะสม",
+            "• ความต่อเนื่องของฐานยืนยังมีโอกาสทำให้คงที่ขึ้นอีก",
+            "• มีการโยก/ถ่ายน้ำหนักในบางจังหวะ ซึ่งสามารถปรับได้ด้วยการฝึก",
+            "• หากยืน grounded มากขึ้น จะช่วยเสริมภาพลักษณ์ให้มั่นคงขึ้นชัดเจน",
+        ]
+    elif stability >= 30:
+        return [
+            "• ท่ายืนอยู่ในช่วงพัฒนา และยังเพิ่มความนิ่งได้อีกในหลายช่วง",
+            "• การวางเท้าและการถ่ายน้ำหนักมีบางจังหวะที่ยังไม่คงที่",
+            "• หากคุมฐานยืนให้ต่อเนื่องขึ้น จะช่วยเสริมความมั่นใจของภาพรวม",
+            "• แนะนำฝึกคุมแกนล่างและจังหวะการถ่ายน้ำหนักแบบสม่ำเสมอ",
+        ]
+    else:
+        return [
+            "• ท่ายืนยังอยู่ในช่วงพัฒนา และมีการเคลื่อนไหว/ถ่ายน้ำหนักที่เห็นได้ในหลายช่วง",
+            "• ฐานยืนและการกระจายน้ำหนักยังไม่คงที่ตลอดการนำเสนอ",
+            "• หากลดการโยกหรือขยับที่ไม่จำเป็น จะช่วยให้ภาพลักษณ์ดูมั่นคงขึ้น",
+            "• ฝึกการยืนอย่างสม่ำเสมอจะช่วยเสริมความน่าเชื่อถือและความเป็นมืออาชีพได้ชัดเจน",
+        ]
+
+# Analysis functions
+def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: int = 300, **kwargs) -> Dict[str, Any]:
+    """Real MediaPipe analysis with proper Laban Movement Analysis"""
+    enclosing_max_expansion = float(os.getenv("ENCLOSING_MAX_EXPANSION", "0.8"))
+    enclosing_min_velocity = float(os.getenv("ENCLOSING_MIN_VELOCITY", "0.03"))
+    spreading_body_expansion_threshold = float(
+        os.getenv("SPREADING_BODY_EXPANSION_THRESHOLD", "1.3")
+    )
+    spreading_min_velocity = float(os.getenv("SPREADING_MIN_VELOCITY", "0.03"))
+    gesture_debug_log = str(os.getenv("GESTURE_DEBUG_LOG", "false")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    gesture_debug_every_n = max(1, int(os.getenv("GESTURE_DEBUG_EVERY_N_FRAMES", "5")))
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError("Cannot open video")
+    
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps if fps > 0 else 0
+    
+    frame_interval = max(1, int(fps / sample_fps))
+    
+    # Effort & Shape detection counters
+    effort_counts = {
+        "Directing": 0, "Enclosing": 0, "Punching": 0, "Spreading": 0,
+        "Pressing": 0, "Dabbing": 0, "Indirecting": 0, "Gliding": 0,
+        "Flicking": 0, "Advancing": 0, "Retreating": 0
+    }
+    shape_counts = {"Directing": 0, "Enclosing": 0, "Spreading": 0, "Indirecting": 0, "Advancing": 0, "Retreating": 0}
+    
+    analyzed = 0
+    sampled = 0
+    prev_landmarks = None
+    analysis_started_at = time.time()
+    analysis_timeout_seconds = max(60, int(os.getenv("ANALYSIS_TIMEOUT_SECONDS", "420")))
+    
+    with Pose(static_image_mode=False, model_complexity=1) as pose:
+        frame_idx = 0
+        while analyzed < max_frames and sampled < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if (time.time() - analysis_started_at) > analysis_timeout_seconds:
+                logger.warning(
+                    "[analysis] timeout reached (%ss): sampled=%s detected=%s max_frames=%s",
+                    analysis_timeout_seconds,
+                    sampled,
+                    analyzed,
+                    max_frames,
+                )
+                break
+            
+            if frame_idx % frame_interval == 0:
+                sampled += 1
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = pose.process(rgb)
+                
+                if results.pose_landmarks:
+                    lms = results.pose_landmarks.landmark
+                    
+                    # Calculate movement vectors if we have previous frame
+                    if prev_landmarks is not None:
+                        # Get key points
+                        left_wrist = lms[PoseLandmark.LEFT_WRIST]
+                        right_wrist = lms[PoseLandmark.RIGHT_WRIST]
+                        left_elbow = lms[PoseLandmark.LEFT_ELBOW]
+                        right_elbow = lms[PoseLandmark.RIGHT_ELBOW]
+                        left_shoulder = lms[PoseLandmark.LEFT_SHOULDER]
+                        right_shoulder = lms[PoseLandmark.RIGHT_SHOULDER]
+                        nose = lms[PoseLandmark.NOSE]
+                        
+                        # Previous frame landmarks
+                        prev_left_wrist = prev_landmarks[PoseLandmark.LEFT_WRIST]
+                        prev_right_wrist = prev_landmarks[PoseLandmark.RIGHT_WRIST]
+                        
+                        # Calculate velocities (movement speed)
+                        left_wrist_vel = math.sqrt(
+                            (left_wrist.x - prev_left_wrist.x)**2 +
+                            (left_wrist.y - prev_left_wrist.y)**2 +
+                            (left_wrist.z - prev_left_wrist.z)**2
+                        )
+                        right_wrist_vel = math.sqrt(
+                            (right_wrist.x - prev_right_wrist.x)**2 +
+                            (right_wrist.y - prev_right_wrist.y)**2 +
+                            (right_wrist.z - prev_right_wrist.z)**2
+                        )
+                        avg_velocity = (left_wrist_vel + right_wrist_vel) / 2
+                        
+                        # Spatial measurements
+                        wrist_dist = abs(left_wrist.x - right_wrist.x)
+                        shoulder_width = abs(left_shoulder.x - right_shoulder.x)
+                        body_expansion = wrist_dist / max(shoulder_width, 0.1)
+                        
+                        # Hand height relative to shoulders
+                        avg_hand_y = (left_wrist.y + right_wrist.y) / 2
+                        avg_shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+                        hands_above_shoulders = avg_hand_y < avg_shoulder_y
+                        
+                        # Hand depth (Z-axis) relative to body
+                        avg_hand_z = (left_wrist.z + right_wrist.z) / 2
+                        avg_shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
+                        hands_forward = avg_hand_z < avg_shoulder_z
+                        
+                        # Movement direction (hands)
+                        left_z_delta = left_wrist.z - prev_left_wrist.z
+                        right_z_delta = right_wrist.z - prev_right_wrist.z
+                        avg_z_delta = (left_z_delta + right_z_delta) / 2
+                        
+                        # Forward/backward: Use average of both hands with higher threshold
+                        forward_movement = avg_z_delta < -0.03  # Both hands moving toward camera
+                        # Use stricter backward threshold to avoid counting normal return-to-neutral motion.
+                        backward_movement = avg_z_delta > 0.05  # Both hands moving away from camera
+                        
+                        # Vertical movement
+                        upward_movement = (left_wrist.y - prev_left_wrist.y) < -0.01 or (right_wrist.y - prev_right_wrist.y) < -0.01
+                        downward_movement = (left_wrist.y - prev_left_wrist.y) > 0.01 or (right_wrist.y - prev_right_wrist.y) > 0.01
+                        
+                        # Effort qualities
+                        is_sudden = avg_velocity > 0.08  # Fast movement
+                        is_sustained = 0.02 < avg_velocity <= 0.08  # Moderate movement
+                        is_strong = body_expansion > 1.2 or hands_above_shoulders
+                        is_light = body_expansion < 0.8
+                        
+                        # === EFFORT DETECTION (11 types) ===
+                        
+                        # 1. DIRECTING: Direct, sustained, forward movement
+                        if hands_forward and is_sustained and forward_movement:
+                            effort_counts["Directing"] += 1
+                            shape_counts["Directing"] += 1
+                        
+                        # 2. ENCLOSING: Arms coming together, wrapping motion
+                        enclosing_detected = (
+                            body_expansion < enclosing_max_expansion
+                            and avg_velocity > enclosing_min_velocity
+                        )
+                        if enclosing_detected:
+                            effort_counts["Enclosing"] += 1
+                            shape_counts["Enclosing"] += 1
+                        
+                        # 3. PUNCHING: Sudden, strong, direct forward thrust
+                        if is_sudden and is_strong and forward_movement:
+                            effort_counts["Punching"] += 1
+                        
+                        # 4. SPREADING: Arms spreading wide, opening gesture
+                        spreading_detected = (
+                            body_expansion > spreading_body_expansion_threshold
+                            and avg_velocity > spreading_min_velocity
+                        )
+                        if spreading_detected:
+                            effort_counts["Spreading"] += 1
+                            shape_counts["Spreading"] += 1
+                        if gesture_debug_log and (analyzed % gesture_debug_every_n == 0):
+                            logger.info(
+                                "[gesture_debug] frame=%s enclosing=%s spreading=%s body_expansion=%.3f [enclose<%.3f, spread>%.3f] avg_velocity=%.4f [>enclose%.4f, >spread%.4f]",
+                                analyzed,
+                                enclosing_detected,
+                                spreading_detected,
+                                body_expansion,
+                                enclosing_max_expansion,
+                                spreading_body_expansion_threshold,
+                                avg_velocity,
+                                enclosing_min_velocity,
+                                spreading_min_velocity,
+                            )
+                        
+                        # 5. PRESSING: Sustained, strong, downward force
+                        if is_sustained and is_strong and downward_movement:
+                            effort_counts["Pressing"] += 1
+                        
+                        # 6. DABBING: Sudden, light, direct touch
+                        if is_sudden and is_light and avg_velocity > 0.05:
+                            effort_counts["Dabbing"] += 1
+                        
+                        # 7. INDIRECTING: Indirect, curved, wandering movements
+                        if not hands_forward and avg_velocity > 0.04 and body_expansion > 1.0:
+                            effort_counts["Indirecting"] += 1
+                            shape_counts["Indirecting"] += 1
+                        
+                        # 8. GLIDING: Sustained, light, indirect floating
+                        if is_sustained and is_light and upward_movement:
+                            effort_counts["Gliding"] += 1
+                        
+                        # 9. FLICKING: Sudden, light, indirect quick gesture
+                        if is_sudden and is_light and not forward_movement:
+                            effort_counts["Flicking"] += 1
+                        
+                        # 10. ADVANCING: Significant forward movement (toward audience)
+                        # Requires sustained forward motion with reasonable speed
+                        if forward_movement and avg_velocity > 0.06 and is_sustained:
+                            effort_counts["Advancing"] += 1
+                            shape_counts["Advancing"] += 1
+                        
+                        # 11. RETREATING: Significant backward movement (pulling back defensively)
+                        # Requires stronger sustained backward motion - not just gesture return.
+                        if backward_movement and avg_velocity > 0.07 and is_sustained:
+                            effort_counts["Retreating"] += 1
+                            shape_counts["Retreating"] += 1
+                    
+                    # Store current landmarks for next iteration
+                    prev_landmarks = lms
+                    analyzed += 1
+                if sampled % 25 == 0:
+                    logger.info(
+                        "[analysis] progress sampled=%s/%s detected=%s",
+                        sampled,
+                        max_frames,
+                        analyzed,
+                    )
+            
+            frame_idx += 1
+    
+    cap.release()
+    
+    # Calculate percentages
+    total_detections = max(1, sum(effort_counts.values()))
+    effort_detection = {k: round(v / total_detections * 100, 1) for k, v in effort_counts.items()}
+    effort_detection = _apply_default_retreating_share(effort_detection, retreat_default_pct=1.0)
+
+    total_shape = max(1, sum(shape_counts.values()))
+    shape_detection = {k: round(v / total_shape * 100, 1) for k, v in shape_counts.items()}
+    shape_detection = _apply_default_retreating_share(shape_detection, retreat_default_pct=1.0)
+
+    # Add diversity/consistency signals so different speaking styles separate better.
+    dominant_share = max(effort_detection.values()) / 100.0 if effort_detection else 0.0
+    variety_floor = max(2, int(max(1, analyzed) * 0.03))
+    variety_count = sum(1 for v in effort_counts.values() if v >= variety_floor)
+    monotony_penalty = max(0.0, (dominant_share - 0.35) * 8.0)
+    variety_factor = max(0.85, min(1.20, 0.85 + (variety_count / 11.0) * 0.35))
+
+    total_frames = max(1, analyzed)
+    engaging_activity = (
+        effort_counts.get("Spreading", 0)
+        + effort_counts.get("Enclosing", 0)
+        + effort_counts.get("Gliding", 0)
+        + effort_counts.get("Indirecting", 0)
+    ) / total_frames
+    confidence_activity = (
+        effort_counts.get("Directing", 0)
+        + effort_counts.get("Punching", 0)
+        + effort_counts.get("Advancing", 0)
+        + effort_counts.get("Pressing", 0)
+    ) / total_frames
+    authority_activity = (
+        effort_counts.get("Pressing", 0)
+        + effort_counts.get("Punching", 0)
+        + effort_counts.get("Directing", 0)
+        + effort_counts.get("Advancing", 0)
+    ) / total_frames
+
+    engaging_boost = max(0.85, min(1.35, 0.85 + engaging_activity * 1.60))
+    confidence_boost = max(0.85, min(1.35, 0.85 + confidence_activity * 1.50))
+    authority_boost = max(0.85, min(1.35, 0.85 + authority_activity * 1.50))
+
+    if gesture_debug_log:
+        logger.info(
+            "[gesture_debug_summary] analyzed_frames=%s enclosing_count=%s spreading_count=%s enclosing_per_frame=%.4f spreading_per_frame=%.4f",
+            total_frames,
+            effort_counts.get("Enclosing", 0),
+            effort_counts.get("Spreading", 0),
+            effort_counts.get("Enclosing", 0) / max(1, total_frames),
+            effort_counts.get("Spreading", 0) / max(1, total_frames),
+        )
+
+    # Category raw signals: positives minus small penalties from counter-signals.
+    engaging_raw = (
+        effort_detection.get("Spreading", 0) * 0.34
+        + effort_detection.get("Enclosing", 0) * 0.26
+        + effort_detection.get("Gliding", 0) * 0.22
+        + effort_detection.get("Indirecting", 0) * 0.18
+        - effort_detection.get("Punching", 0) * 0.12
+        - effort_detection.get("Retreating", 0) * 0.10
+    )
+    confidence_raw = (
+        effort_detection.get("Directing", 0) * 0.36
+        + effort_detection.get("Punching", 0) * 0.24
+        + effort_detection.get("Advancing", 0) * 0.24
+        + effort_detection.get("Pressing", 0) * 0.16
+        - effort_detection.get("Retreating", 0) * 0.18
+        - effort_detection.get("Indirecting", 0) * 0.08
+    )
+    authority_raw = (
+        effort_detection.get("Pressing", 0) * 0.34
+        + effort_detection.get("Punching", 0) * 0.26
+        + effort_detection.get("Directing", 0) * 0.24
+        + effort_detection.get("Advancing", 0) * 0.16
+        - effort_detection.get("Flicking", 0) * 0.18
+        - effort_detection.get("Retreating", 0) * 0.12
+    )
+
+    # Shape-based alignment helps separate categories with similar effort mixes.
+    engaging_shape = (
+        shape_detection.get("Spreading", 0) * 0.45
+        + shape_detection.get("Enclosing", 0) * 0.35
+        + shape_detection.get("Indirecting", 0) * 0.20
+    )
+    confidence_shape = (
+        shape_detection.get("Directing", 0) * 0.60
+        + shape_detection.get("Advancing", 0) * 0.35
+        - shape_detection.get("Retreating", 0) * 0.25
+    )
+    authority_shape = (
+        shape_detection.get("Directing", 0) * 0.55
+        + shape_detection.get("Advancing", 0) * 0.30
+        - shape_detection.get("Retreating", 0) * 0.40
+    )
+
+    engaging_raw = max(
+        0.0,
+        (engaging_raw * engaging_boost + engaging_shape * 0.22) * variety_factor - monotony_penalty * 0.90,
+    )
+    confidence_raw = max(
+        0.0,
+        (confidence_raw * confidence_boost + confidence_shape * 0.25) * variety_factor - monotony_penalty * 1.00,
+    )
+    authority_raw = max(
+        0.0,
+        (authority_raw * authority_boost + authority_shape * 0.25) * variety_factor - monotony_penalty * 1.10,
+    )
+
+    # Mild contrast expansion to avoid all categories collapsing into the same band.
+    raw_vec = np.array([engaging_raw, confidence_raw, authority_raw], dtype=float)
+    raw_mean = float(np.mean(raw_vec))
+    contrast = 0.95
+    engaging_raw = engaging_raw + contrast * (engaging_raw - raw_mean)
+    confidence_raw = confidence_raw + contrast * (confidence_raw - raw_mean)
+    authority_raw = authority_raw + contrast * (authority_raw - raw_mean)
+
+    engaging_score = min(7, max(1, round(engaging_raw / 5.4 + 1.4)))
+    convince_score = min(7, max(1, round(confidence_raw / 5.4 + 1.4)))
+    authority_score = min(7, max(1, round(authority_raw / 5.4 + 1.4)))
+    
+    return {
+        "analysis_engine": "mediapipe_real_enhanced",
+        "duration_seconds": duration,
+        "analyzed_frames": analyzed,
+        "total_indicators": 450 + 475 + 445,  # = 1370 (real total)
+        "engaging_score": engaging_score,
+        "engaging_pos": int(engaging_score / 7 * 450),
+        "convince_score": convince_score,
+        "convince_pos": int(convince_score / 7 * 475),
+        "authority_score": authority_score,
+        "authority_pos": int(authority_score / 7 * 445),
+        "effort_detection": effort_detection,
+        "shape_detection": shape_detection,
+    }
+
+def analyze_video_placeholder(video_path: str, seed: int = None, job_id: str = None) -> Dict[str, Any]:
+    """Fallback placeholder analysis. Uses video_path/job_id to derive unique seed so different videos get different results."""
+    # Derive seed from video path or job_id so each video gets different (but deterministic) placeholder data
+    if seed is None:
+        seed_src = str(job_id or video_path or "").strip() or str(time.time())
+        seed = hash(seed_src) % (2**31 - 1)  # deterministic per video/job
+    random.seed(seed)
+    duration = get_video_duration_seconds(video_path)
+
+    # Base values — randomize slightly per video so graphs and categories vary
+    base_effort = {
+        "Directing": 23.9, "Enclosing": 11.9, "Punching": 11.5, "Spreading": 11.3,
+        "Pressing": 10.8, "Dabbing": 8.4, "Indirecting": 7.4, "Gliding": 6.2,
+        "Flicking": 3.5, "Advancing": 2.6, "Retreating": 2.5
+    }
+    base_shape = {"Directing": 40.1, "Enclosing": 20.0, "Spreading": 18.9, "Indirecting": 12.4, "Advancing": 4.4, "Retreating": 4.1}
+    effort_detection = {k: max(1.0, min(50.0, v + (random.random() - 0.5) * 12)) for k, v in base_effort.items()}
+    shape_detection = {k: max(1.0, min(50.0, v + (random.random() - 0.5) * 10)) for k, v in base_shape.items()}
+    effort_detection = _apply_default_retreating_share(effort_detection, retreat_default_pct=1.0)
+    shape_detection = _apply_default_retreating_share(shape_detection, retreat_default_pct=1.0)
+
+    # Category scores 1–7 — fallback: Engaging=High fixed; Confidence & Authority random Moderate/High
+    engaging_score = 6   # High (>= 5)
+    convince_score = random.randint(3, 7)   # Moderate (3–4) or High (5–7)
+    authority_score = random.randint(3, 7)  # Moderate (3–4) or High (5–7)
+
+    return {
+        "analysis_engine": "placeholder",
+        "duration_seconds": duration,
+        "analyzed_frames": 100,
+        "total_indicators": 450 + 475 + 445,
+        "engaging_score": engaging_score,
+        "engaging_pos": int(engaging_score / 7 * 450),
+        "convince_score": convince_score,
+        "convince_pos": int(convince_score / 7 * 475),
+        "authority_score": authority_score,
+        "authority_pos": int(authority_score / 7 * 445),
+        "effort_detection": effort_detection,
+        "shape_detection": shape_detection,
+    }
+
+# Graph generation
+def generate_effort_graph(effort_data: Dict[str, float], shape_data: Dict[str, float], output_path: str):
+    """Generate Effort Motion Detection graph (Page 4 style)"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle('Effort Motion Detection Results', fontsize=14, fontweight='bold')
+    
+    # Light blue color
+    light_blue = '#87CEEB'
+    
+    # Left: Effort Summary (sorted by value, highest at top)
+    sorted_efforts = sorted(effort_data.items(), key=lambda x: x[1], reverse=False)  # reverse=False for bottom-to-top
+    efforts = [k for k, v in sorted_efforts]
+    values = [v for k, v in sorted_efforts]
+    
+    ax1.barh(efforts, values, color=light_blue)
+    ax1.set_xlabel('Percentage (%)')
+    ax1.set_title('Effort Summary')
+    ax1.set_xlim(0, 100)
+    for i, v in enumerate(values):
+        ax1.text(v + 1, i, f'{v}%', va='center')
+    
+    # Right: Top Movement Efforts
+    top_3 = sorted(effort_data.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_names = [f"{k} - Rank #{i+1}" for i, (k, v) in enumerate(top_3)]
+    top_vals = [v for k, v in top_3]
+    
+    ax2.barh(top_names, top_vals, color=light_blue)
+    ax2.set_xlabel('Percentage (%)')
+    ax2.set_title('Top Movement Efforts')
+    ax2.set_xlim(0, 100)
+    for i, v in enumerate(top_vals):
+        ax2.text(v + 1, i, f'{v}%', va='center')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+def generate_shape_graph(shape_data: Dict[str, float], output_path: str):
+    """Generate Shape Motion Detection graph (Page 5 style)"""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Light blue color
+    light_blue = '#87CEEB'
+    
+    # Sort by value, highest (left) to lowest (right)
+    sorted_shapes = sorted(shape_data.items(), key=lambda x: x[1], reverse=True)
+    shapes = [k for k, v in sorted_shapes]
+    values = [v for k, v in sorted_shapes]
+    
+    bars = ax.bar(shapes, values, color=light_blue)
+    ax.set_ylabel('Percentage (%)')
+    ax.set_xlabel('Shape Motion Type')
+    ax.set_title('Shape Motion Detection Results', fontsize=14, fontweight='bold')
+    ax.set_ylim(0, max(values) * 1.2 if values else 10)
+    
+    for bar, val in zip(bars, values):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+                f'{val}%', ha='center', va='bottom')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def _build_narrative_from_report(report: ReportData, audience_mode: str = "one"):
+    """Map ReportData to narrative_engine metrics and build NarrativeReport."""
+    if build_narrative_report is None:
+        return None
+    fi = report.first_impression
+    if not fi:
+        return None
+    # Map FirstImpressionData (0-100) to narrative first_impression_metrics (0-1)
+    eye = max(0, min(100, float(fi.eye_contact_pct or 0))) / 100.0
+    up = max(0, min(100, float(fi.upright_pct or 0))) / 100.0
+    st = max(0, min(100, float(fi.stance_stability or 0))) / 100.0
+    first_impression_metrics = {
+        "eye_contact_ratio": eye,
+        "gaze_stability": eye,
+        "gaze_shift_control": eye,
+        "gaze_avoidance": 1.0 - eye,
+        "posture_upright": up,
+        "head_alignment": up,
+        "shoulder_balance": up,
+        "chest_openness": up,
+        "slouch_ratio": 1.0 - up,
+        "lower_body_stability": st,
+        "grounding": st,
+        "weight_shift_control": st,
+        "forward_orientation": st,
+        "stance_symmetry": st,
+    }
+    # Map categories to narrative category_metrics (0-1). Analysis uses 1-7; some paths use 0-100.
+    cats = report.categories or []
+    def _norm(s: float) -> float:
+        v = float(s)
+        v = (v / 100.0) if v > 10 else (v / 7.0)
+        return max(0.0, min(1.0, v))
+    eng = _norm(cats[0].score) if len(cats) > 0 else 0.5
+    conf = _norm(cats[1].score) if len(cats) > 1 else 0.5
+    auth = _norm(cats[2].score) if len(cats) > 2 else 0.5
+    category_metrics = {
+        "facial_warmth": eng,
+        "openness": eng,
+        "expressive_variety": eng,
+        "audience_connection": eng,
+        "presence_score": conf,
+        "posture_strength": conf,
+        "movement_control": conf,
+        "focus_consistency": conf,
+        "verticality": auth,
+        "decisiveness": auth,
+        "grounded_power": auth,
+        "urgency_signal": auth,
+    }
+    return build_narrative_report(
+        first_impression_metrics=first_impression_metrics,
+        category_metrics=category_metrics,
+        audience_mode=audience_mode,
+    )
+
+
+# DOCX Report building
+def build_docx_report(
+    report: ReportData,
+    output_bio: io.BytesIO,
+    graph1_path: str,
+    graph2_path: str,
+    lang: str = "en",
+    report_style: str = "full",
+):
+    """Build 5-page DOCX report matching the exact template format"""
+    doc = Document()
+    style_name = str(report_style or "full").strip().lower()
+    is_simple = style_name.startswith("simple")
+    is_operation_test = style_name.startswith("operation_test")
+    
+    # Language-specific text
+    is_thai = (lang == "th")
+
+    # Set Thai font at document level BEFORE adding content — ป้องกันสระ/วรรณยุกต์ทับกัน
+    if is_thai:
+        thai_font = os.getenv("DOCX_THAI_FONT_FAMILY", "TH Sarabun New").strip() or "TH Sarabun New"
+
+        def _set_rfonts(el, font_name: str) -> None:
+            r_fonts = el.find(qn("w:rFonts"))
+            if r_fonts is None:
+                r_fonts = OxmlElement("w:rFonts")
+                el.append(r_fonts)
+            r_fonts.set(qn("w:ascii"), font_name)
+            r_fonts.set(qn("w:hAnsi"), font_name)
+            r_fonts.set(qn("w:eastAsia"), font_name)
+            r_fonts.set(qn("w:cs"), font_name)
+
+        try:
+            # 1) docDefaults — default for entire document
+            styles_root = doc.styles.element
+            doc_defaults = styles_root.find(qn("w:docDefaults"))
+            if doc_defaults is None:
+                doc_defaults = OxmlElement("w:docDefaults")
+                styles_root.insert(0, doc_defaults)
+            r_pr_default = doc_defaults.find(qn("w:rPrDefault"))
+            if r_pr_default is None:
+                r_pr_default = OxmlElement("w:rPrDefault")
+                doc_defaults.append(r_pr_default)
+            r_pr = r_pr_default.find(qn("w:rPr"))
+            if r_pr is None:
+                r_pr = OxmlElement("w:rPr")
+                r_pr_default.append(r_pr)
+            _set_rfonts(r_pr, thai_font)
+
+            # 2) Normal style (base for most paragraphs)
+            normal = doc.styles["Normal"]
+            normal.font.name = thai_font
+            n_rpr = normal._element.get_or_add_rPr()
+            _set_rfonts(n_rpr, thai_font)
+        except Exception:
+            pass
+    
+    en_operation_title = "Movement in Communication\nwith AI People Reader Report"
+    th_operation_title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader"
+    texts = {
+        "title": th_operation_title if is_thai else en_operation_title,
+        "client_name": "ชื่อลูกค้า:" if is_thai else "Client Name:",
+        "analysis_date": "วันที่วิเคราะห์:" if is_thai else "Analysis Date:",
+        "video_info": "ข้อมูลวิดีโอ (Video Information)" if is_thai else "Video Information",
+        "duration": "ระยะเวลา:" if is_thai else "Duration:",
+        "detailed_analysis": "การวิเคราะห์โดยละเอียด (Detailed Analysis)" if is_thai else "Detailed Analysis",
+        "first_impression": "1.  ความประทับใจแรกพบ (First Impression)" if is_thai else "1.  First impression",
+        "eye_contact": "การสบตา (Eye Contact)" if is_thai else "Eye Contact",
+        "uprightness": "ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "Uprightness (Posture & Upper-Body Alignment)",
+        "stance": "การยืนและการวางเท้า (Stance)" if is_thai else "Stance (Lower-Body Stability & Grounding)",
+        "impact_clients": "ผลกระทบ:" if is_thai else "Impact:",
+        "engaging": "2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_thai else "2. Engaging & Connecting:",
+        "approachability": "▪ ความเป็นกันเอง" if is_thai else "▪ Approachability",
+        "relatability": "▪ ความเข้าถึงได้" if is_thai else "▪ Relatability",
+        "engagement": "▪ การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_thai else "▪ Engagement, connect and build instant rapport with team",
+        "confidence": "3. ความมั่นใจ:" if is_thai else "3. Confidence:",
+        "optimistic": "▪ บุคลิกภาพเชิงบวก" if is_thai else "▪ Optimistic Presence",
+        "focus": "▪ ความมีสมาธิ" if is_thai else "▪ Focus",
+        "persuade": "▪ ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_thai else "▪ Ability to persuade and stand one's ground, in order to convince others.",
+        "authority": "4.  ความเป็นผู้นำ (Authority):" if is_thai else "4. Authority:",
+        "importance": "▪ แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_thai else "▪ Showing sense of importance and urgency in subject matter",
+        "pressing": "▪ ผลักดันให้เกิดการลงมือทำ" if is_thai else "▪ Pressing for action",
+        "scale": "ระดับ:" if is_thai else "Scale:",
+        "description": "คำอธิบาย: ตรวจพบ" if is_thai else "Description: Detected",
+        "indicators": "การเคลื่อนไหวเชิงบวก" if is_thai else "positive indicators out of",
+        "total_indicators": "ตัวชี้วัดทั้งหมด" if is_thai else "total indicators",
+        "effort_title": "ผลการวิเคราะห์การใช้น้ำหนัก (Efforts)" if is_thai else "Effort Motion Detection Results",
+        "shape_title": "ผลการวิเคราะห์การใช้รูปทรงของมือร่วมกับร่างกาย (Shape)" if is_thai else "Shape Motion Detection Results",
+        "generated": "สร้างโดย AI People Reader™" if is_thai else "Generated by AI People Reader™",
+    }
+    
+    # Impact texts in Thai
+    impact_eye_thai = "การสบตาที่แข็งแกร่งส่งสัญญาณถึงความมีอยู่ ความจริงใจ และความเชื่อมั่นในความเป็นผู้นำ ทำให้ข้อความของคุณรู้สึกน่าเชื่อถือมากขึ้น"
+    impact_upright_thai = "ท่าทางตรงสื่อถึงความมั่นใจในตนเอง ความชัดเจนในความคิด และความมั่นคงทางอารมณ์ ซึ่งเป็นลักษณะของผู้สื่อสารที่มีความไว้วางใจสูง"
+    impact_stance_thai = "ท่ายืนที่มั่นคงช่วยเพิ่มอำนาจ การควบคุม และการส่งข้อความที่ราบรื่น ทำให้ผู้พูดดูเตรียมพร้อมและน่าเชื่อถือมากขึ้น"
+    
+    impact_eye_en = "Strong eye contact signals presence, sincerity, and leadership confidence, making your message feel more reliable."
+    impact_upright_en = "Uprightness communicates self-assurance, clarity of thought, and emotional stability all traits of high-trust communicators."
+    impact_stance_en = "A grounded stance enhances authority, control, and smooth message delivery, making the speaker appear more prepared and credible."
+
+    def _date_th_display(date_text: str) -> str:
+        raw = str(date_text or "").strip()
+        if not raw:
+            return raw
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                continue
+        return raw
+
+    def _date_en_display(date_text: str) -> str:
+        raw = str(date_text or "").strip()
+        if not raw:
+            return raw
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return f"{dt.day}/{dt.month}/{dt.year}"
+            except Exception:
+                continue
+        return raw
+
+    def _fi_level_en(value: float, metric: str = "") -> str:
+        return first_impression_level(value, metric=metric, is_fallback=is_first_impression_fallback(fi))
+
+    def _fi_level_th(value: float, metric: str = "") -> str:
+        lv = _fi_level_en(value, metric=metric).lower()
+        if lv == "n/a":
+            return "ไม่สามารถวิเคราะห์ได้"
+        if lv.startswith("high"):
+            return "สูง"
+        if lv.startswith("moderate"):
+            return "กลาง"
+        return "ต่ำ"
+
+    def normalize_spacing() -> None:
+        """
+        Keep a consistent spacing pattern for numbered headings and bullet points
+        across pages (especially sections 2-4).
+        """
+        for p in doc.paragraphs:
+            t = (p.text or "").strip()
+            if not t:
+                continue
+
+            pf = p.paragraph_format
+            # Numbered section headings: "1.", "2.", "3.", "4."
+            if t[:2] in ("1.", "2.", "3.", "4."):
+                pf.space_before = Pt(14)
+                pf.space_after = Pt(6)
+                pf.line_spacing = 1.1
+                continue
+
+            # Bullets: List Bullet style or explicit "•"/"▪" in content; keep unified compact rhythm.
+            if getattr(p.style, "name", "") == "List Bullet" or t.startswith("•") or t.startswith("▪"):
+                pf.space_before = Pt(0)
+                pf.space_after = Pt(6)
+                pf.line_spacing = 1.2
+                continue
+
+            # Keep impact labels/body visually grouped.
+            if t in (texts["impact_clients"], "Impact:", "ผลกระทบ:"):
+                pf.space_before = Pt(6)
+                pf.space_after = Pt(0)
+                continue
+
+    def _strip_bullet(text: str) -> str:
+        """Remove leading bullet glyph for consistent rendering."""
+        s = str(text or "").strip()
+        if s.startswith("•") or s.startswith("▪"):
+            return s[1:].lstrip()
+        return s
+
+    def _square_bullet_text(text: str) -> str:
+        return f"▪ {_strip_bullet(text)}"
+
+    def _apply_bullet_layout(paragraph, compact: bool = False) -> None:
+        if paragraph is None:
+            return
+        pf = paragraph.paragraph_format
+        pf.left_indent = Pt(28)
+        pf.first_line_indent = Pt(-14)
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(3 if compact else (6 if not is_thai else 4))
+        pf.line_spacing = 1.15 if compact else (1.25 if not is_thai else 1.15)
+
+    def _apply_scale_layout(paragraph, left_indent_pt: float = 28, space_before_pt: float = None, compact: bool = False) -> None:
+        if paragraph is None:
+            return
+        pf = paragraph.paragraph_format
+        pf.left_indent = Pt(left_indent_pt)
+        pf.first_line_indent = Pt(0)
+        if space_before_pt is not None:
+            pf.space_before = Pt(space_before_pt)
+        else:
+            pf.space_before = Pt(0)
+        pf.space_after = Pt(3 if compact else (8 if not is_thai else 6))
+        pf.line_spacing = 1.15 if compact else (1.25 if not is_thai else 1.15)
+
+    def _set_para_font_size(paragraph, size_pt: int) -> None:
+        if paragraph and paragraph.runs:
+            for r in paragraph.runs:
+                r.font.size = Pt(size_pt)
+    
+    # Add header and footer images to all pages
+    section = doc.sections[0]
+    # Match reference format: proper margin (1 inch standard)
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+
+    # Add header image
+    header_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png")
+    if os.path.exists(header_path):
+        header = section.header
+        header_para = header.paragraphs[0]
+        header_run = header_para.add_run()
+        header_run.add_picture(header_path, width=Inches(6.5))
+        header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Add footer image
+    footer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Footer.png")
+    footer = section.footer
+    if os.path.exists(footer_path):
+        footer_para = footer.paragraphs[0]
+        footer_run = footer_para.add_run()
+        footer_run.add_picture(footer_path, width=Inches(6.5))
+        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # ============================================================
+    # PAGE 1: Cover + First Impression (Eye Contact start)
+    # ============================================================
+    
+    # Same compact first page spacing for both Thai and English (match Thai layout).
+    compact_thai_first_page = True
+
+    # Title section spacing: Thai first page — move title up 1 line
+    if is_operation_test and not is_thai:
+        doc.add_paragraph()
+    elif not is_operation_test and not is_thai:
+        doc.add_paragraph()
+        if not compact_thai_first_page:
+            doc.add_paragraph()
+
+    # Title — centered to match reference format. Thai: "AI People Reader" same size as Thai text.
+    if is_thai:
+        title = doc.add_paragraph()
+        r1 = title.add_run("รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ ")
+        r2 = title.add_run("AI People Reader")
+        base_pt = 18 if compact_thai_first_page else 20
+        r1.font.size = Pt(base_pt)
+        r2.font.size = Pt(max(12, base_pt - 6))  # Latin renders larger; reduce to match Thai
+        r1.font.bold = True
+        r2.font.bold = True
+    else:
+        title = doc.add_paragraph(texts["title"])
+        title.runs[0].font.size = Pt(18 if compact_thai_first_page else 20)
+        title.runs[0].font.bold = True
+    title.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.paragraph_format.space_before = Pt(0)
+    title.paragraph_format.space_after = Pt(6 if compact_thai_first_page else 12)
+    if not compact_thai_first_page:
+        doc.add_paragraph()
+    
+    # Client info
+    analysis_date_display = _date_th_display(report.analysis_date) if is_thai else _date_en_display(report.analysis_date)
+    if not is_thai:
+        doc.add_paragraph()  # EN: extra line before Client Name
+    doc.add_paragraph(f"{texts['client_name']}  {report.client_name}")
+    doc.add_paragraph(f"{texts['analysis_date']}  {analysis_date_display}")
+    
+    # Video info — operation_test EN: "Video Duration: 01:36" single line per reference
+    if is_operation_test and not is_thai:
+        doc.add_paragraph(f"Video Duration: {report.video_length_str}")
+    else:
+        video_info = doc.add_paragraph(texts["video_info"])
+        video_info.runs[0].bold = True
+        doc.add_paragraph(f"{texts['duration']} {report.video_length_str}")
+    if not compact_thai_first_page:
+        doc.add_paragraph()
+    
+    # Detailed Analysis header (EN: move down 1 line)
+    if not is_thai:
+        doc.add_paragraph()
+    detailed = doc.add_paragraph(texts["detailed_analysis"])
+    detailed.runs[0].bold = True
+    
+    # Section 1: First impression (same spacing TH & EN)
+    section1 = doc.add_paragraph(texts["first_impression"])
+    section1.runs[0].bold = True
+    section1.paragraph_format.space_before = Pt(10)
+    section1.paragraph_format.space_after = Pt(4)
+    
+    # First Impression - compact level format (High/Moderate/Low or สูง/กลาง/ต่ำ)
+    if report.first_impression:
+        fi = report.first_impression
+        eye_level = _fi_level_th(fi.eye_contact_pct, "eye_contact") if is_thai else _fi_level_en(fi.eye_contact_pct, "eye_contact")
+        up_level = _fi_level_th(fi.upright_pct, "uprightness") if is_thai else _fi_level_en(fi.upright_pct, "uprightness")
+        st_level = _fi_level_th(fi.stance_stability, "stance") if is_thai else _fi_level_en(fi.stance_stability, "stance")
+    else:
+        eye_level = "-" if is_thai else "-"
+        up_level = "-" if is_thai else "-"
+        st_level = "-" if is_thai else "-"
+
+    # Section 1: Scale aligns under bullet (per reference); bullet left=28, first_line=-14 → bullet at 14pt
+    eye_bullet = doc.add_paragraph(
+        _square_bullet_text("• การสบตา (Eye Contact)" if is_thai else "• Eye Contact")
+    )
+    _apply_bullet_layout(eye_bullet)
+    lvl1_text = f"{texts['scale']} {eye_level}"
+    lvl1 = doc.add_paragraph(lvl1_text)
+    lvl1.runs[0].bold = True
+    _apply_scale_layout(lvl1, left_indent_pt=14)  # Align under bullet
+
+    upright_bullet = doc.add_paragraph(
+        _square_bullet_text("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness")
+    )
+    _apply_bullet_layout(upright_bullet)
+    lvl2_text = f"{texts['scale']} {up_level}"
+    lvl2 = doc.add_paragraph(lvl2_text)
+    lvl2.runs[0].bold = True
+    _apply_scale_layout(lvl2, left_indent_pt=14)  # Align under bullet
+
+    stance_bullet = doc.add_paragraph(
+        _square_bullet_text("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance")
+    )
+    _apply_bullet_layout(stance_bullet)
+    lvl3_text = f"{texts['scale']} {st_level}"
+    lvl3 = doc.add_paragraph(lvl3_text)
+    lvl3.runs[0].bold = True
+    _apply_scale_layout(lvl3, left_indent_pt=14)  # Align under bullet
+
+    if not is_thai:
+        doc.add_paragraph()
+        doc.add_paragraph()  # EN: significant space before Remark per reference
+    remark = doc.add_paragraph("หมายเหตุ" if is_thai else "Remark")
+    remark.runs[0].bold = True
+    remark.paragraph_format.space_before = Pt(14)
+    remark.paragraph_format.space_after = Pt(4)
+    doc.add_paragraph(
+        "ความรู้สึกแรกพบมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน โดยพิจารณาจากภาพรวม การสบตา ความตั้งตรง และการยืนวางเท้า ก่อนเข้าสู่การวิเคราะห์เชิงพฤติกรรมในส่วนถัดไป"
+        if is_thai
+        else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
+    )
+    doc.add_paragraph()
+
+    # Narrative engine result — detailed interpretation below First Impression
+    narrative = _build_narrative_from_report(report)
+    if narrative and narrative.first_impression_blocks:
+        logger.info("[narrative] Adding Narrative Interpretation with %d blocks", len(narrative.first_impression_blocks))
+        narrative_label = "การตีความผลการวิเคราะห์ (Narrative)" if is_thai else "Narrative Interpretation"
+        p_narr = doc.add_paragraph(narrative_label)
+        p_narr.runs[0].bold = True
+        p_narr.paragraph_format.space_before = Pt(14)
+        p_narr.paragraph_format.space_after = Pt(6)
+        for block in narrative.first_impression_blocks:
+            sub = block.subtitle or block.title
+            sub_label = sub if not is_thai else {
+                "Eye Contact": "การสบตา (Eye Contact)",
+                "Uprightness (Posture & Upper-Body Alignment)": "ความตั้งตรงของร่างกาย (Uprightness)",
+                "Stance (Lower-Body Stability & Grounding)": "การยืนและการวางเท้า (Stance)",
+            }.get(sub, sub)
+            p_sub = doc.add_paragraph(_square_bullet_text(sub_label))
+            _apply_bullet_layout(p_sub)
+            for bullet in (block.bullets or []):
+                p_b = doc.add_paragraph(_square_bullet_text(bullet))
+                _apply_bullet_layout(p_b, compact=True)
+            if block.impact_text:
+                impact_label = texts["impact_clients"]
+                p_imp = doc.add_paragraph(f"{impact_label} {block.impact_text}")
+                _apply_bullet_layout(p_imp, compact=True)
+        if narrative.executive_summary:
+            exec_label = "สรุปโดยรวม:" if is_thai else "Executive Summary:"
+            p_exec = doc.add_paragraph(exec_label)
+            p_exec.runs[0].bold = True
+            p_exec.paragraph_format.space_before = Pt(10)
+            p_exec.paragraph_format.space_after = Pt(4)
+            doc.add_paragraph(narrative.executive_summary)
+        doc.add_paragraph()
+    elif build_narrative_report is None:
+        logger.warning("[narrative] narrative_engine not available; Narrative Interpretation section skipped")
+
+    # Page 2: Combination Explanation 1, 2, 3 — use page_break_before so LibreOffice respects it
+    combo_label = "คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:"
+    p_combo = doc.add_paragraph(combo_label)
+    p_combo.runs[0].bold = True
+    p_combo.paragraph_format.page_break_before = True  # Force new page (page 2)
+    p_combo.paragraph_format.keep_with_next = True
+    doc.add_paragraph()  # Blank line after combo label
+
+    # Combination Explanation points 1, 2, 3 — keep together on page 2
+    combo_paras = []
+    if is_thai:
+        combo_paras = [
+            doc.add_paragraph("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ"),
+            doc.add_paragraph("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ"),
+            doc.add_paragraph("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง"),
+            doc.add_paragraph("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ"),
+            doc.add_paragraph("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง"),
+            doc.add_paragraph("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น"),
+        ]
+    else:
+        combo_paras = [
+            doc.add_paragraph("1. Low Eye Contact + Low Uprightness + Low Stance."),
+            doc.add_paragraph("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority."),
+            doc.add_paragraph("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance."),
+            doc.add_paragraph("The person tends to appear approachable, and has adequate level of confidence and authority."),
+            doc.add_paragraph("3. High Eye Contact + High Uprightness + High Stance."),
+            doc.add_paragraph("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible."),
+        ]
+    for p in combo_paras[:-1]:
+        p.paragraph_format.keep_with_next = True  # Keep combo block together
+
+    # Page 3: Engaging & Connecting, Confidence, Authority — page_break_before forces new page
+
+    # ============================================================
+    # PAGE 3: Engaging & Connecting + Confidence + Authority
+    # ============================================================
+    
+    # Section 2: Engaging & Connecting — start page 3
+    engaging_cat = report.categories[0]
+    section2 = doc.add_paragraph(texts["engaging"])
+    section2.runs[0].bold = True
+    section2.paragraph_format.page_break_before = True  # Force page 3
+    section2.paragraph_format.space_before = Pt(8)
+    section2.paragraph_format.space_after = Pt(2)
+    section2.paragraph_format.keep_with_next = True
+    p_approach = doc.add_paragraph(_square_bullet_text(texts["approachability"]))
+    _apply_bullet_layout(p_approach, compact=False)
+    p_approach.paragraph_format.keep_with_next = True
+    p_relate = doc.add_paragraph(_square_bullet_text(texts["relatability"]))
+    _apply_bullet_layout(p_relate, compact=False)
+    p_relate.paragraph_format.keep_with_next = True
+    p_engage = doc.add_paragraph(_square_bullet_text(texts["engagement"]))
+    _apply_bullet_layout(p_engage, compact=False)
+    p_engage.paragraph_format.keep_with_next = True
+    scale_para1 = doc.add_paragraph(f"{texts['scale']} {_display_scale(engaging_cat.scale, is_thai)}")
+    scale_para1.runs[0].bold = True
+    _apply_scale_layout(scale_para1, left_indent_pt=28, space_before_pt=4, compact=False)
+    scale_para1.paragraph_format.keep_with_next = True
+
+    # Section 3: Confidence
+    confidence_cat = report.categories[1]
+    section3 = doc.add_paragraph(texts["confidence"])
+    section3.runs[0].bold = True
+    section3.paragraph_format.space_before = Pt(8)
+    section3.paragraph_format.space_after = Pt(2)
+    section3.paragraph_format.keep_with_next = True
+    p_opt = doc.add_paragraph(_square_bullet_text(texts["optimistic"]))
+    _apply_bullet_layout(p_opt, compact=False)
+    p_opt.paragraph_format.keep_with_next = True
+    p_focus = doc.add_paragraph(_square_bullet_text(texts["focus"]))
+    _apply_bullet_layout(p_focus, compact=False)
+    p_focus.paragraph_format.keep_with_next = True
+    p_persuade = doc.add_paragraph(_square_bullet_text(texts["persuade"]))
+    _apply_bullet_layout(p_persuade, compact=False)
+    p_persuade.paragraph_format.keep_with_next = True
+    scale_para2 = doc.add_paragraph(f"{texts['scale']} {_display_scale(confidence_cat.scale, is_thai)}")
+    scale_para2.runs[0].bold = True
+    _apply_scale_layout(scale_para2, left_indent_pt=28, space_before_pt=4, compact=False)
+    scale_para2.paragraph_format.keep_with_next = True
+
+    # Section 4: Authority
+    authority_cat = report.categories[2]
+    section4 = doc.add_paragraph(texts["authority"])
+    section4.runs[0].bold = True
+    section4.paragraph_format.space_before = Pt(8)
+    section4.paragraph_format.space_after = Pt(2)
+    section4.paragraph_format.keep_with_next = True
+    p_importance = doc.add_paragraph(_square_bullet_text(texts["importance"]))
+    _apply_bullet_layout(p_importance, compact=False)
+    p_importance.paragraph_format.keep_with_next = True
+    p_pressing = doc.add_paragraph(_square_bullet_text(texts["pressing"]))
+    _apply_bullet_layout(p_pressing, compact=False)
+    scale_para3 = doc.add_paragraph(f"{texts['scale']} {_display_scale(authority_cat.scale, is_thai)}")
+    scale_para3.runs[0].bold = True
+    _apply_scale_layout(scale_para3, left_indent_pt=28, space_before_pt=4, compact=False)
+
+    if not is_simple:
+        # PAGE BREAK TO PAGE 4
+        doc.add_page_break()
+        
+        # ============================================================
+        # PAGE 4: Effort Motion Detection Results
+        # ============================================================
+        
+        # Spacing: operation_test — EN: more top space to match PDF; TH: compact. Title up 1 line.
+        if is_operation_test:
+            for _ in range(3 if not is_thai else 1):
+                doc.add_paragraph()
+        else:
+            for _ in range(3):
+                doc.add_paragraph()
+        
+        # Title — Thai: (Efforts) same size as Thai
+        if is_thai:
+            title4 = doc.add_paragraph()
+            r4a = title4.add_run("ผลการวิเคราะห์การใช้น้ำหนัก ")
+            r4a.font.size = Pt(18)
+            r4a.bold = True
+            r4e = title4.add_run("(Efforts)")
+            r4e.font.size = Pt(14)
+            r4e.bold = True
+        else:
+            title4 = doc.add_paragraph(texts["effort_title"])
+            title4.runs[0].font.size = Pt(18)
+            title4.runs[0].bold = True
+        doc.add_paragraph()
+        
+        # Graph
+        if os.path.exists(graph1_path):
+            doc.add_picture(graph1_path, width=Inches(6.5))
+        
+        # PAGE BREAK TO PAGE 5
+        doc.add_page_break()
+        
+        # ============================================================
+        # PAGE 5: Shape Motion Detection Results
+        # ============================================================
+        
+        # Spacing: operation_test — EN: more top space to match PDF; TH: compact. Title up 1 line.
+        if is_operation_test:
+            for _ in range(3 if not is_thai else 1):
+                doc.add_paragraph()
+        else:
+            for _ in range(3):
+                doc.add_paragraph()
+        
+        # Title — Thai: (Shape) same size as Thai
+        if is_thai:
+            title5 = doc.add_paragraph()
+            r5a = title5.add_run("ผลการวิเคราะห์การใช้รูปทรงของมือร่วมกับร่างกาย ")
+            r5a.font.size = Pt(18)
+            r5a.bold = True
+            r5e = title5.add_run("(Shape)")
+            r5e.font.size = Pt(14)
+            r5e.bold = True
+        else:
+            title5 = doc.add_paragraph(texts["shape_title"])
+            title5.runs[0].font.size = Pt(18)
+            title5.runs[0].bold = True
+        doc.add_paragraph()
+        
+        # Graph
+        if os.path.exists(graph2_path):
+            doc.add_picture(graph2_path, width=Inches(6.5))
+        
+        # Add "Generated by AI People Reader™" text below graph
+        doc.add_paragraph()
+        doc.add_paragraph()
+    else:
+        doc.add_paragraph()
+
+    # Normalize paragraph rhythm so numbered headings and bullets follow
+    # a consistent spacing pattern throughout the document.
+    normalize_spacing()
+
+    generated_para = doc.add_paragraph(texts["generated"])
+    generated_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    generated_run = generated_para.runs[0]
+    generated_run.italic = True
+    generated_run.font.size = Pt(11)
+
+    # Always apply Thai font for Thai reports — ป้องกันสระและวรรณยุกต์ทับกันใน PDF
+    # TH Sarabun New / Sarabun มี glyph ครบสำหรับ Thai diacritics
+    if is_thai:
+        thai_font_family = os.getenv("DOCX_THAI_FONT_FAMILY", "TH Sarabun New").strip() or "TH Sarabun New"
+
+        def _apply_run_font(run, font_name: str) -> None:
+            if run is None:
+                return
+            run.font.name = font_name
+            r_pr = run._element.get_or_add_rPr()
+            r_fonts = r_pr.rFonts
+            if r_fonts is None:
+                r_fonts = OxmlElement("w:rFonts")
+                r_pr.append(r_fonts)
+            r_fonts.set(qn("w:ascii"), font_name)
+            r_fonts.set(qn("w:hAnsi"), font_name)
+            r_fonts.set(qn("w:eastAsia"), font_name)
+            r_fonts.set(qn("w:cs"), font_name)
+
+        # Apply to all body runs.
+        for p in doc.paragraphs:
+            for run in p.runs:
+                _apply_run_font(run, thai_font_family)
+
+        # Apply to header/footer runs too, for consistency.
+        for sec in doc.sections:
+            for p in sec.header.paragraphs:
+                for run in p.runs:
+                    _apply_run_font(run, thai_font_family)
+            for p in sec.footer.paragraphs:
+                for run in p.runs:
+                    _apply_run_font(run, thai_font_family)
+    
+    # Save
+    doc.save(output_bio)
+
+def build_pdf_report(
+    report: ReportData,
+    output_path: str,
+    graph1_path: str,
+    graph2_path: str,
+    lang: str = "en",
+    report_style: str = "full",
+):
+    logger = logging.getLogger("report_core_pdf")
+    """Build PDF report aligned with DOCX simple/full text structure (no graph embedding)."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Paragraph, Spacer
+        from reportlab.lib.utils import simpleSplit
+        from reportlab.pdfgen import canvas
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except Exception as e:
+        raise RuntimeError(f"reportlab is required for PDF generation: {e}")
+
+    c = canvas.Canvas(output_path, pagesize=A4)
+    width, height = A4
+    # Match reference format: 1 inch margin (72pt)
+    x_left = 72
+    x_right = 72
+    usable_width = width - x_left - x_right
+    header_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png")
+    footer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Footer.png")
+    top_content_y = height - 95
+    bottom_content_y = 70
+    y = top_content_y
+    footer_img_y = 0
+    footer_img_h = 68
+
+    style_name = str(report_style or "full").strip().lower()
+    is_simple = style_name.startswith("simple")
+    is_operation_test = style_name.startswith("operation_test")
+    lang_name = str(lang or "").strip().lower()
+    is_thai = (lang_name == "th")
+    thai_font_fallback = False
+    regular_font = "Helvetica"
+    bold_font = "Helvetica-Bold"
+    requires_unicode_font = False
+
+    def _first_existing(paths: list) -> str:
+        for p in paths:
+            if p and os.path.exists(p):
+                return p
+        return ""
+
+    def _glob_existing(patterns: list) -> list:
+        import glob
+        found = []
+        for pat in patterns:
+            if not pat:
+                continue
+            found.extend(glob.glob(pat, recursive=True))
+        # Keep deterministic order and unique entries.
+        uniq = []
+        seen = set()
+        for p in sorted(found):
+            if p not in seen and os.path.isfile(p):
+                uniq.append(p)
+                seen.add(p)
+        return uniq
+
+    def register_sarabun_fonts() -> bool:
+        base_dir = os.path.dirname(os.path.abspath(__file__))  # .../src
+        sarabun_regular_candidates = [
+            os.getenv("PDF_SARABUN_FONT_PATH", "").strip(),
+            os.getenv("SARABUN_FONT_PATH", "").strip(),
+            os.getenv("REPORT_SARABUN_FONT_PATH", "").strip(),
+            os.path.join(base_dir, "fonts", "Sarabun-Regular.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Sarabun-Regular.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Sarabun-Regular.ttf"),
+            "/Library/Fonts/Sarabun-Regular.ttf",
+            "/usr/share/fonts/truetype/thai/Sarabun-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+        ]
+        sarabun_bold_candidates = [
+            os.getenv("PDF_SARABUN_FONT_BOLD_PATH", "").strip(),
+            os.getenv("SARABUN_FONT_BOLD_PATH", "").strip(),
+            os.getenv("REPORT_SARABUN_FONT_BOLD_PATH", "").strip(),
+            os.path.join(base_dir, "fonts", "Sarabun-Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Sarabun-Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Sarabun-Bold.ttf"),
+            "/Library/Fonts/Sarabun-Bold.ttf",
+            "/usr/share/fonts/truetype/thai/Sarabun-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
+        ]
+
+        regular_path = _first_existing(sarabun_regular_candidates)
+        if not regular_path:
+            return False
+        if not _register_ttf("Sarabun", regular_path, require_thai=True):
+            return False
+
+        bold_path = _first_existing(sarabun_bold_candidates)
+        ok_bold = bool(bold_path) and _register_ttf("Sarabun-Bold", bold_path, require_thai=True)
+
+        nonlocal regular_font, bold_font, requires_unicode_font
+        regular_font = "Sarabun"
+        bold_font = "Sarabun-Bold" if ok_bold else "Sarabun"
+        requires_unicode_font = True
+        return True
+
+    def register_noto_thai_fonts() -> bool:
+        noto_regular_candidates = [
+            os.getenv("PDF_THAI_FONT_PATH", "").strip(),
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansThaiUI-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.ttf",
+            "/Library/Fonts/NotoSansThaiUI-Regular.ttf",
+            "/Library/Fonts/NotoSansThai-Regular.ttf",
+        ]
+        noto_bold_candidates = [
+            os.getenv("PDF_THAI_FONT_BOLD_PATH", "").strip(),
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansThaiUI-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansThai-Bold.ttf",
+            "/Library/Fonts/NotoSansThaiUI-Bold.ttf",
+            "/Library/Fonts/NotoSansThai-Bold.ttf",
+        ]
+
+        regular_path = _first_existing(noto_regular_candidates)
+        if not regular_path:
+            return False
+        if not _register_ttf("NotoThaiRegular", regular_path, require_thai=True):
+            return False
+
+        bold_path = _first_existing(noto_bold_candidates)
+        ok_bold = bool(bold_path) and _register_ttf("NotoThaiBold", bold_path, require_thai=True)
+
+        nonlocal regular_font, bold_font, requires_unicode_font
+        regular_font = "NotoThaiRegular"
+        bold_font = "NotoThaiBold" if ok_bold else "NotoThaiRegular"
+        requires_unicode_font = True
+        return True
+
+    def register_tlwg_thai_fonts() -> bool:
+        tlwg_regular_candidates = [
+            "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree.ttf",
+            "/usr/share/fonts/truetype/tlwg/Kinnari.ttf",
+            "/usr/share/fonts/truetype/tlwg/Loma.ttf",
+        ]
+        tlwg_bold_candidates = [
+            "/usr/share/fonts/truetype/tlwg/Garuda-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Kinnari-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Loma-Bold.ttf",
+        ]
+
+        regular_path = _first_existing(tlwg_regular_candidates)
+        if not regular_path:
+            return False
+        if not _register_ttf("TLWGThaiRegular", regular_path, require_thai=True):
+            return False
+
+        bold_path = _first_existing(tlwg_bold_candidates)
+        ok_bold = bool(bold_path) and _register_ttf("TLWGThaiBold", bold_path, require_thai=True)
+
+        nonlocal regular_font, bold_font, requires_unicode_font
+        regular_font = "TLWGThaiRegular"
+        bold_font = "TLWGThaiBold" if ok_bold else "TLWGThaiRegular"
+        requires_unicode_font = True
+        return True
+
+    def register_arial_fonts() -> bool:
+        base_dir = os.path.dirname(os.path.abspath(__file__))  # .../src
+        arial_regular_candidates = [
+            os.getenv("PDF_ARIAL_FONT_PATH", "").strip(),
+            os.getenv("ARIAL_FONT_PATH", "").strip(),
+            os.path.join(base_dir, "fonts", "Arial.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Arial.ttf"),
+            "/Library/Fonts/Arial.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/arial.ttf",
+        ]
+        arial_bold_candidates = [
+            os.getenv("PDF_ARIAL_FONT_BOLD_PATH", "").strip(),
+            os.getenv("ARIAL_FONT_BOLD_PATH", "").strip(),
+            os.path.join(base_dir, "fonts", "Arial-Bold.ttf"),
+            os.path.join(base_dir, "fonts", "Arial Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Arial-Bold.ttf"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "Arial Bold.ttf"),
+            "/Library/Fonts/Arial Bold.ttf",
+            "C:\\Windows\\Fonts\\arialbd.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf",
+        ]
+
+        regular_path = _first_existing(arial_regular_candidates)
+        if not regular_path:
+            return False
+        if not _register_ttf("ArialPDFRegular", regular_path, require_thai=False):
+            return False
+
+        bold_path = _first_existing(arial_bold_candidates)
+        ok_bold = bool(bold_path) and _register_ttf("ArialPDFBold", bold_path, require_thai=False)
+
+        nonlocal regular_font, bold_font, requires_unicode_font
+        regular_font = "ArialPDFRegular"
+        bold_font = "ArialPDFBold" if ok_bold else "ArialPDFRegular"
+        requires_unicode_font = True
+        return True
+
+    def _register_ttf(font_name: str, path: str, require_thai: bool = False) -> bool:
+        if not path:
+            return False
+        try:
+            pdfmetrics.getFont(font_name)
+            return True
+        except Exception:
+            pass
+        try:
+            tt = TTFont(font_name, path)
+            if require_thai:
+                # Some valid Thai fonts expose cmap/width metadata differently across platforms.
+                # Avoid false negatives here; successful registration is enough.
+                pass
+            pdfmetrics.registerFont(tt)
+            return True
+        except Exception:
+            return False
+
+    # Customer requirement:
+    # - Operational Test TH: prefer Noto Thai (better Thai diacritic rendering in PDF viewers), then Sarabun
+    # - Operational Test EN: prefer Arial
+    if is_operation_test and lang_name == "en" and register_arial_fonts():
+        pass
+    elif is_operation_test and lang_name == "th" and (
+        register_noto_thai_fonts() or register_sarabun_fonts() or register_tlwg_thai_fonts()
+    ):
+        pass
+    elif is_thai:
+        thai_glob_candidates = _glob_existing(
+            [
+                "/usr/share/fonts/**/*.ttf",
+                "/usr/local/share/fonts/**/*.ttf",
+            ]
+        )
+        thai_glob_preferred = [
+            p
+            for p in thai_glob_candidates
+            if any(
+                k in os.path.basename(p).lower()
+                for k in ("noto", "sarabun", "thsarabun", "thai", "garuda", "waree", "kinnari", "loma")
+            )
+        ]
+
+        thai_regular_candidates = [
+            os.getenv("PDF_THAI_FONT_PATH", "").strip(),
+            os.getenv("THAI_FONT_PATH", "").strip(),
+            os.getenv("REPORT_THAI_FONT_PATH", "").strip(),
+            "/Library/Fonts/THSarabunNew.ttf",
+            "/Library/Fonts/Sarabun-Regular.ttf",
+            "/System/Library/Fonts/Supplemental/Thonburi.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Regular.ttf",
+            "/usr/share/fonts/truetype/thai/Sarabun-Regular.ttf",
+            "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree.ttf",
+            "/usr/share/fonts/truetype/tlwg/Loma.ttf",
+            "/usr/share/fonts/truetype/tlwg/Kinnari.ttf",
+        ]
+        thai_bold_candidates = [
+            os.getenv("PDF_THAI_FONT_BOLD_PATH", "").strip(),
+            os.getenv("THAI_FONT_BOLD_PATH", "").strip(),
+            os.getenv("REPORT_THAI_FONT_BOLD_PATH", "").strip(),
+            "/Library/Fonts/THSarabunNew Bold.ttf",
+            "/Library/Fonts/Sarabun-Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Thonburi Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThaiUI-Bold.ttf",
+            "/usr/share/fonts/truetype/thai/Sarabun-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Garuda-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Loma-Bold.ttf",
+            "/usr/share/fonts/truetype/tlwg/Kinnari-Bold.ttf",
+        ]
+        thai_regular_candidates.extend(thai_glob_preferred)
+        thai_bold_candidates.extend(thai_glob_preferred)
+
+        ok_regular = False
+        for path in thai_regular_candidates:
+            if _register_ttf("ThaiPDFRegular", path, require_thai=True):
+                ok_regular = True
+                break
+
+        ok_bold = False
+        for path in thai_bold_candidates:
+            if _register_ttf("ThaiPDFBold", path, require_thai=True):
+                ok_bold = True
+                break
+
+        if not ok_regular:
+            # Do not fail the whole job. Fallback to readable English PDF if Thai font is missing.
+            logger.warning(
+                "Thai font not found for PDF. Falling back to English labels/content for this PDF."
+            )
+            is_thai = False
+            thai_font_fallback = True
+            regular_font = "Helvetica"
+            bold_font = "Helvetica-Bold"
+            requires_unicode_font = False
+        else:
+            regular_font = "ThaiPDFRegular"
+            bold_font = "ThaiPDFBold" if ok_bold else "ThaiPDFRegular"
+            requires_unicode_font = True
+
+    # ReportLab Thai shaping is limited on some viewers/fonts.
+    # Using regular Thai font for emphasis text reduces vowel/tone-mark collisions.
+    if is_thai and requires_unicode_font:
+        bold_font = regular_font
+    logger.info("[pdf] thai_font regular=%s bold=%s unicode=%s", regular_font, bold_font, requires_unicode_font)
+
+    def draw_header_footer() -> None:
+        # Match DOCX branding as closely as possible for PDF output.
+        if os.path.exists(header_path):
+            try:
+                c.drawImage(
+                    header_path,
+                    x=28,
+                    y=height - 62,
+                    width=width - 56,
+                    height=36,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+        if os.path.exists(footer_path):
+            try:
+                c.drawImage(
+                    footer_path,
+                    x=8,
+                    y=footer_img_y,
+                    width=width - 16,
+                    height=footer_img_h,
+                    preserveAspectRatio=False,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+
+    draw_header_footer()
+
+    TITLE_STYLE = ParagraphStyle(
+        name="TitleStyle",
+        fontName=bold_font,
+        fontSize=20,
+        leading=26,
+        alignment=1,  # center
+        spaceAfter=24,
+    )
+    SECTION_STYLE = ParagraphStyle(
+        name="SectionStyle",
+        fontName=bold_font,
+        fontSize=14,
+        leading=20,
+        spaceBefore=12,
+        spaceAfter=8,
+    )
+    SUBITEM_STYLE = ParagraphStyle(
+        name="SubItemStyle",
+        fontName=regular_font,
+        fontSize=14,
+        leading=21,
+        leftIndent=22,
+        spaceAfter=5,
+    )
+    LEVEL_STYLE = ParagraphStyle(
+        name="LevelStyle",
+        fontName=bold_font,
+        fontSize=14,
+        leading=21,
+        leftIndent=38,
+        spaceAfter=12,
+    )
+    # Section 1 First Impression: Scale aligns under bullet (same indent as SUBITEM)
+    LEVEL_UNDER_BULLET_STYLE = ParagraphStyle(
+        name="LevelUnderBulletStyle",
+        parent=LEVEL_STYLE,
+        leftIndent=22,
+    )
+    BULLET_STYLE = ParagraphStyle(
+        name="BulletStyle",
+        fontName=regular_font,
+        fontSize=14,
+        leading=21,
+        leftIndent=40,
+        bulletIndent=30,
+        spaceAfter=6,
+    )
+    # For write_bullet(..., indent=28), visible text starts at x_left + 28 + leftIndent.
+    BULLET_TEXT_X_OFFSET = 28 + int(BULLET_STYLE.leftIndent)
+    LEVEL_BULLET_STYLE = ParagraphStyle(
+        name="LevelBulletStyle",
+        parent=LEVEL_STYLE,
+        leftIndent=BULLET_TEXT_X_OFFSET,
+    )
+    # Backward-compatible aliases for existing references.
+    HEADER_STYLE = TITLE_STYLE
+    CONTENT_STYLE = SUBITEM_STYLE
+    header_style = HEADER_STYLE
+    content_style = CONTENT_STYLE
+    section_style = SECTION_STYLE
+    THAI_NOTE_STYLE = ParagraphStyle(
+        name="ThaiNoteStyle",
+        parent=SUBITEM_STYLE,
+        leading=max(int(SUBITEM_STYLE.leading), int(SUBITEM_STYLE.fontSize * 2.3)),
+    )
+
+    # English operation-test template: improve readability with looser spacing.
+    if is_operation_test and (not is_thai):
+        TITLE_STYLE.fontSize = 14
+        TITLE_STYLE.leading = 22
+        TITLE_STYLE.spaceAfter = 18
+        SECTION_STYLE.fontSize = 14
+        SECTION_STYLE.leading = 20
+        SECTION_STYLE.spaceBefore = 12
+        SECTION_STYLE.spaceAfter = 10
+        SUBITEM_STYLE.fontSize = 12
+        SUBITEM_STYLE.leading = 19
+        SUBITEM_STYLE.leftIndent = 20
+        SUBITEM_STYLE.spaceAfter = 4
+        LEVEL_STYLE.fontSize = 12
+        LEVEL_STYLE.leading = 19
+        LEVEL_STYLE.leftIndent = 30
+        LEVEL_STYLE.spaceAfter = 12
+        LEVEL_UNDER_BULLET_STYLE.leftIndent = 20  # Match SUBITEM: Scale under bullet
+        BULLET_STYLE.fontSize = 12
+        BULLET_STYLE.leading = 19
+        BULLET_STYLE.leftIndent = 28
+        BULLET_STYLE.bulletIndent = 18
+        BULLET_STYLE.spaceAfter = 6
+
+    if is_thai:
+        # Thai glyph stacks (vowels/tone marks) need extra vertical room in PDF rendering.
+        TITLE_STYLE.fontSize = min(int(TITLE_STYLE.fontSize), 19)
+        SECTION_STYLE.fontSize = min(int(SECTION_STYLE.fontSize), 13)
+        SUBITEM_STYLE.fontSize = min(int(SUBITEM_STYLE.fontSize), 13)
+        LEVEL_STYLE.fontSize = min(int(LEVEL_STYLE.fontSize), 13)
+        BULLET_STYLE.fontSize = min(int(BULLET_STYLE.fontSize), 13)
+        TITLE_STYLE.leading = max(TITLE_STYLE.leading, int(TITLE_STYLE.fontSize * 1.65))
+        SECTION_STYLE.leading = max(SECTION_STYLE.leading, int(SECTION_STYLE.fontSize * 1.65))
+        SUBITEM_STYLE.leading = max(SUBITEM_STYLE.leading, int(SUBITEM_STYLE.fontSize * 2.0))
+        LEVEL_STYLE.leading = max(LEVEL_STYLE.leading, int(LEVEL_STYLE.fontSize * 2.0))
+        BULLET_STYLE.leading = max(BULLET_STYLE.leading, int(BULLET_STYLE.fontSize * 2.0))
+        THAI_NOTE_STYLE.leading = max(THAI_NOTE_STYLE.leading, int(THAI_NOTE_STYLE.fontSize * 2.4))
+
+    def P(text: str, style):
+        # Preserve explicit newlines in ReportLab paragraphs.
+        safe = escape(str(text or "")).replace("\n", "<br/>")
+        return Paragraph(safe, style)
+
+    def gap(h=8):
+        return Spacer(1, h)
+
+    def spacer_gap(h=8):
+        return gap(h)
+
+    def _normalize_thai_for_pdf(text: str) -> str:
+        return unicodedata.normalize("NFC", str(text or ""))
+
+    def _safe_text_for_font(text: str) -> str:
+        normalized_text = _normalize_thai_for_pdf(text)
+        if requires_unicode_font:
+            return normalized_text
+        normalized = (
+            normalized_text
+            .replace("•", "- ")
+            .replace("▪", "- ")
+            .replace("□", "- ")
+            .replace("™", "(TM)")
+            .replace("—", "-")
+            .replace("–", "-")
+            .replace("“", '"')
+            .replace("”", '"')
+            .replace("’", "'")
+        )
+        return normalized.encode("latin-1", "replace").decode("latin-1")
+
+    def _draw_text_line(x: float, y_pos: float, font_name: str, size: int, line: str) -> None:
+        text_obj = c.beginText()
+        text_obj.setTextOrigin(x, y_pos)
+        text_obj.setFont(font_name, size)
+        text_obj.textLine(str(line or ""))
+        c.drawText(text_obj)
+
+    def draw_generated_bottom(text: str, size: int = 10) -> None:
+        font = CONTENT_STYLE.fontName
+        safe = _safe_text_for_font(text)
+        text_w = pdfmetrics.stringWidth(safe, font, size)
+        x = x_left + max(0.0, usable_width - text_w)
+        _draw_text_line(x, footer_img_y + footer_img_h + 6, font, size, safe)
+
+    def append_graph_pages_for_operation_test() -> None:
+        """Append Effort/Shape graph pages after the two operation-test narrative pages."""
+        nonlocal y
+        effort_title = "ผลการวิเคราะห์การใช้น้ำหนัก (Efforts)" if is_thai else "Effort Motion Detection Results"
+        shape_title = "ผลการวิเคราะห์การใช้รูปทรงของมือร่วมกับร่างกาย (Shape)" if is_thai else "Shape Motion Detection Results"
+        # Thai: wrap English parts in smaller font to match Thai
+        if is_thai:
+            effort_title_html = "ผลการวิเคราะห์การใช้น้ำหนัก <font size=\"12\">(Efforts)</font>"
+            shape_title_html = "ผลการวิเคราะห์การใช้รูปทรงของมือร่วมกับร่างกาย <font size=\"12\">(Shape)</font>"
+            graph_specs = [
+                (effort_title_html, graph1_path, True),
+                (shape_title_html, graph2_path, True),
+            ]
+        else:
+            graph_specs = [
+                (effort_title, graph1_path, False),
+                (shape_title, graph2_path, False),
+            ]
+        graph_title_style = ParagraphStyle(
+            name="GraphTitleStyle",
+            parent=TITLE_STYLE,
+            fontSize=max(16, int(TITLE_STYLE.fontSize) - 1),
+            leading=max(22, int(TITLE_STYLE.leading) - 2),
+            spaceAfter=8,
+        )
+        for idx, spec in enumerate(graph_specs):
+            graph_title = spec[0]
+            graph_path = spec[1]
+            allow_html = spec[2] if len(spec) > 2 else False
+            c.showPage()
+            draw_header_footer()
+            # EN: move title and graph down to match Word report; TH: keep balanced layout. Title up 1 line.
+            if not is_thai:
+                y = top_content_y - 18  # Move EN title/graph up for better balance
+            else:
+                y = min(height - 50, top_content_y + 62)  # Title up 1 line
+            write_paragraph_block(graph_title, graph_title_style, indent=0, extra_gap=0, allow_html=allow_html)
+            if graph_path and os.path.exists(graph_path):
+                try:
+                    # Keep graph just below the heading while preserving safe footer space.
+                    graph_bottom_y = footer_img_y + footer_img_h + 20
+                    graph_top_y = y - 4
+                    graph_height = max(220, graph_top_y - graph_bottom_y)
+                    c.drawImage(
+                        graph_path,
+                        x=x_left,
+                        y=graph_bottom_y,
+                        width=usable_width,
+                        height=graph_height,
+                        preserveAspectRatio=True,
+                        anchor="n",
+                        mask="auto",
+                    )
+                except Exception:
+                    write_line("Graph image unavailable", size=11, gap=16)
+            else:
+                write_line("Graph image unavailable", size=11, gap=16)
+            # Show the same credit text on the last operation-test page (page 4) for both TH/EN.
+            if idx == len(graph_specs) - 1:
+                draw_generated_bottom(
+                    "จัดทำโดย AI People Reader™" if is_thai else "Generated by AI People Reader™",
+                    size=10,
+                )
+
+    def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
+        nonlocal y
+        font = bold_font if bold else CONTENT_STYLE.fontName
+        if size == 11:
+            size = int(CONTENT_STYLE.fontSize)
+        effective_gap = max(int(gap), int(size * (1.9 if is_thai else 1.35)))
+        raw_text = str(text or "")
+
+        if "\n" in raw_text:
+            para_style = ParagraphStyle(
+                name="ContentMultiline",
+                fontName=font,
+                fontSize=size,
+                leading=max(effective_gap, int(size * (1.7 if is_thai else 1.35))),
+                spaceAfter=float(CONTENT_STYLE.spaceAfter or 0),
+            )
+            para = P(_safe_text_for_font(raw_text), para_style)
+            _, para_h = para.wrap(usable_width, max(1, int(y - bottom_content_y)))
+            if y - para_h <= bottom_content_y:
+                c.showPage()
+                draw_header_footer()
+                y = top_content_y
+                _, para_h = para.wrap(usable_width, max(1, int(y - bottom_content_y)))
+            para.drawOn(c, x_left, y - para_h)
+            y -= para_h
+            y -= float(spacer_gap(2).height)
+            return
+
+        safe = _safe_text_for_font(raw_text)
+
+        def _split_by_chars(long_line: str) -> list:
+            parts = []
+            buf = ""
+            for ch in str(long_line or ""):
+                probe = f"{buf}{ch}"
+                if (not buf) or (pdfmetrics.stringWidth(probe, font, size) <= usable_width):
+                    buf = probe
+                else:
+                    parts.append(buf)
+                    buf = ch
+            if buf:
+                parts.append(buf)
+            return parts or [""]
+
+        initial_lines = simpleSplit(safe, font, size, usable_width) or [""]
+        lines = []
+        for ln in initial_lines:
+            if pdfmetrics.stringWidth(ln, font, size) <= usable_width:
+                lines.append(ln)
+                continue
+            if is_thai or (" " not in ln):
+                lines.extend(_split_by_chars(ln))
+            else:
+                lines.append(ln)
+
+        wrapped_gap = max(16 if is_thai else 12, int(size * (1.7 if is_thai else 1.35)))
+        for idx, line in enumerate(lines):
+            if y <= bottom_content_y:
+                c.showPage()
+                draw_header_footer()
+                y = top_content_y
+            _draw_text_line(x_left, y, font, size, line)
+            y -= effective_gap if idx == len(lines) - 1 else wrapped_gap
+
+    def write_line_indented(text: str, indent: int = 0, size: int = 11, bold: bool = False, gap: int = 18):
+        nonlocal y
+        x = x_left + max(0, int(indent))
+        local_width = max(80, usable_width - max(0, int(indent)))
+        font = bold_font if bold else CONTENT_STYLE.fontName
+        if size == 11:
+            size = int(CONTENT_STYLE.fontSize)
+        effective_gap = max(int(gap), int(size * (1.9 if is_thai else 1.35)))
+        raw_text = str(text or "")
+        if "\n" in raw_text:
+            para_style = ParagraphStyle(
+                name="ContentMultilineIndented",
+                fontName=font,
+                fontSize=size,
+                leading=max(effective_gap, int(size * (1.7 if is_thai else 1.35))),
+                spaceAfter=float(CONTENT_STYLE.spaceAfter or 0),
+            )
+            para = P(_safe_text_for_font(raw_text), para_style)
+            _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+            if y - para_h <= bottom_content_y:
+                c.showPage()
+                draw_header_footer()
+                y = top_content_y
+                _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+            para.drawOn(c, x, y - para_h)
+            y -= para_h
+            y -= float(spacer_gap(2).height)
+            return
+
+        safe = _safe_text_for_font(raw_text)
+        initial_lines = simpleSplit(safe, font, size, local_width) or [""]
+        wrapped_gap = max(16 if is_thai else 12, int(size * (1.7 if is_thai else 1.35)))
+        for idx, line in enumerate(initial_lines):
+            if y <= bottom_content_y:
+                c.showPage()
+                draw_header_footer()
+                y = top_content_y
+            _draw_text_line(x, y, font, size, line)
+            y -= effective_gap if idx == len(initial_lines) - 1 else wrapped_gap
+
+    def write_bullet(text: str, indent: int = 28, space_after: int = 4, bullet_text: str = "•", font_size: int = None):
+        nonlocal y
+        x = x_left + max(0, int(indent))
+        local_width = max(80, usable_width - max(0, int(indent)))
+        bullet_style = ParagraphStyle(
+            name="BulletRuntime",
+            parent=BULLET_STYLE,
+            spaceAfter=float(space_after),
+        )
+        if font_size is not None:
+            bullet_style.fontSize = font_size
+            bullet_style.leading = max(12, int(font_size * (2.0 if is_thai else 1.35)))
+        safe = escape(_safe_text_for_font(text)).replace("\n", "<br/>")
+        para = Paragraph(safe, bullet_style, bulletText=bullet_text)
+        y -= float(getattr(bullet_style, "spaceBefore", 0) or 0)
+        _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+        if y - para_h <= bottom_content_y:
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+            _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+        para.drawOn(c, x, y - para_h)
+        y -= para_h
+        y -= float(getattr(bullet_style, "spaceAfter", 0) or 0)
+
+    def write_paragraph_block(text: str, style, indent: int = 0, extra_gap: int = 10, x_start: float = None, allow_html: bool = False):
+        nonlocal y
+        if x_start is not None:
+            x = float(x_start)
+            local_width = max(80, width - x - x_right)
+        else:
+            x = x_left + max(0, int(indent))
+            local_width = max(80, usable_width - max(0, int(indent)))
+        if allow_html:
+            para = Paragraph(text, style)
+        else:
+            para = P(_safe_text_for_font(text), style)
+        y -= float(getattr(style, "spaceBefore", 0) or 0)
+        _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+        if y - para_h <= bottom_content_y:
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+            _, para_h = para.wrap(local_width, max(1, int(y - bottom_content_y)))
+        para.drawOn(c, x, y - para_h)
+        y -= para_h
+        y -= float(getattr(style, "spaceAfter", 0) or 0)
+        y -= float(gap(extra_gap).height)
+
+    def write_kv_line(label: str, value: str, size: int = 14, value_indent: int = 120, gap_after: int = 22):
+        nonlocal y
+        draw_size = max(12, int(size) - 1) if is_thai else int(size)
+        draw_gap_after = max(int(gap_after), int(draw_size * (2.0 if is_thai else 1.4)))
+        label_text = _safe_text_for_font(str(label or "").strip())
+        value_text = _safe_text_for_font(str(value or "").strip())
+        if y <= bottom_content_y:
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+        _draw_text_line(x_left, y, bold_font, draw_size, label_text)
+        _draw_text_line(x_left + value_indent, y, CONTENT_STYLE.fontName, draw_size, value_text)
+        y -= draw_gap_after
+
+    def write_block(lines: list, size: int = 11, bold: bool = False, gap: int = 16):
+        for line in lines:
+            write_line(line, size=size, bold=bold, gap=gap)
+
+    if is_operation_test:
+        if is_thai:
+            title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader"
+            detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ"
+            first_impression_label = "1. ความประทับใจแรกพบ (First Impression)"
+        elif lang_name == "th":
+            title = "Presentation Analysis Report"
+            detailed_analysis_label = "Detailed Presentation Analysis"
+            first_impression_label = "1. First Impression"
+        else:
+            title = "Movement in Communication\nwith AI People Reader Report"
+            detailed_analysis_label = "Detailed Analysis"
+            first_impression_label = "1. First impression"
+    else:
+        title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader" if is_thai else "Movement in Communication\nwith AI People Reader Report"
+        detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ" if is_thai else "Detailed Analysis"
+        first_impression_label = "1. ความประทับใจแรกพบ (First Impression)" if is_thai else "1. First impression"
+    eye_label = "การสบตา" if is_thai else "Eye Contact"
+    upright_label = "ความตั้งตรงของร่างกาย" if is_thai else "Uprightness"
+    stance_label = "การยืนและการวางเท้า" if is_thai else "Stance"
+    category_labels = (
+        ["2. การสร้างความเป็นมิตรและสัมพันธภาพ", "3. ความมั่นใจ", "4. ความเป็นผู้นำ"]
+        if is_thai
+        else ["2. Engaging & Connecting", "3. Confidence", "4. Authority"]
+    )
+
+    def _duration_th_text(mmss: str) -> str:
+        raw = str(mmss or "").strip()
+        parts = raw.split(":")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            sec = int(parts[0]) * 60 + int(parts[1])
+            return f"{sec} วินาที ({raw})"
+        return raw
+
+    def _date_th_display(date_text: str) -> str:
+        raw = str(date_text or "").strip()
+        if not raw:
+            return raw
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                continue
+        return raw
+
+    def _date_en_display(date_text: str) -> str:
+        raw = str(date_text or "").strip()
+        if not raw:
+            return raw
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return f"{dt.day}/{dt.month}/{dt.year}"
+            except Exception:
+                continue
+        return raw
+
+    if is_thai:
+        display_date = _date_th_display(report.analysis_date)
+    elif is_operation_test:
+        display_date = _date_en_display(report.analysis_date)
+    else:
+        display_date = report.analysis_date
+    if is_operation_test and is_thai:
+        # "AI People Reader" smaller to match Thai; title up 1 line (y increased)
+        thai_title_html = _safe_text_for_font("รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader").replace("\n", "<br/>")
+        thai_title_html = thai_title_html.replace("AI People Reader", '<font size="12">AI People Reader</font>')
+        y += 12  # Title up 1 line
+        write_paragraph_block(thai_title_html, TITLE_STYLE, indent=0, extra_gap=4, allow_html=True)
+        write_kv_line("ชื่อ:", report.client_name, size=14, value_indent=118, gap_after=21)
+        write_kv_line("วันที่วิเคราะห์:", display_date, size=14, value_indent=118, gap_after=21)
+    else:
+        if is_thai:
+            thai_title_html = _safe_text_for_font("รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader").replace("\n", "<br/>")
+            thai_title_html = thai_title_html.replace("AI People Reader", '<font size="12">AI People Reader</font>')
+            y += 12  # Title up 1 line
+            write_paragraph_block(thai_title_html, TITLE_STYLE, indent=0, extra_gap=0, allow_html=True)
+        else:
+            write_paragraph_block(title, TITLE_STYLE, indent=0, extra_gap=0)
+        if not is_thai:
+            write_line("", gap=14)  # EN: extra line before Client Name
+        write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
+        write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {display_date}")
+    duration_label = _duration_th_text(report.video_length_str) if is_thai else report.video_length_str
+    if is_operation_test and is_thai:
+        write_kv_line("ความยาววิดีโอ:", duration_label, size=14, value_indent=118, gap_after=26)
+    elif is_operation_test and (not is_thai):
+        write_line(f"Video Duration: {duration_label}", gap=22)  # Single line per reference format
+    else:
+        write_line(f"{'ความยาววิดีโอ' if is_thai else 'Duration'}: {duration_label}", gap=22)
+    write_line(detailed_analysis_label, size=13, bold=True, gap=20)
+
+    def _first_impression_level(value: float, metric: str = "") -> str:
+        return first_impression_level(value, metric=metric)
+
+    def _first_impression_level_th(value: float, metric: str = "") -> str:
+        level_en = _first_impression_level(value, metric=metric).strip().lower()
+        if level_en.startswith("high"):
+            return "สูง"
+        if level_en.startswith("moderate"):
+            return "กลาง"
+        if level_en.startswith("low"):
+            return "ต่ำ"
+        return "-"
+
+    # First impression sections (same narrative style as DOCX simple).
+    if report.first_impression:
+        fi = report.first_impression
+        if is_operation_test:
+            if is_thai:
+                write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
+                write_paragraph_block(f"▪ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"ระดับ: {_first_impression_level_th(fi.eye_contact_pct, metric='eye_contact')}",
+                    LEVEL_UNDER_BULLET_STYLE,
+                    extra_gap=0,
+                )
+                write_paragraph_block(f"▪ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"ระดับ: {_first_impression_level_th(fi.upright_pct, metric='uprightness')}",
+                    LEVEL_UNDER_BULLET_STYLE,
+                    extra_gap=0,
+                )
+                write_paragraph_block(f"▪ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"ระดับ: {_first_impression_level_th(fi.stance_stability, metric='stance')}",
+                    LEVEL_UNDER_BULLET_STYLE,
+                    extra_gap=10,
+                )
+            else:
+                write_paragraph_block("1. First impression", SECTION_STYLE, extra_gap=0)
+                write_paragraph_block("▪ Eye Contact", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}",
+                    LEVEL_UNDER_BULLET_STYLE,
+                    extra_gap=0,
+                )
+                write_paragraph_block("▪ Uprightness", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}",
+                    LEVEL_UNDER_BULLET_STYLE,
+                    extra_gap=0,
+                )
+                write_paragraph_block("▪ Stance", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(
+                    f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}",
+                    LEVEL_UNDER_BULLET_STYLE,
+                    extra_gap=10,
+                )
+        else:
+            # Compact format (match Thai layout) for non-operation_test
+            write_line(first_impression_label, size=12, bold=True, gap=18)
+            eye_level = _first_impression_level_th(fi.eye_contact_pct, "eye_contact") if is_thai else _first_impression_level(fi.eye_contact_pct, "eye_contact")
+            up_level = _first_impression_level_th(fi.upright_pct, "uprightness") if is_thai else _first_impression_level(fi.upright_pct, "uprightness")
+            st_level = _first_impression_level_th(fi.stance_stability, "stance") if is_thai else _first_impression_level(fi.stance_stability, "stance")
+            write_line(f"▪ {eye_label}" if is_thai else "▪ Eye Contact", gap=14)
+            write_line(f"{'ระดับ' if is_thai else 'Scale'}: {eye_level}", bold=True, gap=14)
+            write_line(f"▪ {upright_label}" if is_thai else "▪ Uprightness", gap=14)
+            write_line(f"{'ระดับ' if is_thai else 'Scale'}: {up_level}", bold=True, gap=14)
+            write_line(f"▪ {stance_label}" if is_thai else "▪ Stance", gap=14)
+            write_line(f"{'ระดับ' if is_thai else 'Scale'}: {st_level}", bold=True, gap=14)
+            write_line("หมายเหตุ" if is_thai else "Remark", bold=True, gap=14)
+            remark_text = (
+                "ความรู้สึกแรกพบมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน โดยพิจารณาจากภาพรวม การสบตา ความตั้งตรง และการยืนวางเท้า ก่อนเข้าสู่การวิเคราะห์เชิงพฤติกรรมในส่วนถัดไป"
+                if is_thai
+                else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
+            )
+            write_line(remark_text, gap=6 if is_thai else 18)  # Thai: section 2 up 1 line
+            write_line("", gap=10)  # Blank line: move Combination Explanation down 1 line
+            write_line("คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:", gap=6)
+            if is_thai:
+                write_line("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", gap=4)
+                write_line("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", gap=8)
+            else:
+                write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
+                write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=8)
+            # Page 2: combo points 2, 3 + categories
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y - 10
+            if is_thai:
+                write_line("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", gap=4)
+                write_line("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", gap=8)
+                write_line("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", gap=4)
+                write_line("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", gap=12)
+            else:
+                write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)
+                write_line("The person tends to appear approachable, and has adequate level of confidence and authority.", gap=8)
+                write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
+                write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=12)
+    else:
+        write_line(first_impression_label, size=12, bold=True, gap=18)
+        write_line("- Not available", gap=20)
+
+    if is_operation_test:
+        if is_thai:
+            def _scale_th(scale: str) -> str:
+                return _display_scale(scale, is_thai=True)
+
+            write_paragraph_block("", SUBITEM_STYLE, extra_gap=0)
+            write_paragraph_block("หมายเหตุ", SECTION_STYLE, extra_gap=0)
+            write_paragraph_block(
+                "ความรู้สึกที่เกิดจากความประทับใจแรกพบนั้นเป็นสิ่งที่มนุษย์หลีกเลี่ยงไม่ได้ และมักเกิดขึ้นภายใน 5 วินาทีแรกของการพบกัน แต่หลังจากนั้นจะเริ่มวิเคราะห์การเคลื่อนไหวโดยรวมมาประกอบการตัดสินใจ",
+                THAI_NOTE_STYLE,
+                extra_gap=6,
+            )
+            # Page 2: Combination Explanation 1, 2, 3 อยู่รวมกัน
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+
+            write_paragraph_block("คำอธิบายการผสมผสาน:", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูไม่เป็นภัยและยืดหยุ่น แต่บุคคลอาจดูมีความมั่นใจและอำนาจในระดับต่ำ", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูเข้าถึงได้ง่าย และมีความมั่นใจและอำนาจในระดับที่เพียงพอ", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", THAI_NOTE_STYLE, extra_gap=4)
+            write_paragraph_block("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", THAI_NOTE_STYLE, extra_gap=8)
+
+            # Page 3: Engaging & Connecting, Confidence, Authority
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+
+            write_paragraph_block("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", SECTION_STYLE, extra_gap=0)
+            write_bullet("ความเป็นกันเอง", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ความเข้าถึงได้", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=4, bullet_text="▪")
+
+            engaging_scale = _scale_th(report.categories[0].scale) if len(report.categories) > 0 else "-"
+            confidence_scale = _scale_th(report.categories[1].scale) if len(report.categories) > 1 else "-"
+            authority_scale = _scale_th(report.categories[2].scale) if len(report.categories) > 2 else "-"
+
+            write_line_indented(f"ระดับ: {engaging_scale}", indent=28, bold=True, gap=6)
+
+            write_paragraph_block("3. ความมั่นใจ:", SECTION_STYLE, extra_gap=0)
+            write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ความมีสมาธิ", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=4, bullet_text="▪")
+            write_line_indented(f"ระดับ: {confidence_scale}", indent=28, bold=True, gap=6)
+
+            write_paragraph_block("4. ความเป็นผู้นำและความดูมีอำนาจ:", SECTION_STYLE, extra_gap=0)
+            write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=4, bullet_text="▪")
+            write_line_indented(f"ระดับ: {authority_scale}", indent=28, bold=True, gap=6)
+        else:
+            if thai_font_fallback and lang_name == "th":
+                write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
+            def _scale_en(scale: str) -> str:
+                return _display_scale(scale, is_thai=False)
+
+            # EN PDF: Page 3 sections use normal spacing
+            en_section_gap = 8
+            en_section2_item_gap = 6
+            en_section2_scale_gap = 6
+            en_section34_item_gap = 6
+            en_section34_scale_gap = 6
+
+            write_line("", gap=14)  # Significant space before Remark per reference
+            write_line("Remark", bold=True, gap=8)
+            write_line(
+                "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration.",
+                gap=8,
+            )
+            # Page 2: Combination Explanation 1, 2, 3 อยู่รวมกัน
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+
+            write_line("Combination Explanation:", gap=6)
+            write_line("1. Low Eye Contact + Low Uprightness + Low Stance.", gap=4)
+            write_line("The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.", gap=6)
+            write_line("2. Moderate Eye Contact + Moderate Uprightness + Moderate Stance.", gap=4)
+            write_line("The person tends to appear approachable, and has adequate level of confidence and authority.", gap=6)
+            write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
+            write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=8)
+
+            # Page 3: Engaging & Connecting, Confidence, Authority
+            c.showPage()
+            draw_header_footer()
+            y = top_content_y
+
+            engaging_scale = _scale_en(report.categories[0].scale) if len(report.categories) > 0 else "-"
+            confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
+            authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
+
+            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Approachability.", indent=28, gap=en_section2_item_gap)
+            write_line_indented("▪ Relatability.", indent=28, gap=en_section2_item_gap)
+            write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=en_section2_item_gap)
+            write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=en_section2_scale_gap)
+
+            write_line("3. Confidence:", size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Optimistic Presence.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("▪ Focus.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_section34_item_gap)
+            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+
+            write_line("4. Authority:", size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("▪ Pressing for action.", indent=28, gap=en_section34_item_gap)
+            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+            # Generated by — right-aligned per reference format
+            y -= 16
+            gen_text = _safe_text_for_font("Generated by AI People Reader™")
+            gen_w = pdfmetrics.stringWidth(gen_text, CONTENT_STYLE.fontName, 10)
+            _draw_text_line(x_left + usable_width - gen_w, y, CONTENT_STYLE.fontName, 10, gen_text)
+        append_graph_pages_for_operation_test()
+        c.save()
+        return
+
+    # Categories (same order as DOCX) — full layout with sub-bullets to match DOCX
+    cat_bullets_th = [
+        ["ความเป็นกันเอง", "ความเข้าถึงได้", "การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว"],
+        ["บุคลิกภาพเชิงบวก", "ความมีสมาธิ", "ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม"],
+        ["แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", "ผลักดันให้เกิดการลงมือทำ"],
+    ]
+    cat_bullets_en = [
+        ["Approachability.", "Relatability.", "Engagement, connect and build instant rapport with team."],
+        ["Optimistic Presence.", "Focus.", "Ability to persuade and stand one's ground, in order to convince others."],
+        ["Showing sense of importance and urgency in subject matter.", "Pressing for action."],
+    ]
+    cat_bullets = cat_bullets_th if is_thai else cat_bullets_en
+    scale_label = "ระดับ" if is_thai else "Scale"
+    item_gap = 10 if not is_thai else 8
+    for idx, cat in enumerate(report.categories[:3]):
+        write_line(category_labels[idx], size=12, bold=True, gap=14)
+        bullets = cat_bullets[idx] if idx < len(cat_bullets) else []
+        for b in bullets:
+            write_line_indented(f"▪ {b}", indent=28, gap=item_gap)
+        write_line_indented(
+            f"{scale_label}: {_display_scale(cat.scale, is_thai)}",
+            indent=0,  # Align with section title per reference
+            bold=True,
+            gap=12,
+        )
+
+    write_line("", gap=10)
+    write_line("สร้างโดย AI People Reader" if is_thai else "Generated by AI People Reader", size=10)
+    c.save()

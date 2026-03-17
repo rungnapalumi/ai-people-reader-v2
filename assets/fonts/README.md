@@ -1,0 +1,15 @@
+Place font files in this folder if needed by runtime packaging.
+
+For operation-test PDF rendering, the app primarily reads from `src/fonts/`.
+Place customer font files in this folder for PDF rendering.
+
+Required (preferred):
+- AngsanaNew.ttf
+- AngsanaNew-Bold.ttf
+
+Also accepted by the loader:
+- Angsana New.ttf
+- Angsana New Bold.ttf
+
+The report generator will try these files first for Operational Test PDFs.
+
