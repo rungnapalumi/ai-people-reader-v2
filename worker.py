@@ -377,7 +377,7 @@ def _lm_to_px(lm, w: int, h: int) -> Tuple[int, int]:
 
 
 def generate_dots_video(input_path: str, out_path: str) -> None:
-    """Generate dot motion video with white dots on black background - matches original implementation"""
+    """Generate dot motion video with white dots on black background. Body only, small dots."""
     cap = open_video(input_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -385,9 +385,10 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    # Scale dot size to fit video: slim dots, clamped 2–4
-    ref = min(w, h)
-    dot_size = max(2, min(4, int(ref * 0.0025)))
+    # Draw at 2x then downscale so dots appear ~1px (slim)
+    scale = 2
+    w2, h2 = w * scale, h * scale
+    dot_size = 2  # 2px at 2x → ~1px effective when scaled down
 
     with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
         while True:
@@ -395,31 +396,21 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
             if not ok:
                 break
 
-            # Create black background (key difference from old code)
-            output = np.zeros((h, w, 3), dtype=np.uint8)
+            output = np.zeros((h2, w2, 3), dtype=np.uint8)
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             res = pose.process(rgb)
 
             if res.pose_landmarks:
-                # Draw body landmarks only (exclude face: indices 0-10)
                 for idx, lm in enumerate(res.pose_landmarks.landmark):
                     if idx <= 10:
                         continue
-                    cx, cy = int(lm.x * w), int(lm.y * h)
-                    
-                    # Ensure coordinates are within bounds
-                    if 0 <= cx < w and 0 <= cy < h:
-                        # Draw white dot on black background
-                        cv2.circle(
-                            output,
-                            (cx, cy),
-                            radius=dot_size,
-                            color=(255, 255, 255),  # white in BGR format
-                            thickness=-1
-                        )
+                    cx, cy = int(lm.x * w2), int(lm.y * h2)
+                    if 0 <= cx < w2 and 0 <= cy < h2:
+                        cv2.circle(output, (cx, cy), dot_size, (255, 255, 255), -1)
 
-            vw.write(output)  # Write black background with white dots
+            output = cv2.resize(output, (w, h), interpolation=cv2.INTER_AREA)
+            vw.write(output)
 
     vw.release()
     cap.release()
