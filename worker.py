@@ -402,9 +402,7 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
             res = pose.process(rgb)
 
             if res.pose_landmarks:
-                for idx, lm in enumerate(res.pose_landmarks.landmark):
-                    if idx <= 10:
-                        continue
+                for lm in res.pose_landmarks.landmark:
                     cx, cy = int(lm.x * w2), int(lm.y * h2)
                     if 0 <= cx < w2 and 0 <= cy < h2:
                         cv2.circle(output, (cx, cy), dot_size, (255, 255, 255), -1)

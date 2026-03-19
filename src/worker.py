@@ -611,9 +611,7 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
                 last_landmarks = res.pose_landmarks.landmark if res.pose_landmarks else None
 
             if last_landmarks:
-                for idx, lm in enumerate(last_landmarks):
-                    if idx <= 10:
-                        continue
+                for lm in last_landmarks:
                     cx, cy = int(lm.x * w2), int(lm.y * h2)
                     if 0 <= cx < w2 and 0 <= cy < h2:
                         cv2.circle(output, (cx, cy), dot_size, (255, 255, 255), -1)
