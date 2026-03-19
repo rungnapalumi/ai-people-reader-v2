@@ -1,4 +1,4 @@
-# pages/6_Training.py
+## pages/6_Training.py
 # Clean English-only training page
 # Flow: Upload -> S3 -> Queue -> Download from page
 # No email dependency
@@ -55,6 +55,20 @@ p, label, span, div { color: var(--text-main); }
   border: 1px dashed var(--border) !important;
 }
 
+[data-testid="stFileUploader"] section button {
+  font-size: 0 !important;
+  background: #22c55e !important;
+  color: #2563eb !important;
+  border: 0 !important;
+  font-weight: 600 !important;
+}
+
+[data-testid="stFileUploader"] section button::after {
+  content: "Browse file";
+  font-size: 1.1rem;
+  color: #2563eb !important;
+}
+
 .stButton > button,
 .stDownloadButton > button,
 .stLinkButton > a {
@@ -94,12 +108,11 @@ def render_top_banner() -> None:
 # -------------------------
 # Env / S3
 # -------------------------
-AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
+AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET") or "local"
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 
-if not AWS_BUCKET:
-    st.error("Missing AWS_BUCKET or S3_BUCKET environment variable.")
-    st.stop()
+if not AWS_BUCKET or AWS_BUCKET == "local":
+    st.warning("Set AWS_BUCKET in .env for uploads.")
 
 s3 = boto3.client(
     "s3",
@@ -259,6 +272,9 @@ def get_group_id_variants(group_id: str) -> List[str]:
     if not g:
         return []
     out = [g]
+    # Fix missing "20" (year) — e.g. 0260319... → 20260319...
+    if g.startswith("0") and len(g) >= 7 and g[1:7].isdigit():
+        out.append("20" + g)
     if "__" in g:
         alt = g.replace("__", "_", 1)
         if alt != g:
@@ -333,7 +349,6 @@ def ensure_session_defaults() -> None:
         "training_last_group_id": "",
         "training_submission_id_override": "",
         "training_last_name": "",
-        "training_clear_upload_counter": 0,
         "training_audience_mode": "one",
     }
     for k, v in defaults.items():
@@ -342,20 +357,15 @@ def ensure_session_defaults() -> None:
 
 
 def clear_state() -> None:
-    for k in list(st.session_state.keys()):
-        if str(k).startswith("training_upload_"):
-            st.session_state.pop(k, None)
-
     for k in (
         "training_last_group_id",
         "training_submission_id_override",
         "training_last_name",
         "training_download_id",
         "training_audience_mode",
+        "training_video_upload",
     ):
         st.session_state.pop(k, None)
-
-    st.session_state["training_clear_upload_counter"] = st.session_state.get("training_clear_upload_counter", 0) + 1
 
 
 def render_download_button(
@@ -365,7 +375,6 @@ def render_download_button(
         st.caption(f"Waiting for {label}")
         return
 
-    # For videos, always use presigned URL (avoid loading large files into memory)
     is_video = (mime or "").startswith("video/")
     if is_video:
         try:
@@ -384,9 +393,8 @@ def render_download_button(
             st.caption(f"Waiting for {label}")
         return
 
-    # For PDFs, try inline download if small enough
     data = s3_get_bytes(key)
-    if data and len(data) < 50 * 1024 * 1024:  # Skip if > 50MB
+    if data and len(data) < 50 * 1024 * 1024:
         st.download_button(
             label=f"✓ Download {label}" if ready else f"Download {label}",
             data=data,
@@ -439,12 +447,11 @@ audience_mode = st.radio(
     key="training_audience_mode",
 )
 
-upload_key = f"training_upload_{st.session_state.get('training_clear_upload_counter', 0)}"
 uploaded = st.file_uploader(
     "Video (MP4 / MOV / M4V / WEBM)",
     type=["mp4", "mov", "m4v", "webm"],
     accept_multiple_files=False,
-    key=upload_key,
+    key="training_video_upload",
 )
 
 if uploaded is not None:
@@ -456,16 +463,18 @@ run = st.button(
     "Start Analysis",
     type="primary",
     use_container_width=True,
-    disabled=(uploaded is None),
+    disabled=(uploaded is None or not AWS_BUCKET or AWS_BUCKET == "local"),
 )
 
 st.caption(SUPPORT_TEXT)
 
 if run:
+    if not AWS_BUCKET or AWS_BUCKET == "local":
+        st.error("S3 is required. Set AWS_BUCKET in .env and restart.")
+        st.stop()
     if uploaded is None:
         st.warning("Please upload a video first.")
         st.stop()
-
     if not name_value.strip():
         st.warning("Please enter your name first.")
         st.stop()
@@ -488,7 +497,7 @@ if run:
             st.error(f"Upload failed: {e}")
             st.stop()
 
-        for i in range(5):
+        for _ in range(5):
             if s3_key_exists(input_key):
                 break
             time.sleep(0.5)
@@ -548,7 +557,7 @@ if run:
             "report_format": "pdf",
             "expect_skeleton": True,
             "expect_dots": True,
-            "notify_email": "",
+            "notify_email": "rungnapa@imagematters.at",
             "enterprise_folder": PAGE_TITLE,
             "employee_id": base_user,
             "employee_email": "",
@@ -578,7 +587,9 @@ if run:
         st.session_state["training_submission_id_override"] = group_id
         st.success(f"Submission received. Group ID: `{group_id}`")
         st.info("Please keep this Group ID and use Refresh to check when files are ready.")
+
     st.rerun()
+
 
 # -------------------------
 # Download section
@@ -586,18 +597,28 @@ if run:
 st.divider()
 st.markdown("### Download Results")
 
-current_group_id = str(
+def _sanitize_group_id(raw: str) -> str:
+    """Extract actual group ID; strip 'Current Group ID:' etc if pasted by mistake."""
+    s = str(raw or "").strip()
+    for prefix in ("Current Group ID:", "Current Group ID：", "Group ID:"):
+        if s.lower().startswith(prefix.lower()):
+            s = s[len(prefix):].strip()
+    return s.strip("`'\"")
+
+current_group_id = _sanitize_group_id(
     st.session_state.get("training_submission_id_override")
     or st.session_state.get("training_last_group_id")
     or ""
-).strip()
+)
 
-manual_group_id = st.text_input(
-    "Group ID",
-    value="",
-    placeholder="Paste your Group ID here",
-    key="training_download_id",
-).strip()
+manual_group_id = _sanitize_group_id(
+    st.text_input(
+        "Group ID",
+        value=current_group_id,
+        placeholder="Paste your Group ID here (e.g. 20240319_075553_1a1b29__Name)",
+        key="training_download_id",
+    )
+)
 
 if manual_group_id:
     current_group_id = manual_group_id
@@ -625,12 +646,8 @@ if current_group_id:
 
     dots_ready = bool(resolved.get("dots_video")) and s3_key_exists(resolved.get("dots_video", ""))
     skeleton_ready = bool(resolved.get("skeleton_video")) and s3_key_exists(resolved.get("skeleton_video", ""))
-    th_ready = bool(resolved.get("report_th_pdf")) and s3_key_exists(resolved.get("report_th_pdf", ""))
-    en_ready = bool(resolved.get("report_en_pdf")) and s3_key_exists(resolved.get("report_en_pdf", ""))
 
     status_items = [
-        ("Thai Report (PDF)", th_ready),
-        ("English Report (PDF)", en_ready),
         ("Dots Video", dots_ready),
         ("Skeleton Video", skeleton_ready),
     ]
@@ -638,7 +655,6 @@ if current_group_id:
     overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
     st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
 
-    # Auto-refresh every 8s when waiting for outputs
     if overall_pct < 100:
         try:
             @st.fragment(run_every=timedelta(seconds=8))
@@ -652,23 +668,8 @@ if current_group_id:
 
     st.markdown("---")
     st.subheader("Available Downloads")
+    st.caption("Reports (TH/EN PDF) are sent to aipeoplereader.com")
 
-    render_download_button(
-        label="Thai Report (PDF)",
-        key=resolved.get("report_th_pdf", ""),
-        filename="report_th.pdf",
-        mime="application/pdf",
-        button_key="training_dl_th",
-        ready=th_ready,
-    )
-    render_download_button(
-        label="English Report (PDF)",
-        key=resolved.get("report_en_pdf", ""),
-        filename="report_en.pdf",
-        mime="application/pdf",
-        button_key="training_dl_en",
-        ready=en_ready,
-    )
     render_download_button(
         label="Dots Video",
         key=resolved.get("dots_video", ""),
@@ -686,7 +687,7 @@ if current_group_id:
         ready=skeleton_ready,
     )
 
-    if not any([dots_ready, skeleton_ready, th_ready, en_ready]):
+    if not any([dots_ready, skeleton_ready]):
         st.caption("Files are not ready yet. Please wait a few minutes and click Refresh.")
 
 else:

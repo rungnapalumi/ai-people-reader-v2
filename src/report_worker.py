@@ -703,6 +703,7 @@ def build_html_report_file(
       <div><b>1. Low Eye Contact + Low Uprightness + Low Stance.</b></div>
       <div>The person tends to appear non-threatening and flexible. However, the person can also appear to possess low level of confidence and authority.</div>"""
     )
+
     remark_extra_page2 = (
         """
       <div><b>2. การสบตาปานกลาง + ความตั้งตรงปานกลาง + การยืนและการวางเท้าปานกลาง</b></div>

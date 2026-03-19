@@ -27,6 +27,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import streamlit as st
 import streamlit.components.v1 as components
 import boto3
@@ -171,7 +174,15 @@ if not AWS_BUCKET:
 s3 = boto3.client(
     "s3",
     region_name=AWS_REGION,
-    config=Config(signature_version="s3v4"),
+    endpoint_url=f"https://s3.{AWS_REGION}.amazonaws.com",
+    config=Config(
+        signature_version="s3v4",
+        s3={"addressing_style": "path"},
+        proxies={},
+        connect_timeout=10,
+        read_timeout=60,
+        retries={"max_attempts": 2},
+    ),
 )
 S3_UPLOAD_CONFIG = TransferConfig(
     multipart_threshold=8 * 1024 * 1024,

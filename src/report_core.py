@@ -1557,44 +1557,22 @@ def build_docx_report(
     section1.paragraph_format.space_before = Pt(10)
     section1.paragraph_format.space_after = Pt(4)
     
-    # First Impression - compact level format (High/Moderate/Low or สูง/กลาง/ต่ำ)
+    # First Impression - scale (low/moderate/high)
     if report.first_impression:
         fi = report.first_impression
         eye_level = _fi_level_th(fi.eye_contact_pct, "eye_contact") if is_thai else _fi_level_en(fi.eye_contact_pct, "eye_contact")
         up_level = _fi_level_th(fi.upright_pct, "uprightness") if is_thai else _fi_level_en(fi.upright_pct, "uprightness")
         st_level = _fi_level_th(fi.stance_stability, "stance") if is_thai else _fi_level_en(fi.stance_stability, "stance")
-    else:
-        eye_level = "-" if is_thai else "-"
-        up_level = "-" if is_thai else "-"
-        st_level = "-" if is_thai else "-"
-
-    # Section 1: Scale aligns under bullet (per reference); bullet left=28, first_line=-14 → bullet at 14pt
-    eye_bullet = doc.add_paragraph(
-        _square_bullet_text("• การสบตา (Eye Contact)" if is_thai else "• Eye Contact")
-    )
-    _apply_bullet_layout(eye_bullet)
-    lvl1_text = f"{texts['scale']} {eye_level}"
-    lvl1 = doc.add_paragraph(lvl1_text)
-    lvl1.runs[0].bold = True
-    _apply_scale_layout(lvl1, left_indent_pt=14)  # Align under bullet
-
-    upright_bullet = doc.add_paragraph(
-        _square_bullet_text("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness")
-    )
-    _apply_bullet_layout(upright_bullet)
-    lvl2_text = f"{texts['scale']} {up_level}"
-    lvl2 = doc.add_paragraph(lvl2_text)
-    lvl2.runs[0].bold = True
-    _apply_scale_layout(lvl2, left_indent_pt=14)  # Align under bullet
-
-    stance_bullet = doc.add_paragraph(
-        _square_bullet_text("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance")
-    )
-    _apply_bullet_layout(stance_bullet)
-    lvl3_text = f"{texts['scale']} {st_level}"
-    lvl3 = doc.add_paragraph(lvl3_text)
-    lvl3.runs[0].bold = True
-    _apply_scale_layout(lvl3, left_indent_pt=14)  # Align under bullet
+        for label, lv in [
+            ("• การสบตา (Eye Contact)" if is_thai else "• Eye Contact", eye_level),
+            ("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness", up_level),
+            ("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance", st_level),
+        ]:
+            p = doc.add_paragraph(_square_bullet_text(label))
+            _apply_bullet_layout(p)
+            lvl = doc.add_paragraph(f"{texts['scale']} {lv}")
+            lvl.runs[0].bold = True
+            _apply_scale_layout(lvl, left_indent_pt=14)
 
     if not is_thai:
         doc.add_paragraph()
@@ -1609,42 +1587,6 @@ def build_docx_report(
         else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
     )
     doc.add_paragraph()
-
-    # Narrative engine result — detailed interpretation below First Impression
-    narrative = _build_narrative_from_report(report)
-    if narrative and narrative.first_impression_blocks:
-        logger.info("[narrative] Adding Narrative Interpretation with %d blocks", len(narrative.first_impression_blocks))
-        narrative_label = "การตีความผลการวิเคราะห์ (Narrative)" if is_thai else "Narrative Interpretation"
-        p_narr = doc.add_paragraph(narrative_label)
-        p_narr.runs[0].bold = True
-        p_narr.paragraph_format.space_before = Pt(14)
-        p_narr.paragraph_format.space_after = Pt(6)
-        for block in narrative.first_impression_blocks:
-            sub = block.subtitle or block.title
-            sub_label = sub if not is_thai else {
-                "Eye Contact": "การสบตา (Eye Contact)",
-                "Uprightness (Posture & Upper-Body Alignment)": "ความตั้งตรงของร่างกาย (Uprightness)",
-                "Stance (Lower-Body Stability & Grounding)": "การยืนและการวางเท้า (Stance)",
-            }.get(sub, sub)
-            p_sub = doc.add_paragraph(_square_bullet_text(sub_label))
-            _apply_bullet_layout(p_sub)
-            for bullet in (block.bullets or []):
-                p_b = doc.add_paragraph(_square_bullet_text(bullet))
-                _apply_bullet_layout(p_b, compact=True)
-            if block.impact_text:
-                impact_label = texts["impact_clients"]
-                p_imp = doc.add_paragraph(f"{impact_label} {block.impact_text}")
-                _apply_bullet_layout(p_imp, compact=True)
-        if narrative.executive_summary:
-            exec_label = "สรุปโดยรวม:" if is_thai else "Executive Summary:"
-            p_exec = doc.add_paragraph(exec_label)
-            p_exec.runs[0].bold = True
-            p_exec.paragraph_format.space_before = Pt(10)
-            p_exec.paragraph_format.space_after = Pt(4)
-            doc.add_paragraph(narrative.executive_summary)
-        doc.add_paragraph()
-    elif build_narrative_report is None:
-        logger.warning("[narrative] narrative_engine not available; Narrative Interpretation section skipped")
 
     # Page 2: Combination Explanation 1, 2, 3 — use page_break_before so LibreOffice respects it
     combo_label = "คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:"
@@ -1820,12 +1762,6 @@ def build_docx_report(
     # Normalize paragraph rhythm so numbered headings and bullets follow
     # a consistent spacing pattern throughout the document.
     normalize_spacing()
-
-    generated_para = doc.add_paragraph(texts["generated"])
-    generated_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    generated_run = generated_para.runs[0]
-    generated_run.italic = True
-    generated_run.font.size = Pt(11)
 
     # Always apply Thai font for Thai reports — ป้องกันสระและวรรณยุกต์ทับกันใน PDF
     # TH Sarabun New / Sarabun มี glyph ครบสำหรับ Thai diacritics
@@ -2422,13 +2358,6 @@ def build_pdf_report(
                     write_line("Graph image unavailable", size=11, gap=16)
             else:
                 write_line("Graph image unavailable", size=11, gap=16)
-            # Show the same credit text on the last operation-test page (page 4) for both TH/EN.
-            if idx == len(graph_specs) - 1:
-                draw_generated_bottom(
-                    "จัดทำโดย AI People Reader™" if is_thai else "Generated by AI People Reader™",
-                    size=10,
-                )
-
     def write_line(text: str, size: int = 11, bold: bool = False, gap: int = 18):
         nonlocal y
         font = bold_font if bold else CONTENT_STYLE.fontName
@@ -2706,7 +2635,7 @@ def build_pdf_report(
             return "ต่ำ"
         return "-"
 
-    # First impression sections (same narrative style as DOCX simple).
+    # First impression sections (scale: low/moderate/high)
     if report.first_impression:
         fi = report.first_impression
         if is_operation_test:
@@ -2769,7 +2698,7 @@ def build_pdf_report(
                 else "First impression happens in the first 5 seconds of meeting someone, and is normally decided from the person's appearance, eye contact, uprightness and stance. However, after the first 5 seconds, the rest (below) are normally taken into consideration."
             )
             write_line(remark_text, gap=6 if is_thai else 18)  # Thai: section 2 up 1 line
-            write_line("", gap=10)  # Blank line: move Combination Explanation down 1 line
+            write_line("", gap=10)  # Blank line before Combination Explanation
             write_line("คำอธิบายการผสมผสาน:" if is_thai else "Combination Explanation:", gap=6)
             if is_thai:
                 write_line("1. การสบตาน้อย + ความตั้งตรงน้อย + การยืนและการวางเท้าต่ำ", gap=4)
@@ -2903,11 +2832,6 @@ def build_pdf_report(
             write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
             write_line_indented("▪ Pressing for action.", indent=28, gap=en_section34_item_gap)
             write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
-            # Generated by — right-aligned per reference format
-            y -= 16
-            gen_text = _safe_text_for_font("Generated by AI People Reader™")
-            gen_w = pdfmetrics.stringWidth(gen_text, CONTENT_STYLE.fontName, 10)
-            _draw_text_line(x_left + usable_width - gen_w, y, CONTENT_STYLE.fontName, 10, gen_text)
         append_graph_pages_for_operation_test()
         c.save()
         return
@@ -2938,6 +2862,4 @@ def build_pdf_report(
             gap=12,
         )
 
-    write_line("", gap=10)
-    write_line("สร้างโดย AI People Reader" if is_thai else "Generated by AI People Reader", size=10)
     c.save()
