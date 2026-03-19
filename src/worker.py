@@ -586,9 +586,9 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    # Scale dot size to fit video: slim dots, clamped 2–5
+    # Scale dot size to fit video: slim dots, clamped 2–4
     ref = min(w, h)
-    dot_size = max(2, min(5, int(ref * 0.003)))
+    dot_size = max(2, min(4, int(ref * 0.0025)))
 
     # Process fewer frames for pose inference and reuse latest landmarks.
     process_every_n = 2 if fps >= 20 else 1
@@ -612,8 +612,10 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
                 last_landmarks = res.pose_landmarks.landmark if res.pose_landmarks else None
 
             if last_landmarks:
-                # Draw ALL landmarks (not just subset) - matching original code
-                for lm in last_landmarks:
+                # Draw body landmarks only (exclude face: nose, eyes, ears, mouth = indices 0-10)
+                for idx, lm in enumerate(last_landmarks):
+                    if idx <= 10:
+                        continue
                     cx, cy = int(lm.x * w), int(lm.y * h)
                     
                     # Ensure coordinates are within bounds

@@ -1,3 +1,23 @@
+# Dots/Skeleton worker: processes dots and skeleton video jobs from S3 queue
+- type: worker
+  name: ai-people-reader-v2-video-worker
+  runtime: python
+  region: singapore
+  plan: starter
+  buildCommand: |
+    set -e
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
+    ffmpeg -version
+    pip install --upgrade pip
+    pip install "setuptools>=65.0.0" "wheel>=0.38.0"
+    pip cache purge
+    pip install --no-cache-dir -r worker_requirements.txt
+  startCommand: python worker.py
+  envVars:
+    - key: PYTHON_VERSION
+      value: 3.11.9
+
 # Report worker: after code changes to src/report_core.py, use "Clear build cache & deploy"
 # in Render Dashboard to ensure new code is used. Check logs for "report_core version: 2026-03-07-relaxed"
 - type: worker
