@@ -128,8 +128,9 @@ THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
 THAI_PDF_IMAGE_CAPTURE_STRICT = str(
     os.getenv("THAI_PDF_IMAGE_CAPTURE_STRICT", "true")
 ).strip().lower() in ("1", "true", "yes", "on")
+# false = rasterize PDF (all pages). true = DOCX->PNG (LibreOffice exports only page 1 for multi-page DOCX)
 THAI_CAPTURE_FROM_DOCX_DIRECT = str(
-    os.getenv("THAI_CAPTURE_FROM_DOCX_DIRECT", "true")
+    os.getenv("THAI_CAPTURE_FROM_DOCX_DIRECT", "false")
 ).strip().lower() in ("1", "true", "yes", "on")
 POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "3"))
 PROCESSING_STALE_MINUTES = int(os.getenv("PROCESSING_STALE_MINUTES", "20"))

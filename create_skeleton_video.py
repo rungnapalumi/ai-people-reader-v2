@@ -19,10 +19,8 @@ except ImportError:
     PoseLandmark = mp.solutions.pose.PoseLandmark
 
 # Skeleton structure (same as worker)
-POSE_LANDMARK_IDS = [
-    PoseLandmark.NOSE,
-    PoseLandmark.LEFT_EYE,
-    PoseLandmark.RIGHT_EYE,
+# Body joints only - exclude face (nose, eyes)
+SKELETON_JOINT_IDS = [
     PoseLandmark.LEFT_SHOULDER,
     PoseLandmark.RIGHT_SHOULDER,
     PoseLandmark.LEFT_ELBOW,
@@ -36,6 +34,8 @@ POSE_LANDMARK_IDS = [
     PoseLandmark.LEFT_ANKLE,
     PoseLandmark.RIGHT_ANKLE,
 ]
+
+POSE_LANDMARK_IDS = SKELETON_JOINT_IDS  # alias for compatibility
 
 SKELETON_EDGES = [
     (PoseLandmark.LEFT_SHOULDER, PoseLandmark.RIGHT_SHOULDER),
@@ -73,6 +73,11 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
         cap.release()
         raise RuntimeError(f"Cannot create output video: {out_path}")
 
+    # White skeleton, very thin lines: draw at 2x then downscale
+    SKELETON_COLOR = (255, 255, 255)  # white (BGR)
+    scale = 2
+    w2, h2 = w * scale, h * scale
+
     frame_idx = 0
     with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
         while True:
@@ -85,19 +90,21 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
 
             if res.pose_landmarks:
                 lms = res.pose_landmarks.landmark
+                frame2 = cv2.resize(frame, (w2, h2), interpolation=cv2.INTER_LINEAR)
                 for a, b in SKELETON_EDGES:
                     la, lb = lms[a], lms[b]
                     if la.visibility < 0.5 or lb.visibility < 0.5:
                         continue
-                    xa, ya = _lm_to_px(la, w, h)
-                    xb, yb = _lm_to_px(lb, w, h)
-                    cv2.line(frame, (xa, ya), (xb, yb), (0, 255, 0), 3)
-                for pid in POSE_LANDMARK_IDS:
+                    xa, ya = _lm_to_px(la, w2, h2)
+                    xb, yb = _lm_to_px(lb, w2, h2)
+                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_COLOR, 1, cv2.LINE_4)
+                for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
                     if lm.visibility < 0.5:
                         continue
-                    x, y = _lm_to_px(lm, w, h)
-                    cv2.circle(frame, (x, y), 4, (0, 255, 0), -1)
+                    x, y = _lm_to_px(lm, w2, h2)
+                    cv2.circle(frame2, (x, y), 2, SKELETON_COLOR, -1)
+                frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_AREA)
 
             vw.write(frame)
             frame_idx += 1

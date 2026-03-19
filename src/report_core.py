@@ -1098,6 +1098,8 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         "authority_pos": int(authority_score / 7 * 445),
         "effort_detection": effort_detection,
         "shape_detection": shape_detection,
+        "effort_counts": dict(effort_counts),
+        "shape_counts": dict(shape_counts),
     }
 
 def analyze_video_placeholder(video_path: str, seed: int = None, job_id: str = None) -> Dict[str, Any]:

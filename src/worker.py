@@ -527,6 +527,22 @@ POSE_LANDMARK_IDS = [
     PoseLandmark.RIGHT_ANKLE,
 ]
 
+# Skeleton joints: body only, exclude face (nose, eyes)
+SKELETON_JOINT_IDS = [
+    PoseLandmark.LEFT_SHOULDER,
+    PoseLandmark.RIGHT_SHOULDER,
+    PoseLandmark.LEFT_ELBOW,
+    PoseLandmark.RIGHT_ELBOW,
+    PoseLandmark.LEFT_WRIST,
+    PoseLandmark.RIGHT_WRIST,
+    PoseLandmark.LEFT_HIP,
+    PoseLandmark.RIGHT_HIP,
+    PoseLandmark.LEFT_KNEE,
+    PoseLandmark.RIGHT_KNEE,
+    PoseLandmark.LEFT_ANKLE,
+    PoseLandmark.RIGHT_ANKLE,
+]
+
 SKELETON_EDGES = [
     (PoseLandmark.LEFT_SHOULDER, PoseLandmark.RIGHT_SHOULDER),
     (PoseLandmark.LEFT_SHOULDER, PoseLandmark.LEFT_ELBOW),
@@ -569,8 +585,10 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     vw = write_mp4(out_path, fps, w, h)
-    
-    dot_size = 5  # 5 pixels as per user requirement
+
+    # Scale dot size to fit video: slim dots, clamped 2–5
+    ref = min(w, h)
+    dot_size = max(2, min(5, int(ref * 0.003)))
 
     # Process fewer frames for pose inference and reuse latest landmarks.
     process_every_n = 2 if fps >= 20 else 1
@@ -623,6 +641,11 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
+    # White skeleton, very thin lines: draw at 2x then downscale so 1px → ~0.5px effective
+    SKELETON_COLOR = (255, 255, 255)  # white (BGR)
+    scale = 2
+    w2, h2 = w * scale, h * scale
+
     # Process fewer frames for pose inference and reuse latest landmarks.
     process_every_n = 2 if fps >= 20 else 1
     last_landmarks = None
@@ -644,22 +667,25 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
             if last_landmarks:
                 lms = last_landmarks
 
-                # draw edges
+                # draw on 2x canvas (1px line becomes thinner when scaled down)
+                frame2 = cv2.resize(frame, (w2, h2), interpolation=cv2.INTER_LINEAR)
+
                 for a, b in SKELETON_EDGES:
                     la, lb = lms[a], lms[b]
                     if la.visibility < 0.5 or lb.visibility < 0.5:
                         continue
-                    xa, ya = _lm_to_px(la, w, h)
-                    xb, yb = _lm_to_px(lb, w, h)
-                    cv2.line(frame, (xa, ya), (xb, yb), (0, 255, 0), 3)
+                    xa, ya = _lm_to_px(la, w2, h2)
+                    xb, yb = _lm_to_px(lb, w2, h2)
+                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_COLOR, 1, cv2.LINE_4)
 
-                # joints
-                for pid in POSE_LANDMARK_IDS:
+                for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
                     if lm.visibility < 0.5:
                         continue
-                    x, y = _lm_to_px(lm, w, h)
-                    cv2.circle(frame, (x, y), 4, (0, 255, 0), -1)
+                    x, y = _lm_to_px(lm, w2, h2)
+                    cv2.circle(frame2, (x, y), 2, SKELETON_COLOR, -1)
+
+                frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_AREA)
 
             vw.write(frame)
 

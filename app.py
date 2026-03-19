@@ -1,10 +1,18 @@
 import os
+import sys
 import json
 import base64
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from dotenv import load_dotenv
+
+# Allow importing report_core from src/
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_src_dir = os.path.join(_script_dir, "src")
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
 
 load_dotenv()
 
@@ -938,6 +946,67 @@ def _render_admin_panel() -> None:
     if st.button("Logout", width="stretch"):
         st.session_state.admin_authenticated = False
         st.rerun()
+
+    # Detection Preview: upload video and show effort/shape counts
+    st.markdown("---")
+    st.markdown("### Detection Preview")
+    st.caption("Upload a video to see raw detection counts (Enclosing, Spreading, etc.) on the web page.")
+    if "admin_detection_result" not in st.session_state:
+        st.session_state.admin_detection_result = None
+    with st.expander("Upload video & view detection counts", expanded=True):
+        uploaded = st.file_uploader(
+            "Choose a video file",
+            type=["mp4", "mov", "avi", "webm", "m4v"],
+            key="admin_detection_upload",
+        )
+        if uploaded is not None:
+            if st.button("Analyze video", type="primary", key="admin_analyze_btn"):
+                st.session_state.admin_detection_result = None
+                with st.spinner("Analyzing video (this may take a minute)..."):
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(uploaded.name)[1], delete=False) as tmp:
+                            tmp.write(uploaded.getvalue())
+                            tmp_path = tmp.name
+                        try:
+                            from report_core import analyze_video_mediapipe
+                            result = analyze_video_mediapipe(tmp_path, sample_fps=5, max_frames=300)
+                            st.session_state.admin_detection_result = result
+                        finally:
+                            try:
+                                os.unlink(tmp_path)
+                            except OSError:
+                                pass
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+                    st.rerun()
+        result = st.session_state.admin_detection_result
+        if result is not None:
+            effort_counts = result.get("effort_counts") or {}
+            shape_counts = result.get("shape_counts") or {}
+            analyzed = result.get("analyzed_frames", 0)
+            duration = result.get("duration_seconds", 0)
+            st.success(f"Analyzed {analyzed} frames ({duration:.1f}s)")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Effort detection (counts)**")
+                effort_rows = [{"Type": k, "Count": v} for k, v in sorted(effort_counts.items(), key=lambda x: -x[1])]
+                if effort_rows:
+                    st.dataframe(effort_rows, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("No effort data")
+            with col2:
+                st.markdown("**Shape detection (counts)**")
+                shape_rows = [{"Type": k, "Count": v} for k, v in sorted(shape_counts.items(), key=lambda x: -x[1])]
+                if shape_rows:
+                    st.dataframe(shape_rows, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("No shape data")
+            total_effort = sum(effort_counts.values())
+            total_shape = sum(shape_counts.values())
+            st.caption(f"Total effort detections: {total_effort} | Total shape detections: {total_shape}")
+            if st.button("Clear result", key="admin_clear_detection"):
+                st.session_state.admin_detection_result = None
+                st.rerun()
 
     if not AWS_BUCKET:
         st.error("Missing AWS_BUCKET (or S3_BUCKET) environment variable.")
