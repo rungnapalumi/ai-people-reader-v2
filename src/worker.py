@@ -578,7 +578,7 @@ def _frame_for_pose(frame: np.ndarray, max_width: int = 640) -> np.ndarray:
 
 
 def generate_dots_video(input_path: str, out_path: str) -> None:
-    """Generate dot motion video with white dots on black background. Body only, small dots."""
+    """Generate dot motion video with bright white dots on black background (all landmarks)."""
     cap = open_video(input_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -586,10 +586,13 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    # Draw at 2x then downscale so dots appear ~1px (slim)
+    # Draw at 2x then downscale. Larger radius + LINEAR downscale (not AREA) so dots stay
+    # bright and visible on black; AREA averaging was shrinking/dimming tiny dots.
     scale = 2
     w2, h2 = w * scale, h * scale
-    dot_size = 2  # 2px at 2x → ~1px effective when scaled down
+    dot_radius = 5  # at 2x canvas → ~2–3px effective after half-scale, clearly visible
+    dot_glow = (220, 220, 220)  # subtle halo for contrast on very dark backgrounds
+    dot_core = (255, 255, 255)
 
     process_every_n = 2 if fps >= 20 else 1
     last_landmarks = None
@@ -614,9 +617,10 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
                 for lm in last_landmarks:
                     cx, cy = int(lm.x * w2), int(lm.y * h2)
                     if 0 <= cx < w2 and 0 <= cy < h2:
-                        cv2.circle(output, (cx, cy), dot_size, (255, 255, 255), -1)
+                        cv2.circle(output, (cx, cy), dot_radius + 1, dot_glow, -1)
+                        cv2.circle(output, (cx, cy), dot_radius, dot_core, -1)
 
-            output = cv2.resize(output, (w, h), interpolation=cv2.INTER_AREA)
+            output = cv2.resize(output, (w, h), interpolation=cv2.INTER_LINEAR)
             vw.write(output)
 
     vw.release()
@@ -631,10 +635,12 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    # White skeleton, very thin lines: draw at 2x then downscale so 1px → ~0.5px effective
-    SKELETON_COLOR = (255, 255, 255)  # white (BGR)
+    # White only: draw at 2x with thick strokes, then scale down (INTER_LINEAR keeps edges cleaner than AREA).
+    SKELETON_WHITE = (255, 255, 255)
     scale = 2
     w2, h2 = w * scale, h * scale
+    line_thick = 4  # at 2x → ~2px effective after half-scale; all BGR white
+    joint_radius = 4
 
     # Process fewer frames for pose inference and reuse latest landmarks.
     process_every_n = 2 if fps >= 20 else 1
@@ -657,7 +663,6 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
             if last_landmarks:
                 lms = last_landmarks
 
-                # draw on 2x canvas (1px line becomes thinner when scaled down)
                 frame2 = cv2.resize(frame, (w2, h2), interpolation=cv2.INTER_LINEAR)
 
                 for a, b in SKELETON_EDGES:
@@ -666,16 +671,16 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
                         continue
                     xa, ya = _lm_to_px(la, w2, h2)
                     xb, yb = _lm_to_px(lb, w2, h2)
-                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_COLOR, 1, cv2.LINE_4)
+                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_WHITE, line_thick, cv2.LINE_AA)
 
                 for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
                     if lm.visibility < 0.5:
                         continue
                     x, y = _lm_to_px(lm, w2, h2)
-                    cv2.circle(frame2, (x, y), 2, SKELETON_COLOR, -1)
+                    cv2.circle(frame2, (x, y), joint_radius, SKELETON_WHITE, -1)
 
-                frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_AREA)
+                frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_LINEAR)
 
             vw.write(frame)
 
