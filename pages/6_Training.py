@@ -239,8 +239,9 @@ def enqueue_legacy_job(job: Dict[str, Any]) -> str:
 
 
 def verify_pending_jobs_exist(keys: List[str]) -> List[str]:
-    retries = 5
-    delay_seconds = 0.5
+    # S3 can lag briefly after PUT; large uploads / cross-region need more time
+    retries = 15
+    delay_seconds = 1.0
     pending = list(keys)
 
     for attempt in range(retries):
@@ -497,14 +498,22 @@ if run:
             st.error(f"Upload failed: {e}")
             st.stop()
 
-        for _ in range(5):
+        # Large files: wait longer for S3 to make object visible (HEAD after multipart)
+        max_verify_attempts = 25
+        verify_delay_sec = 1.0
+        for attempt in range(max_verify_attempts):
             if s3_key_exists(input_key):
                 break
-            time.sleep(0.5)
+            if attempt < max_verify_attempts - 1:
+                time.sleep(verify_delay_sec)
 
         if not s3_key_exists(input_key):
             status.update(label="Verification failed", state="error")
-            st.error("Upload completed but the file is not visible yet. Please try again.")
+            st.error(
+                "Upload finished but S3 still does not show the file after waiting. "
+                "Common causes: slow network, very large file, or S3 lag. "
+                "Please wait a minute and click **Start Analysis** again (same file is OK), or try a smaller clip."
+            )
             st.stop()
 
         st.write("✓ Video verified. Queuing analysis jobs...")
@@ -579,7 +588,11 @@ if run:
         missing_pending = verify_pending_jobs_exist(queued_keys)
         if missing_pending:
             status.update(label="Verification failed", state="error")
-            st.error(f"Queue verification failed. Missing keys: {', '.join(missing_pending)}")
+            st.error(
+                "Jobs were written but S3 has not confirmed the pending files yet. "
+                f"Missing: {', '.join(missing_pending)}. "
+                "Try **Start Analysis** again in 30–60 seconds, or check AWS credentials / bucket region."
+            )
             st.stop()
 
         status.update(label="Complete", state="complete")
