@@ -14,6 +14,7 @@ import boto3
 import streamlit as st
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 # -------------------------
 # Page setup
@@ -210,6 +211,22 @@ def s3_key_exists(key: str) -> bool:
         return False
 
 
+def s3_head_error_message(key: str) -> str:
+    """Why HEAD failed (for user-visible errors). Swallowing all errors hid 403 vs 404."""
+    try:
+        s3.head_object(Bucket=AWS_BUCKET, Key=key)
+        return ""
+    except ClientError as e:
+        code = (e.response.get("Error") or {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return "object not found yet"
+        if code in ("403", "AccessDenied"):
+            return "access denied — IAM needs s3:GetObject + s3:HeadObject on this bucket/prefix"
+        return f"S3 error: {code or e}"
+    except Exception as e:
+        return str(e)[:200]
+
+
 def s3_get_bytes(key: str) -> Optional[bytes]:
     try:
         obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
@@ -239,9 +256,9 @@ def enqueue_legacy_job(job: Dict[str, Any]) -> str:
 
 
 def verify_pending_jobs_exist(keys: List[str]) -> List[str]:
-    # S3 can lag briefly after PUT; large uploads / cross-region need more time
-    retries = 15
-    delay_seconds = 1.0
+    # Small JSON puts; cross-region / Streamlit Cloud can still lag
+    retries = 35
+    delay_seconds = 1.5
     pending = list(keys)
 
     for attempt in range(retries):
@@ -492,31 +509,15 @@ if run:
                 file_obj=uploaded,
                 content_type=guess_content_type(uploaded.name or "input.mp4"),
             )
-            st.write("✓ Upload complete. Verifying...")
+            st.write("✓ Upload complete.")
         except Exception as e:
             status.update(label="Upload failed", state="error")
             st.error(f"Upload failed: {e}")
             st.stop()
 
-        # Large files: wait longer for S3 to make object visible (HEAD after multipart)
-        max_verify_attempts = 25
-        verify_delay_sec = 1.0
-        for attempt in range(max_verify_attempts):
-            if s3_key_exists(input_key):
-                break
-            if attempt < max_verify_attempts - 1:
-                time.sleep(verify_delay_sec)
-
-        if not s3_key_exists(input_key):
-            status.update(label="Verification failed", state="error")
-            st.error(
-                "Upload finished but S3 still does not show the file after waiting. "
-                "Common causes: slow network, very large file, or S3 lag. "
-                "Please wait a minute and click **Start Analysis** again (same file is OK), or try a smaller clip."
-            )
-            st.stop()
-
-        st.write("✓ Video verified. Queuing analysis jobs...")
+        # Do not block on HEAD after upload: upload_fileobj success means the object is there.
+        # Extra HEAD often fails on misconfigured IAM (HeadObject denied) and looked like "Verification failed".
+        st.write("✓ Video uploaded. Queuing analysis jobs...")
         outputs = build_output_keys(group_id)
         created_at = utc_now_iso()
 
@@ -588,10 +589,14 @@ if run:
         missing_pending = verify_pending_jobs_exist(queued_keys)
         if missing_pending:
             status.update(label="Verification failed", state="error")
+            sample = missing_pending[0] if missing_pending else ""
+            detail = s3_head_error_message(sample) if sample else ""
             st.error(
-                "Jobs were written but S3 has not confirmed the pending files yet. "
-                f"Missing: {', '.join(missing_pending)}. "
-                "Try **Start Analysis** again in 30–60 seconds, or check AWS credentials / bucket region."
+                "Queue verification: S3 still does not see some pending job files after waiting.\n\n"
+                f"**Example key:** `{sample}`\n\n"
+                f"**Detail:** {detail or 'unknown'}\n\n"
+                "Fix: ensure IAM allows **s3:PutObject** and **s3:HeadObject** on `jobs/pending/*`. "
+                "Or wait 1–2 minutes and click **Start Analysis** again."
             )
             st.stop()
 
