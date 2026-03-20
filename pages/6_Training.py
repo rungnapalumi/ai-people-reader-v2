@@ -6,7 +6,6 @@
 import os
 import json
 import uuid
-import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -14,7 +13,6 @@ import boto3
 import streamlit as st
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
-from botocore.exceptions import ClientError
 
 # -------------------------
 # Page setup
@@ -239,22 +237,6 @@ def s3_output_ready(key: str) -> bool:
     return False
 
 
-def s3_head_error_message(key: str) -> str:
-    """Why HEAD failed (for user-visible errors). Swallowing all errors hid 403 vs 404."""
-    try:
-        s3.head_object(Bucket=AWS_BUCKET, Key=key)
-        return ""
-    except ClientError as e:
-        code = (e.response.get("Error") or {}).get("Code", "")
-        if code in ("404", "NoSuchKey", "NotFound"):
-            return "object not found yet"
-        if code in ("403", "AccessDenied"):
-            return "access denied — IAM needs s3:GetObject + s3:HeadObject on this bucket/prefix"
-        return f"S3 error: {code or e}"
-    except Exception as e:
-        return str(e)[:200]
-
-
 def s3_get_bytes(key: str) -> Optional[bytes]:
     try:
         obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
@@ -281,26 +263,6 @@ def enqueue_legacy_job(job: Dict[str, Any]) -> str:
     key = f"{JOBS_PENDING_PREFIX}{job_id}.json"
     s3_put_json(key, job)
     return key
-
-
-def verify_pending_jobs_exist(keys: List[str]) -> List[str]:
-    # Small JSON puts; cross-region / Streamlit Cloud can still lag
-    retries = 35
-    delay_seconds = 1.5
-    pending = list(keys)
-
-    for attempt in range(retries):
-        missing: List[str] = []
-        for key in pending:
-            if not s3_key_exists(key):
-                missing.append(key)
-        if not missing:
-            return []
-        pending = missing
-        if attempt < retries - 1:
-            time.sleep(delay_seconds)
-
-    return pending
 
 
 def build_output_keys(group_id: str) -> Dict[str, str]:
@@ -691,31 +653,15 @@ if run:
         }
 
         try:
-            queued_keys = [
-                enqueue_legacy_job(job_dots),
-                enqueue_legacy_job(job_skeleton),
-                enqueue_legacy_job(job_report),
-            ]
+            enqueue_legacy_job(job_dots)
+            enqueue_legacy_job(job_skeleton)
+            enqueue_legacy_job(job_report)
         except Exception as e:
             status.update(label="Queue failed", state="error")
             st.error(f"Queue submission failed: {e}")
             st.stop()
 
-        st.write("✓ Jobs queued. Verifying...")
-        missing_pending = verify_pending_jobs_exist(queued_keys)
-        if missing_pending:
-            status.update(label="Verification failed", state="error")
-            sample = missing_pending[0] if missing_pending else ""
-            detail = s3_head_error_message(sample) if sample else ""
-            st.error(
-                "Queue verification: S3 still does not see some pending job files after waiting.\n\n"
-                f"**Example key:** `{sample}`\n\n"
-                f"**Detail:** {detail or 'unknown'}\n\n"
-                "Fix: ensure IAM allows **s3:PutObject** and **s3:HeadObject** on `jobs/pending/*`. "
-                "Or wait 1–2 minutes and click **Start Analysis** again."
-            )
-            st.stop()
-
+        st.write("✓ Jobs queued.")
         status.update(label="Complete", state="complete")
         st.session_state["training_last_group_id"] = group_id
         st.session_state["training_submission_id_override"] = group_id
