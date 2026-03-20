@@ -53,8 +53,10 @@ SKELETON_EDGES = [
 ]
 
 
-def _lm_to_px(lm, w: int, h: int):
-    return int(lm.x * w), int(lm.y * h)
+def _lm_to_px_spread(lm, w: int, h: int, spread: float):
+    nx = 0.5 + (float(lm.x) - 0.5) * spread
+    ny = 0.5 + (float(lm.y) - 0.5) * spread
+    return int(nx * w), int(ny * h)
 
 
 def generate_skeleton_video(input_path: str, out_path: str) -> None:
@@ -73,10 +75,12 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
         cap.release()
         raise RuntimeError(f"Cannot create output video: {out_path}")
 
-    # White skeleton, very thin lines: draw at 2x then downscale
-    SKELETON_COLOR = (255, 255, 255)  # white (BGR)
+    SKELETON_WHITE = (255, 255, 255)  # BGR white only
+    skeleton_pose_spread = 0.76
     scale = 2
     w2, h2 = w * scale, h * scale
+    line_thick = 2
+    joint_radius = 2
 
     frame_idx = 0
     with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
@@ -95,16 +99,16 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
                     la, lb = lms[a], lms[b]
                     if la.visibility < 0.5 or lb.visibility < 0.5:
                         continue
-                    xa, ya = _lm_to_px(la, w2, h2)
-                    xb, yb = _lm_to_px(lb, w2, h2)
-                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_COLOR, 1, cv2.LINE_4)
+                    xa, ya = _lm_to_px_spread(la, w2, h2, skeleton_pose_spread)
+                    xb, yb = _lm_to_px_spread(lb, w2, h2, skeleton_pose_spread)
+                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_WHITE, line_thick, cv2.LINE_8)
                 for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
                     if lm.visibility < 0.5:
                         continue
-                    x, y = _lm_to_px(lm, w2, h2)
-                    cv2.circle(frame2, (x, y), 2, SKELETON_COLOR, -1)
-                frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_AREA)
+                    x, y = _lm_to_px_spread(lm, w2, h2, skeleton_pose_spread)
+                    cv2.circle(frame2, (x, y), joint_radius, SKELETON_WHITE, -1)
+                frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_LINEAR)
 
             vw.write(frame)
             frame_idx += 1

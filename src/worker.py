@@ -470,7 +470,7 @@ def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
         "-level",
         "3.0",
         "-x264-params",
-        "bframes=0:ref=1:cabac=0:keyint=48:min-keyint=48:scenecut=0",
+        "bframes=0:ref=1:cabac=0:keyint=48:min-keyint=48:scenecut=0:colorprim=bt709:transfer=bt709:colormatrix=bt709",
         "-preset",
         "veryfast",
         "-crf",
@@ -489,6 +489,12 @@ def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
         "+faststart",
         "-vsync",
         "cfr",
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
         "-c:a",
         "aac",
         "-b:a",
@@ -563,6 +569,13 @@ def _lm_to_px(lm, w: int, h: int) -> Tuple[int, int]:
     return int(lm.x * w), int(lm.y * h)
 
 
+def _lm_to_px_spread(lm, w: int, h: int, spread: float) -> Tuple[int, int]:
+    """Landmarks scaled toward frame center so overlay is smaller on screen (same idea as dots)."""
+    nx = 0.5 + (float(lm.x) - 0.5) * spread
+    ny = 0.5 + (float(lm.y) - 0.5) * spread
+    return int(nx * w), int(ny * h)
+
+
 def _frame_for_pose(frame: np.ndarray, max_width: int = 640) -> np.ndarray:
     """
     Downscale frame for MediaPipe inference to reduce CPU cost.
@@ -590,7 +603,9 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
     # bright and visible on black; AREA averaging was shrinking/dimming tiny dots.
     scale = 2
     w2, h2 = w * scale, h * scale
-    dot_radius = 5  # at 2x canvas → ~2–3px effective after half-scale, clearly visible
+    # Shrink pose toward frame center so the figure does not dominate the frame (was "too big").
+    dots_pose_spread = 0.76  # 1.0 = full landmark span; lower = smaller on canvas
+    dot_radius = 4  # at 2x canvas; keep visible but not oversized
     dot_glow = (220, 220, 220)  # subtle halo for contrast on very dark backgrounds
     dot_core = (255, 255, 255)
 
@@ -615,7 +630,9 @@ def generate_dots_video(input_path: str, out_path: str) -> None:
 
             if last_landmarks:
                 for lm in last_landmarks:
-                    cx, cy = int(lm.x * w2), int(lm.y * h2)
+                    nx = 0.5 + (lm.x - 0.5) * dots_pose_spread
+                    ny = 0.5 + (lm.y - 0.5) * dots_pose_spread
+                    cx, cy = int(nx * w2), int(ny * h2)
                     if 0 <= cx < w2 and 0 <= cy < h2:
                         cv2.circle(output, (cx, cy), dot_radius + 1, dot_glow, -1)
                         cv2.circle(output, (cx, cy), dot_radius, dot_core, -1)
@@ -635,12 +652,13 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    # White only: draw at 2x with thick strokes, then scale down (INTER_LINEAR keeps edges cleaner than AREA).
-    SKELETON_WHITE = (255, 255, 255)
+    # White only (BGR). Thinner strokes + shrink toward center so overlay is not oversized.
+    SKELETON_WHITE = (255, 255, 255)  # BGR: blue=255, green=255, red=255 — not (0,255,0) green
+    skeleton_pose_spread = 0.76
     scale = 2
     w2, h2 = w * scale, h * scale
-    line_thick = 4  # at 2x → ~2px effective after half-scale; all BGR white
-    joint_radius = 4
+    line_thick = 2
+    joint_radius = 2
 
     # Process fewer frames for pose inference and reuse latest landmarks.
     process_every_n = 2 if fps >= 20 else 1
@@ -669,15 +687,15 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
                     la, lb = lms[a], lms[b]
                     if la.visibility < 0.5 or lb.visibility < 0.5:
                         continue
-                    xa, ya = _lm_to_px(la, w2, h2)
-                    xb, yb = _lm_to_px(lb, w2, h2)
-                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_WHITE, line_thick, cv2.LINE_AA)
+                    xa, ya = _lm_to_px_spread(la, w2, h2, skeleton_pose_spread)
+                    xb, yb = _lm_to_px_spread(lb, w2, h2, skeleton_pose_spread)
+                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_WHITE, line_thick, cv2.LINE_8)
 
                 for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
                     if lm.visibility < 0.5:
                         continue
-                    x, y = _lm_to_px(lm, w2, h2)
+                    x, y = _lm_to_px_spread(lm, w2, h2, skeleton_pose_spread)
                     cv2.circle(frame2, (x, y), joint_radius, SKELETON_WHITE, -1)
 
                 frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_LINEAR)
