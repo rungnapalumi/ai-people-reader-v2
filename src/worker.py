@@ -1057,8 +1057,15 @@ def main_loop(poll_seconds: int = 3) -> None:
                     pending_job = None
                     break
             if pending_job is None:
-                logging.info("Skip pending key %s while peeking mode: %s", pending_key, last_peek_err)
-                continue
+                # Do not walk the rest of this snapshot — keys may be stale (race) or dots already
+                # claimed by another worker. Next while iteration calls list_pending() again.
+                logging.warning(
+                    "Peek failed for %s (%s). Dropping stale queue snapshot; will re-list. "
+                    "If you run multiple video workers, dots often appears only on the other instance's logs.",
+                    pending_key,
+                    last_peek_err,
+                )
+                break
 
             pending_mode = (pending_job.get("mode") or "").strip().lower()
             if pending_mode in ("report", "report_th_en", "report_generator"):
