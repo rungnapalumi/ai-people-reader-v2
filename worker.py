@@ -1,46 +1,37 @@
 import os
-import io
-
-from dotenv import load_dotenv
-load_dotenv()
 import json
 import time
-import math
-import tempfile
 import logging
 import shutil
 import subprocess
-from dataclasses import dataclass
-from typing import Dict, Any, Optional, List, Tuple
+import tempfile
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
-
-# Heavy libs
 import cv2
 import numpy as np
+from dotenv import load_dotenv
+
+load_dotenv()
+
 try:
-    # Try new MediaPipe API first (0.10.8+)
-    from mediapipe.python.solutions import pose as mp_pose_module
     from mediapipe.python.solutions.pose import Pose, PoseLandmark
 except ImportError:
-    # Fall back to old API
     import mediapipe as mp
-    mp_pose_module = mp.solutions.pose
-    Pose = mp_pose_module.Pose
-    PoseLandmark = mp_pose_module.PoseLandmark
 
-from docx import Document
-from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+    Pose = mp.solutions.pose.Pose
+    PoseLandmark = mp.solutions.pose.PoseLandmark
 
-
+# -----------------------------
+# CONFIG
+# -----------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 
 if not AWS_BUCKET:
-    raise RuntimeError("Missing AWS_BUCKET (or S3_BUCKET)")
+    raise RuntimeError("Missing AWS_BUCKET")
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 
@@ -49,304 +40,11 @@ PROCESSING = "jobs/processing/"
 FINISHED = "jobs/finished/"
 FAILED = "jobs/failed/"
 
+REPORT_MODES = frozenset(
+    {"report", "report_th_en", "report_generator", "report_bundle"}
+)
 
-# -----------------------------
-# S3 helpers
-# -----------------------------
-def s3_read_json(key: str) -> Dict[str, Any]:
-    obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
-    raw = obj["Body"].read().decode("utf-8")
-    return json.loads(raw)
-
-
-def s3_write_json(key: str, payload: Dict[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    s3.put_object(
-        Bucket=AWS_BUCKET,
-        Key=key,
-        Body=body,
-        ContentType="application/json; charset=utf-8",
-    )
-
-
-def s3_download_to_file(key: str, path: str) -> None:
-    s3.download_file(AWS_BUCKET, key, path)
-
-
-def s3_upload_file(path: str, key: str, content_type: str) -> None:
-    s3.upload_file(path, AWS_BUCKET, key, ExtraArgs={"ContentType": content_type})
-
-
-def s3_put_bytes(key: str, data: bytes, content_type: str) -> None:
-    s3.put_object(Bucket=AWS_BUCKET, Key=key, Body=data, ContentType=content_type)
-
-
-def list_pending(limit: int = 200) -> List[str]:
-    """
-    List more pending keys to avoid starvation when queue is crowded with
-    report jobs (handled by report_worker). This worker then picks non-report
-    jobs like skeleton/dots from the same pending queue.
-    """
-    keys: List[str] = []
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PENDING):
-        for item in page.get("Contents", []):
-            key = str(item.get("Key") or "")
-            if key.endswith(".json"):
-                keys.append(key)
-                if len(keys) >= limit:
-                    return keys
-    return keys
-
-
-def claim_job(pending_key: str) -> Optional[str]:
-    """
-    Atomic-ish claim: copy pending -> processing then delete pending.
-    If copy/delete fails (race), return None.
-    """
-    name = pending_key.split("/")[-1]
-    processing_key = PROCESSING + name
-    try:
-        s3.copy_object(
-            Bucket=AWS_BUCKET,
-            CopySource={"Bucket": AWS_BUCKET, "Key": pending_key},
-            Key=processing_key,
-            ContentType="application/json; charset=utf-8",
-            MetadataDirective="REPLACE",
-        )
-        s3.delete_object(Bucket=AWS_BUCKET, Key=pending_key)
-        return processing_key
-    except Exception:
-        return None
-
-
-def move_job(current_key: str, dest_prefix: str) -> str:
-    name = current_key.split("/")[-1]
-    dest_key = dest_prefix + name
-    s3.copy_object(
-        Bucket=AWS_BUCKET,
-        CopySource={"Bucket": AWS_BUCKET, "Key": current_key},
-        Key=dest_key,
-        ContentType="application/json; charset=utf-8",
-        MetadataDirective="REPLACE",
-    )
-    s3.delete_object(Bucket=AWS_BUCKET, Key=current_key)
-    return dest_key
-
-
-# -----------------------------
-# Video processing
-# -----------------------------
-def open_video(path: str) -> cv2.VideoCapture:
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        raise RuntimeError("Cannot open video")
-    return cap
-
-
-def write_mp4(out_path: str, fps: float, w: int, h: int) -> cv2.VideoWriter:
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    vw = cv2.VideoWriter(out_path, fourcc, fps if fps > 0 else 25.0, (w, h))
-    if not vw.isOpened():
-        raise RuntimeError("Cannot open VideoWriter (mp4v)")
-    return vw
-
-
-def validate_video_file(path: str) -> None:
-    """Fail fast if output video is empty/corrupt before upload."""
-    if not os.path.exists(path):
-        raise RuntimeError(f"Output video file does not exist: {path}")
-    size = os.path.getsize(path)
-    if size <= 0:
-        raise RuntimeError(f"Output video file is empty: {path}")
-
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open output video: {path}")
-    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-    duration = (frames / fps) if fps > 0 else 0.0
-    cap.release()
-    if frames <= 0:
-        raise RuntimeError(f"Output video has no frames: {path}")
-    if fps <= 0:
-        raise RuntimeError(f"Output video has invalid fps: {path}")
-    if duration <= 0.2:
-        raise RuntimeError(f"Output video duration too short ({duration:.3f}s): {path}")
-
-
-def _run_ffmpeg_transcode(cmd: List[str]) -> None:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg transcode failed: {proc.stderr[-400:]}")
-
-
-def transcode_dots_mp4(input_path: str, output_path: str) -> None:
-    """Ultra-compatible dots profile for browser playback from shared links."""
-    ffmpeg_bin = shutil.which("ffmpeg")
-    if not ffmpeg_bin:
-        raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
-
-    cmd = [
-        ffmpeg_bin,
-        "-y",
-        "-i",
-        input_path,
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=channel_layout=stereo:sample_rate=48000",
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-vf",
-        (
-            "scale='if(gt(iw,854),854,iw)':'if(gt(ih,480),480,ih)':"
-            "force_original_aspect_ratio=decrease,"
-            "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
-            "fps=24,format=yuv420p"
-        ),
-        "-c:v",
-        "libx264",
-        "-profile:v",
-        "baseline",
-        "-level",
-        "3.0",
-        "-x264-params",
-        "bframes=0:ref=1:cabac=0:keyint=48:min-keyint=48:scenecut=0",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "28",
-        "-maxrate",
-        "1200k",
-        "-bufsize",
-        "2400k",
-        "-g",
-        "48",
-        "-keyint_min",
-        "48",
-        "-sc_threshold",
-        "0",
-        "-movflags",
-        "+faststart",
-        "-vsync",
-        "cfr",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "-shortest",
-        "-r",
-        "24",
-        output_path,
-    ]
-    _run_ffmpeg_transcode(cmd)
-    validate_video_file(output_path)
-
-
-def transcode_skeleton_mp4(input_path: str, output_path: str) -> None:
-    """Ultra-compatible skeleton profile for browser playback from links."""
-    ffmpeg_bin = shutil.which("ffmpeg")
-    if not ffmpeg_bin:
-        raise RuntimeError("ffmpeg not found. Install ffmpeg to enable browser-compatible MP4 output.")
-
-    cmd = [
-        ffmpeg_bin,
-        "-y",
-        "-i",
-        input_path,
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=channel_layout=stereo:sample_rate=48000",
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-vf",
-        (
-            "scale='if(gt(iw,854),854,iw)':'if(gt(ih,480),480,ih)':"
-            "force_original_aspect_ratio=decrease,"
-            "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
-            "fps=24,format=yuv420p"
-        ),
-        "-c:v",
-        "libx264",
-        "-profile:v",
-        "baseline",
-        "-level",
-        "3.0",
-        "-x264-params",
-        "bframes=0:ref=1:cabac=0:keyint=48:min-keyint=48:scenecut=0:colorprim=bt709:transfer=bt709:colormatrix=bt709",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "28",
-        "-maxrate",
-        "1200k",
-        "-bufsize",
-        "2400k",
-        "-g",
-        "48",
-        "-keyint_min",
-        "48",
-        "-sc_threshold",
-        "0",
-        "-movflags",
-        "+faststart",
-        "-vsync",
-        "cfr",
-        "-colorspace",
-        "bt709",
-        "-color_primaries",
-        "bt709",
-        "-color_trc",
-        "bt709",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "-shortest",
-        "-r",
-        "24",
-        output_path,
-    ]
-    _run_ffmpeg_transcode(cmd)
-    validate_video_file(output_path)
-
-
-# -----------------------------
-# Dots / Skeleton overlay (simple, stable)
-# -----------------------------
-POSE_LANDMARK_IDS = [
-    PoseLandmark.NOSE,
-    PoseLandmark.LEFT_EYE,
-    PoseLandmark.RIGHT_EYE,
-    PoseLandmark.LEFT_SHOULDER,
-    PoseLandmark.RIGHT_SHOULDER,
-    PoseLandmark.LEFT_ELBOW,
-    PoseLandmark.RIGHT_ELBOW,
-    PoseLandmark.LEFT_WRIST,
-    PoseLandmark.RIGHT_WRIST,
-    PoseLandmark.LEFT_HIP,
-    PoseLandmark.RIGHT_HIP,
-    PoseLandmark.LEFT_KNEE,
-    PoseLandmark.RIGHT_KNEE,
-    PoseLandmark.LEFT_ANKLE,
-    PoseLandmark.RIGHT_ANKLE,
-]
-
-# Skeleton joints: body only, exclude face (nose, eyes)
+# Body skeleton only (no face)
 SKELETON_JOINT_IDS = [
     PoseLandmark.LEFT_SHOULDER,
     PoseLandmark.RIGHT_SHOULDER,
@@ -378,8 +76,167 @@ SKELETON_EDGES = [
 ]
 
 
-def _lm_to_px(lm, w: int, h: int) -> Tuple[int, int]:
-    return int(lm.x * w), int(lm.y * h)
+# -----------------------------
+# HELPERS
+# -----------------------------
+def retry(func, retries=2, delay=1.0):
+    for i in range(retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            if i == retries:
+                raise
+            logging.warning("Retry %s failed: %s", i + 1, e)
+            time.sleep(delay)
+
+
+def s3_object_exists(key: str) -> bool:
+    try:
+        s3.head_object(Bucket=AWS_BUCKET, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def s3_read_json(key: str) -> Dict[str, Any]:
+    obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
+    return json.loads(obj["Body"].read().decode("utf-8"))
+
+
+def s3_write_json(key: str, payload: Dict[str, Any]) -> None:
+    s3.put_object(
+        Bucket=AWS_BUCKET,
+        Key=key,
+        Body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        ContentType="application/json; charset=utf-8",
+    )
+
+
+def s3_upload_file(path: str, key: str, content_type: str) -> None:
+    s3.upload_file(path, AWS_BUCKET, key, ExtraArgs={"ContentType": content_type})
+
+
+def list_pending(limit: int = 200) -> List[str]:
+    """
+    Pending video jobs: dots first, then skeleton. Report jobs omitted (report_worker).
+    """
+    keys: List[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PENDING):
+        for item in page.get("Contents", []):
+            k = str(item.get("Key") or "")
+            if k.endswith(".json"):
+                keys.append(k)
+                if len(keys) >= limit:
+                    break
+        if len(keys) >= limit:
+            break
+
+    dots_keys: List[str] = []
+    other_keys: List[str] = []
+    for k in keys:
+        try:
+            job = s3_read_json(k)
+            mode = str(job.get("mode") or "").strip().lower()
+            if mode in REPORT_MODES:
+                continue
+            if mode == "dots":
+                dots_keys.append(k)
+            else:
+                other_keys.append(k)
+        except Exception:
+            other_keys.append(k)
+
+    return dots_keys + other_keys
+
+
+def claim_job(pending_key: str) -> Optional[str]:
+    name = pending_key.split("/")[-1]
+    new_key = PROCESSING + name
+    try:
+        s3.copy_object(
+            Bucket=AWS_BUCKET,
+            CopySource={"Bucket": AWS_BUCKET, "Key": pending_key},
+            Key=new_key,
+            ContentType="application/json; charset=utf-8",
+            MetadataDirective="REPLACE",
+        )
+        s3.delete_object(Bucket=AWS_BUCKET, Key=pending_key)
+        return new_key
+    except Exception:
+        return None
+
+
+def move_job(key: str, prefix: str) -> str:
+    name = key.split("/")[-1]
+    new_key = prefix + name
+    s3.copy_object(
+        Bucket=AWS_BUCKET,
+        CopySource={"Bucket": AWS_BUCKET, "Key": key},
+        Key=new_key,
+        ContentType="application/json; charset=utf-8",
+        MetadataDirective="REPLACE",
+    )
+    s3.delete_object(Bucket=AWS_BUCKET, Key=key)
+    return new_key
+
+
+def open_video(path: str) -> cv2.VideoCapture:
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise RuntimeError("Cannot open video")
+    return cap
+
+
+def write_mp4(path: str, fps: float, w: int, h: int) -> cv2.VideoWriter:
+    vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps or 25.0, (w, h))
+    if not vw.isOpened():
+        raise RuntimeError("VideoWriter failed")
+    return vw
+
+
+def validate_video_file(path: str) -> None:
+    if not os.path.exists(path) or os.path.getsize(path) <= 0:
+        raise RuntimeError("Invalid output video")
+    cap = cv2.VideoCapture(path)
+    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+    cap.release()
+    if frames <= 0 or fps <= 0:
+        raise RuntimeError("Output video has no valid frames/fps")
+
+
+def run_ffmpeg(cmd: List[str]) -> None:
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or "")[-500:])
+
+
+def transcode(input_path: str, output_path: str) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        input_path,
+        "-vf",
+        "scale='if(gt(iw,854),854,iw)':'if(gt(ih,480),480,ih)':force_original_aspect_ratio=decrease,"
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=24,format=yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "28",
+        "-movflags",
+        "+faststart",
+        "-an",
+        output_path,
+    ]
+    run_ffmpeg(cmd)
+    validate_video_file(output_path)
 
 
 def _lm_to_px_spread(lm, w: int, h: int, spread: float) -> Tuple[int, int]:
@@ -389,44 +246,34 @@ def _lm_to_px_spread(lm, w: int, h: int, spread: float) -> Tuple[int, int]:
 
 
 def generate_dots_video(input_path: str, out_path: str) -> None:
-    """Generate dot motion video with bright white dots on black background (all landmarks)."""
     cap = open_video(input_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
     vw = write_mp4(out_path, fps, w, h)
 
-    # Draw at 2x then downscale. Larger radius + LINEAR downscale (not AREA) so dots stay bright.
     scale = 2
     w2, h2 = w * scale, h * scale
-    dots_pose_spread = 0.76  # shrink figure toward frame center (smaller on screen)
+    dots_pose_spread = 0.76
     dot_radius = 4
-    dot_glow = (220, 220, 220)
-    dot_core = (255, 255, 255)
+    glow = (220, 220, 220)
+    core = (255, 255, 255)
 
     with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
-
-            output = np.zeros((h2, w2, 3), dtype=np.uint8)
-
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(rgb)
-
+            canvas = np.zeros((h2, w2, 3), dtype=np.uint8)
+            res = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             if res.pose_landmarks:
                 for lm in res.pose_landmarks.landmark:
-                    nx = 0.5 + (lm.x - 0.5) * dots_pose_spread
-                    ny = 0.5 + (lm.y - 0.5) * dots_pose_spread
-                    cx, cy = int(nx * w2), int(ny * h2)
+                    cx, cy = _lm_to_px_spread(lm, w2, h2, dots_pose_spread)
                     if 0 <= cx < w2 and 0 <= cy < h2:
-                        cv2.circle(output, (cx, cy), dot_radius + 1, dot_glow, -1)
-                        cv2.circle(output, (cx, cy), dot_radius, dot_core, -1)
-
-            output = cv2.resize(output, (w, h), interpolation=cv2.INTER_LINEAR)
-            vw.write(output)
+                        cv2.circle(canvas, (cx, cy), dot_radius + 1, glow, -1)
+                        cv2.circle(canvas, (cx, cy), dot_radius, core, -1)
+            out = cv2.resize(canvas, (w, h), interpolation=cv2.INTER_LINEAR)
+            vw.write(out)
 
     vw.release()
     cap.release()
@@ -437,374 +284,117 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
     vw = write_mp4(out_path, fps, w, h)
 
-    SKELETON_WHITE = (255, 255, 255)  # BGR white only — not green (0,255,0)
-    skeleton_pose_spread = 0.76
+    white = (255, 255, 255)
+    sk_spread = 0.76
     scale = 2
     w2, h2 = w * scale, h * scale
     line_thick = 2
-    joint_radius = 2
+    joint_r = 2
 
     with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
-
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(rgb)
-
+            res = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             if res.pose_landmarks:
                 lms = res.pose_landmarks.landmark
-
                 frame2 = cv2.resize(frame, (w2, h2), interpolation=cv2.INTER_LINEAR)
-
                 for a, b in SKELETON_EDGES:
                     la, lb = lms[a], lms[b]
                     if la.visibility < 0.5 or lb.visibility < 0.5:
                         continue
-                    xa, ya = _lm_to_px_spread(la, w2, h2, skeleton_pose_spread)
-                    xb, yb = _lm_to_px_spread(lb, w2, h2, skeleton_pose_spread)
-                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_WHITE, line_thick, cv2.LINE_8)
-
+                    xa, ya = _lm_to_px_spread(la, w2, h2, sk_spread)
+                    xb, yb = _lm_to_px_spread(lb, w2, h2, sk_spread)
+                    cv2.line(frame2, (xa, ya), (xb, yb), white, line_thick, cv2.LINE_8)
                 for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
                     if lm.visibility < 0.5:
                         continue
-                    x, y = _lm_to_px_spread(lm, w2, h2, skeleton_pose_spread)
-                    cv2.circle(frame2, (x, y), joint_radius, SKELETON_WHITE, -1)
-
+                    x, y = _lm_to_px_spread(lm, w2, h2, sk_spread)
+                    cv2.circle(frame2, (x, y), joint_r, white, -1)
                 frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_LINEAR)
-
             vw.write(frame)
 
     vw.release()
     cap.release()
 
 
-# -----------------------------
-# First Impression (REAL from video via MediaPipe Pose)
-# -----------------------------
-@dataclass
-class FirstImpressionResult:
-    eye_contact_pct: float
-    upright_pct: float
-    stance_stability: float
-    notes: Dict[str, str]
-
-
-def analyze_first_impression(input_path: str, sample_every_n: int = 3, max_frames: int = 300) -> FirstImpressionResult:
-    """
-    Simple + stable:
-    - Eye Contact proxy: nose centered between eyes & eyes visible
-    - Uprightness: torso vector close to vertical
-    - Stance stability: ankles distance variance (lower variance = more stable)
-    """
-    cap = open_video(input_path)
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    total = 0
-    eye_ok = 0
-    upright_ok = 0
-    ankle_dist: List[float] = []
-
-    with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
-        i = 0
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            i += 1
-            if i % sample_every_n != 0:
-                continue
-
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(rgb)
-            if not res.pose_landmarks:
-                continue
-
-            lms = res.pose_landmarks.landmark
-            nose = lms[PoseLandmark.NOSE]
-            leye = lms[PoseLandmark.LEFT_EYE]
-            reye = lms[PoseLandmark.RIGHT_EYE]
-            lsh = lms[PoseLandmark.LEFT_SHOULDER]
-            rsh = lms[PoseLandmark.RIGHT_SHOULDER]
-            lhip = lms[PoseLandmark.LEFT_HIP]
-            rhip = lms[PoseLandmark.RIGHT_HIP]
-            lank = lms[PoseLandmark.LEFT_ANKLE]
-            rank = lms[PoseLandmark.RIGHT_ANKLE]
-
-            # count only if main landmarks are visible enough
-            if min(nose.visibility, leye.visibility, reye.visibility, lsh.visibility, rsh.visibility, lhip.visibility, rhip.visibility) < 0.5:
-                continue
-
-            total += 1
-
-            # Eye contact proxy: nose x between eye x
-            minx = min(leye.x, reye.x)
-            maxx = max(leye.x, reye.x)
-            if (minx <= nose.x <= maxx):
-                eye_ok += 1
-
-            # Uprightness: torso vector midHip->midShoulder angle to vertical
-            mid_sh = np.array([(lsh.x + rsh.x) / 2.0, (lsh.y + rsh.y) / 2.0])
-            mid_hip = np.array([(lhip.x + rhip.x) / 2.0, (lhip.y + rhip.y) / 2.0])
-            v = mid_sh - mid_hip  # up direction (y smaller is up in image coords, but angle works)
-            # angle to vertical axis (0, -1) in image space
-            vert = np.array([0.0, -1.0])
-            v_norm = np.linalg.norm(v) + 1e-9
-            cosang = float(np.dot(v / v_norm, vert))
-            ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
-            if ang <= 15.0:
-                upright_ok += 1
-
-            # stance: ankle distance (normalized)
-            if min(lank.visibility, rank.visibility) >= 0.5:
-                dx = (lank.x - rank.x)
-                dy = (lank.y - rank.y)
-                ankle_dist.append(math.sqrt(dx*dx + dy*dy))
-
-            if total >= max_frames:
-                break
-
-    cap.release()
-
-    if total == 0:
-        return FirstImpressionResult(
-            eye_contact_pct=0.0,
-            upright_pct=0.0,
-            stance_stability=0.0,
-            notes={"error": "insufficient_pose_frames"},
-        )
-
-    eye_pct = 100.0 * (eye_ok / total)
-    upright_pct = 100.0 * (upright_ok / total)
-
-    if len(ankle_dist) >= 10:
-        std = float(np.std(np.array(ankle_dist)))
-        # convert std to stability score (0..100) : lower std => higher score
-        stability = max(0.0, min(100.0, 100.0 * (1.0 - (std / 0.20))))  # heuristic
-    else:
-        stability = 0.0
-
-    notes = {}
-    return FirstImpressionResult(
-        eye_contact_pct=eye_pct,
-        upright_pct=upright_pct,
-        stance_stability=stability,
-        notes=notes,
-    )
-
-
-# -----------------------------
-# DOCX reports (EN/TH)
-# -----------------------------
-def _add_title(doc: Document, text: str) -> None:
-    p = doc.add_paragraph()
-    run = p.add_run(text)
-    run.bold = True
-    run.font.size = Pt(16)
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-
-def _add_h2(doc: Document, text: str) -> None:
-    p = doc.add_paragraph()
-    run = p.add_run(text)
-    run.bold = True
-    run.font.size = Pt(13)
-
-
-def _fmt_band(pct: float) -> str:
-    if pct >= 70:
-        return "Strong"
-    if pct >= 40:
-        return "Moderate"
-    return "Needs improvement"
-
-
-def _fmt_band_th(pct: float) -> str:
-    if pct >= 70:
-        return "ดีมาก"
-    if pct >= 40:
-        return "ปานกลาง"
-    return "ควรพัฒนา"
-
-
-def build_report_en(fi: FirstImpressionResult, meta: Dict[str, Any]) -> bytes:
-    doc = Document()
-    _add_title(doc, "AI People Reader — Report (EN)")
-
-    doc.add_paragraph(f"Group: {meta.get('group_id','')}")
-    doc.add_paragraph(f"User: {meta.get('user_name','')}")
-    doc.add_paragraph(" ")
-
-    _add_h2(doc, "First Impression (from uploaded video)")
-    doc.add_paragraph(f"Eye Contact: {fi.eye_contact_pct:.1f}%  — {_fmt_band(fi.eye_contact_pct)}")
-    doc.add_paragraph(f"Uprightness (Posture & Upper-Body Alignment): {fi.upright_pct:.1f}%  — {_fmt_band(fi.upright_pct)}")
-    doc.add_paragraph(f"Stance (Lower-Body Stability & Grounding): {fi.stance_stability:.1f}/100  — {_fmt_band(fi.stance_stability)}")
-
-    if fi.notes:
-        _add_h2(doc, "Notes")
-        for k, v in fi.notes.items():
-            doc.add_paragraph(f"- {k}: {v}")
-
-    bio = io.BytesIO()
-    doc.save(bio)
-    return bio.getvalue()
-
-
-def build_report_th(fi: FirstImpressionResult, meta: Dict[str, Any]) -> bytes:
-    doc = Document()
-    _add_title(doc, "AI People Reader — รายงาน (TH)")
-
-    doc.add_paragraph(f"Group: {meta.get('group_id','')}")
-    doc.add_paragraph(f"ผู้ใช้: {meta.get('user_name','')}")
-    doc.add_paragraph(" ")
-
-    _add_h2(doc, "First Impression (วิเคราะห์จากวิดีโอจริงที่อัปโหลด)")
-    doc.add_paragraph(f"Eye Contact: {fi.eye_contact_pct:.1f}%  — {_fmt_band_th(fi.eye_contact_pct)}")
-    doc.add_paragraph(f"Uprightness (แนวลำตัว/การวางช่วงบน): {fi.upright_pct:.1f}%  — {_fmt_band_th(fi.upright_pct)}")
-    doc.add_paragraph(f"Stance (ความมั่นคงช่วงล่าง/การยืน): {fi.stance_stability:.1f}/100  — {_fmt_band_th(fi.stance_stability)}")
-
-    if fi.notes:
-        _add_h2(doc, "หมายเหตุ")
-        for k, v in fi.notes.items():
-            doc.add_paragraph(f"- {k}: {v}")
-
-    bio = io.BytesIO()
-    doc.save(bio)
-    return bio.getvalue()
-
-
-# -----------------------------
-# Job processor
-# -----------------------------
 def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
-    mode = (job.get("mode") or "").strip()
-    group_id = job.get("group_id", "")
-    user_name = job.get("user_name", "")
-    input_key = job.get("input_key", "")
-
-    if not input_key:
-        raise RuntimeError("Missing input_key")
+    mode = str(job.get("mode") or "").strip()
+    input_key = job["input_key"]
 
     with tempfile.TemporaryDirectory() as td:
         in_path = os.path.join(td, "input.mp4")
-        s3_download_to_file(input_key, in_path)
+        s3.download_file(AWS_BUCKET, input_key, in_path)
 
         if mode == "dots":
-            out_key = job["output_key"]
-            raw_path = os.path.join(td, "dots_raw.mp4")
-            out_path = os.path.join(td, "dots.mp4")
-            generate_dots_video(in_path, raw_path)
-            validate_video_file(raw_path)
-            transcode_dots_mp4(raw_path, out_path)
-            s3_upload_file(out_path, out_key, "video/mp4")
-            return {"ok": True, "mode": "dots", "output_key": out_key}
+            raw = os.path.join(td, "raw.mp4")
+            out = os.path.join(td, "out.mp4")
+            logging.info("DOTS start job_id=%s", job.get("job_id"))
+            generate_dots_video(in_path, raw)
+            validate_video_file(raw)
+            retry(lambda: transcode(raw, out))
+            retry(lambda: s3_upload_file(out, job["output_key"], "video/mp4"))
+            if not s3_object_exists(job["output_key"]):
+                raise RuntimeError("Upload failed")
+            return {"ok": True, "mode": "dots"}
 
         if mode == "skeleton":
-            out_key = job["output_key"]
-            raw_path = os.path.join(td, "skeleton_raw.mp4")
-            out_path = os.path.join(td, "skeleton.mp4")
-            generate_skeleton_video(in_path, raw_path)
-            validate_video_file(raw_path)
-            transcode_skeleton_mp4(raw_path, out_path)
-            s3_upload_file(out_path, out_key, "video/mp4")
-            return {"ok": True, "mode": "skeleton", "output_key": out_key}
-
-        if mode == "report_bundle":
-            out_en_key = job["output_en_key"]
-            out_th_key = job["output_th_key"]
-            debug_key = job.get("output_debug_key", "")
-
-            logging.info("Report bundle: EN=%s TH=%s", out_en_key, out_th_key)
-
-            fi = analyze_first_impression(in_path)
-
-            logging.info("First impression: eye_contact=%.1f%% upright=%.1f%% stance=%.1f", 
-                        fi.eye_contact_pct, fi.upright_pct, fi.stance_stability)
-
-            meta = {"group_id": group_id, "user_name": user_name}
-            en_bytes = build_report_en(fi, meta)
-            th_bytes = build_report_th(fi, meta)
-
-            logging.info("Built reports: EN=%d bytes TH=%d bytes", len(en_bytes), len(th_bytes))
-
-            s3_put_bytes(out_en_key, en_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            s3_put_bytes(out_th_key, th_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
-            logging.info("Uploaded reports to S3")
-
-            if debug_key:
-                dbg = {
-                    "group_id": group_id,
-                    "user_name": user_name,
-                    "first_impression": {
-                        "eye_contact_pct": fi.eye_contact_pct,
-                        "upright_pct": fi.upright_pct,
-                        "stance_stability": fi.stance_stability,
-                        "notes": fi.notes,
-                    },
-                }
-                s3_put_bytes(debug_key, json.dumps(dbg, ensure_ascii=False, indent=2).encode("utf-8"), "application/json; charset=utf-8")
-
-            return {
-                "ok": True,
-                "mode": "report_bundle",
-                "output_en_key": out_en_key,
-                "output_th_key": out_th_key,
-                "debug_key": debug_key,
-                "first_impression": {
-                    "eye_contact_pct": fi.eye_contact_pct,
-                    "upright_pct": fi.upright_pct,
-                    "stance_stability": fi.stance_stability,
-                    "notes": fi.notes,
-                },
-            }
+            raw = os.path.join(td, "raw.mp4")
+            out = os.path.join(td, "out.mp4")
+            logging.info("SKELETON start job_id=%s", job.get("job_id"))
+            generate_skeleton_video(in_path, raw)
+            validate_video_file(raw)
+            retry(lambda: transcode(raw, out))
+            retry(lambda: s3_upload_file(out, job["output_key"], "video/mp4"))
+            if not s3_object_exists(job["output_key"]):
+                raise RuntimeError("Upload failed")
+            return {"ok": True, "mode": "skeleton"}
 
         raise RuntimeError(f"Unknown mode: {mode}")
 
 
-def main_loop(poll_seconds: int = 3) -> None:
-    logging.info("Worker started. Bucket=%s region=%s", AWS_BUCKET, AWS_REGION)
+def main() -> None:
+    logging.info("Worker started bucket=%s", AWS_BUCKET)
 
     while True:
-        # Scan deeper in pending queue so skeleton/dots are not starved
-        # by many report jobs.
-        keys = list_pending(limit=200)
+        keys = list_pending()
         if not keys:
-            time.sleep(poll_seconds)
+            time.sleep(3)
             continue
 
         for pending_key in keys:
-            # Peek pending job mode first, so this worker does not steal report jobs.
-            # Retry on NoSuchKey: another worker may claim between list_pending and peek.
-            pending_job = None
-            last_peek_err = None
+            pending_job: Optional[Dict[str, Any]] = None
+            last_err: Optional[Exception] = None
             for attempt in range(4):
                 try:
                     pending_job = s3_read_json(pending_key)
-                    last_peek_err = None
+                    last_err = None
                     break
                 except Exception as e:
-                    last_peek_err = e
+                    last_err = e
                     err_s = str(e).lower()
-                    transient = "nosuchkey" in err_s or "404" in err_s or "does not exist" in err_s
-                    if transient and attempt < 3:
+                    if attempt < 3 and (
+                        "nosuchkey" in err_s or "404" in err_s or "does not exist" in err_s
+                    ):
                         time.sleep(0.35)
                         continue
                     pending_job = None
                     break
-            if pending_job is None:
-                logging.info("Skip pending key %s while peeking mode: %s", pending_key, last_peek_err)
-                continue
 
-            pending_mode = (pending_job.get("mode") or "").strip().lower()
-            if pending_mode in ("report", "report_th_en", "report_generator"):
-                logging.info("Skipping pending report job %s mode=%s (reserved for report_worker)", pending_job.get("job_id"), pending_mode)
+            if pending_job is None:
+                logging.warning(
+                    "Peek failed %s (%s). Re-listing queue (another worker may have claimed dots).",
+                    pending_key,
+                    last_err,
+                )
+                break
+
+            mode = str(pending_job.get("mode") or "").strip().lower()
+            if mode in REPORT_MODES:
                 continue
 
             processing_key = claim_job(pending_key)
@@ -813,29 +403,17 @@ def main_loop(poll_seconds: int = 3) -> None:
 
             try:
                 job = s3_read_json(processing_key)
-                mode = (job.get("mode") or "").strip()
-                
-                # Extra safety: keep report jobs for report_worker if one slips through.
-                if mode in ("report", "report_th_en", "report_generator"):
-                    logging.info("Skipping report mode job %s (handled by report_worker), moving back to pending", job.get("job_id"))
-                    move_job(processing_key, PENDING)
-                    continue
-                
-                job["status"] = "processing"
-                s3_write_json(processing_key, job)
+                jid = job.get("job_id")
+                gid = job.get("group_id")
+                jmode = str(job.get("mode") or "").strip()
+                logging.info("Processing job_id=%s group_id=%s mode=%s", jid, gid, jmode)
 
-                logging.info("Processing job %s mode=%s", job.get("job_id"), mode)
                 result = process_job(job)
-
                 job["status"] = "finished"
                 job["result"] = result
                 s3_write_json(processing_key, job)
                 move_job(processing_key, FINISHED)
-
-                logging.info("Finished job %s", job.get("job_id"))
-                # One job per poll: re-list pending next loop (avoids stale snapshot + clearer logs).
-                break
-
+                logging.info("Finished job_id=%s mode=%s", jid, jmode)
             except Exception as e:
                 logging.exception("Job failed: %s", e)
                 try:
@@ -847,8 +425,10 @@ def main_loop(poll_seconds: int = 3) -> None:
                     pass
                 move_job(processing_key, FAILED)
 
+            break
+
         time.sleep(0.2)
 
 
 if __name__ == "__main__":
-    main_loop()
+    main()
