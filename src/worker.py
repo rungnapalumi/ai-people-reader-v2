@@ -1016,19 +1016,35 @@ def main_loop(poll_seconds: int = 3) -> None:
 
         for pending_key in keys:
             # Peek pending job mode first, so this worker does not steal report jobs.
-            try:
-                pending_job = s3_read_json(pending_key)
-                pending_mode = (pending_job.get("mode") or "").strip().lower()
-                if pending_mode in ("report", "report_th_en", "report_generator"):
-                    logging.info(
-                        "Skipping pending report job job_id=%s group_id=%s mode=%s (reserved for report_worker)",
-                        pending_job.get("job_id"),
-                        pending_job.get("group_id"),
-                        pending_mode,
-                    )
-                    continue
-            except Exception as e:
-                logging.info("Skip pending key %s while peeking mode: %s", pending_key, e)
+            # Retry on NoSuchKey: another worker may claim between list_pending and peek.
+            pending_job = None
+            last_peek_err: Exception | None = None
+            for attempt in range(4):
+                try:
+                    pending_job = s3_read_json(pending_key)
+                    last_peek_err = None
+                    break
+                except Exception as e:
+                    last_peek_err = e
+                    err_s = str(e).lower()
+                    transient = "nosuchkey" in err_s or "404" in err_s or "does not exist" in err_s
+                    if transient and attempt < 3:
+                        time.sleep(0.35)
+                        continue
+                    pending_job = None
+                    break
+            if pending_job is None:
+                logging.info("Skip pending key %s while peeking mode: %s", pending_key, last_peek_err)
+                continue
+
+            pending_mode = (pending_job.get("mode") or "").strip().lower()
+            if pending_mode in ("report", "report_th_en", "report_generator"):
+                logging.info(
+                    "Skipping pending report job job_id=%s group_id=%s mode=%s (reserved for report_worker)",
+                    pending_job.get("job_id"),
+                    pending_job.get("group_id"),
+                    pending_mode,
+                )
                 continue
 
             processing_key = claim_job(pending_key)
@@ -1075,6 +1091,8 @@ def main_loop(poll_seconds: int = 3) -> None:
                     email_sent,
                     email_status,
                 )
+                # One job per poll: re-list pending next loop (avoids stale snapshot + clearer logs).
+                break
 
             except Exception as e:
                 logging.exception(

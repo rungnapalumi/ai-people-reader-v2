@@ -129,6 +129,7 @@ S3_UPLOAD_CONFIG = TransferConfig(
 )
 
 JOBS_PENDING_PREFIX = "jobs/pending/"
+JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
 
@@ -209,6 +210,33 @@ def s3_key_exists(key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def s3_read_json_key(key: str) -> Optional[Dict[str, Any]]:
+    try:
+        raw = s3_get_bytes(key)
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def s3_output_ready(key: str) -> bool:
+    """True if the object exists. Uses HeadObject, then list_objects_v2 exact key (some IAM allows List but not Head)."""
+    k = (key or "").strip()
+    if not k:
+        return False
+    if s3_key_exists(k):
+        return True
+    try:
+        resp = s3.list_objects_v2(Bucket=AWS_BUCKET, Prefix=k, MaxKeys=5)
+        for obj in resp.get("Contents", []):
+            if str(obj.get("Key") or "") == k:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def s3_head_error_message(key: str) -> str:
@@ -362,12 +390,99 @@ def resolve_outputs(group_id: str) -> Dict[str, str]:
     return outputs
 
 
+def apply_finished_job_output_keys(group_id: str, outputs: Dict[str, str]) -> None:
+    """Fill dots/skeleton S3 keys from finished job JSON (authoritative output_key from worker)."""
+    gid = (group_id or "").strip()
+    if not gid:
+        return
+    variants = set(get_group_id_variants(gid) or [gid])
+    m = st.session_state.get("training_jobs_by_group") or {}
+    entry: Dict[str, Any] = {}
+    for g in [gid] + [x for x in variants if x != gid]:
+        entry = m.get(g) or {}
+        if entry:
+            break
+
+    def _merge_from_job(job_id: str, field: str) -> None:
+        if not job_id:
+            return
+        fk = f"{JOBS_FINISHED_PREFIX}{job_id}.json"
+        data = s3_read_json_key(fk)
+        if not data:
+            return
+        gj = str(data.get("group_id") or "").strip()
+        if gj not in variants and gj != gid:
+            return
+        if str(data.get("status") or "").lower() != "finished":
+            return
+        mode = str(data.get("mode") or "").strip().lower()
+        want = "dots" if field == "dots_video" else "skeleton"
+        if mode != want:
+            return
+        res = data.get("result") or {}
+        if res.get("ok") is False:
+            return
+        out_key = str(res.get("output_key") or "").strip()
+        if out_key:
+            outputs[field] = out_key
+
+    _merge_from_job(str(entry.get("dots_job_id") or "").strip(), "dots_video")
+    _merge_from_job(str(entry.get("skeleton_job_id") or "").strip(), "skeleton_video")
+
+
+def discover_video_outputs_from_finished_jobs(group_id: str, outputs: Dict[str, str], max_json: int = 400) -> None:
+    """If session has no job ids, scan jobs/finished/YYYYMMDD* for finished dots/skeleton with matching group_id."""
+    gid = (group_id or "").strip()
+    if not gid:
+        return
+    variants = set(get_group_id_variants(gid) or [gid])
+    date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
+    scan_prefix = f"{JOBS_FINISHED_PREFIX}{date_prefix}" if date_prefix else JOBS_FINISHED_PREFIX
+    seen = 0
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=scan_prefix):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                seen += 1
+                if seen > max_json:
+                    return
+                data = s3_read_json_key(key)
+                if not data:
+                    continue
+                gj = str(data.get("group_id") or "").strip()
+                if gj not in variants:
+                    continue
+                if str(data.get("status") or "").lower() != "finished":
+                    continue
+                mode = str(data.get("mode") or "").strip().lower()
+                if mode not in ("dots", "skeleton"):
+                    continue
+                res = data.get("result") or {}
+                if res.get("ok") is False:
+                    continue
+                out_key = str(res.get("output_key") or "").strip()
+                if not out_key:
+                    continue
+                if mode == "dots":
+                    outputs["dots_video"] = out_key
+                else:
+                    outputs["skeleton_video"] = out_key
+                if outputs.get("dots_video") and outputs.get("skeleton_video"):
+                    return
+    except Exception:
+        pass
+
+
 def ensure_session_defaults() -> None:
     defaults = {
         "training_last_group_id": "",
         "training_submission_id_override": "",
         "training_last_name": "",
         "training_audience_mode": "one",
+        "training_jobs_by_group": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -382,6 +497,7 @@ def clear_state() -> None:
         "training_download_id",
         "training_audience_mode",
         "training_video_upload",
+        "training_jobs_by_group",
     ):
         st.session_state.pop(k, None)
 
@@ -603,6 +719,12 @@ if run:
         status.update(label="Complete", state="complete")
         st.session_state["training_last_group_id"] = group_id
         st.session_state["training_submission_id_override"] = group_id
+        if "training_jobs_by_group" not in st.session_state:
+            st.session_state["training_jobs_by_group"] = {}
+        st.session_state["training_jobs_by_group"][group_id] = {
+            "dots_job_id": job_dots["job_id"],
+            "skeleton_job_id": job_skeleton["job_id"],
+        }
         st.success(f"Submission received. Group ID: `{group_id}`")
         st.info("Please keep this Group ID and use Refresh to check when files are ready.")
 
@@ -661,9 +783,17 @@ with col2:
 if current_group_id:
     st.info(f"Current Group ID: `{current_group_id}`")
     resolved = resolve_outputs(current_group_id)
-
-    dots_ready = bool(resolved.get("dots_video")) and s3_key_exists(resolved.get("dots_video", ""))
-    skeleton_ready = bool(resolved.get("skeleton_video")) and s3_key_exists(resolved.get("skeleton_video", ""))
+    apply_finished_job_output_keys(current_group_id, resolved)
+    dots_key = str(resolved.get("dots_video") or "").strip()
+    skel_key = str(resolved.get("skeleton_video") or "").strip()
+    dots_ready = bool(dots_key) and s3_output_ready(dots_key)
+    skeleton_ready = bool(skel_key) and s3_output_ready(skel_key)
+    if not dots_ready or not skeleton_ready:
+        discover_video_outputs_from_finished_jobs(current_group_id, resolved)
+        dots_key = str(resolved.get("dots_video") or "").strip()
+        skel_key = str(resolved.get("skeleton_video") or "").strip()
+        dots_ready = bool(dots_key) and s3_output_ready(dots_key)
+        skeleton_ready = bool(skel_key) and s3_output_ready(skel_key)
 
     status_items = [
         ("Dots Video", dots_ready),
