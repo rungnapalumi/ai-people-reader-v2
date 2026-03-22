@@ -1446,6 +1446,8 @@ if run:
         "notify_email": notify_email,
         "employee_email": notify_email,
     }
+    if report_languages:
+        job_skel["suppress_completion_email"] = True
 
     # Report job - handled by report_worker.py
     job_report = {

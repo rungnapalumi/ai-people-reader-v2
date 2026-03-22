@@ -42,6 +42,7 @@ sys.modules["report_core"] = _report_core
 from dotenv import load_dotenv
 load_dotenv()
 import time
+import threading
 import logging
 import tempfile
 import re
@@ -150,6 +151,10 @@ OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS = int(
 EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY", "30"))
 EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE", "30"))
 EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB", "30"))
+# While a long report job runs, main thread cannot poll email_pending — background thread does.
+# Set EMAIL_PENDING_BACKGROUND_POLL_SECONDS=0 to disable.
+EMAIL_PENDING_BACKGROUND_POLL_SECONDS = int(os.getenv("EMAIL_PENDING_BACKGROUND_POLL_SECONDS", "10"))
+EMAIL_QUEUE_BACKGROUND_MAX_ITEMS = max(1, int(os.getenv("EMAIL_QUEUE_BACKGROUND_MAX_ITEMS", "25")))
 EMAIL_PENDING_MAX_ITEMS_PER_ROUND = int(os.getenv("EMAIL_PENDING_MAX_ITEMS_PER_ROUND", "30"))
 EMAIL_RETRY_BACKOFF_SECONDS = int(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1200"))  # 20 minutes
 
@@ -1661,6 +1666,43 @@ def choose_email_report_attachment(payload: Dict[str, Any], lang: str) -> Tuple[
     return "", ""
 
 
+# When True, wait for skeleton.mp4 on S3 before emailing report PDFs; bundle skeleton link in same email.
+DEFER_REPORT_EMAIL_UNTIL_SKELETON = str(
+    os.getenv("DEFER_REPORT_EMAIL_UNTIL_SKELETON", "true")
+).strip().lower() in ("1", "true", "yes", "on")
+
+
+def should_defer_report_email_until_skeleton_ready(
+    expect_skeleton: bool,
+    skeleton_ready: bool,
+    report_links: Dict[str, str],
+) -> bool:
+    if not DEFER_REPORT_EMAIL_UNTIL_SKELETON:
+        return False
+    return bool(expect_skeleton and not skeleton_ready and report_links)
+
+
+def merged_video_keys_for_report_email(
+    base: Dict[str, str],
+    payload: Dict[str, Any],
+    expect_skeleton: bool,
+    skeleton_ready: bool,
+    skeleton_sent: bool,
+) -> Dict[str, str]:
+    """Include skeleton presigned link in the report email when skeleton is ready (avoids a second email)."""
+    out = dict(base or {})
+    if (
+        expect_skeleton
+        and skeleton_ready
+        and (not skeleton_sent)
+        and email_payload_skeleton_ready(payload)
+    ):
+        sk = str(payload.get("skeleton_key") or "").strip()
+        if sk:
+            out["Skeleton video (MP4)"] = sk
+    return out
+
+
 def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[str, Any]:
     group_id = str(job.get("group_id") or "").strip()
     job_id = str(job.get("job_id") or "").strip()
@@ -2017,9 +2059,26 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     report_links["Report EN (PDF)"] = en_att
                 elif en_kind == "DOCX":
                     report_links["Report EN (DOCX)"] = en_att
-            if report_links:
+
+            skeleton_ready = (not expect_skeleton) or email_payload_skeleton_ready(payload)
+            defer_reports = should_defer_report_email_until_skeleton_ready(
+                expect_skeleton, skeleton_ready, report_links
+            )
+            if report_links and defer_reports:
+                logger.info(
+                    "[email_queue] deferring report email until skeleton.mp4 exists job_id=%s",
+                    job_id,
+                )
+            elif report_links:
                 email_send_attempted = True
-                sent, status = send_result_email(job_info, video_keys_report, report_links)
+                vk = merged_video_keys_for_report_email(
+                    video_keys_report,
+                    payload,
+                    expect_skeleton,
+                    skeleton_ready,
+                    skeleton_sent,
+                )
+                sent, status = send_result_email(job_info, vk, report_links)
                 statuses.append(f"reports:{status}")
                 if sent:
                     email_send_any_ok = True
@@ -2029,6 +2088,9 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
                         report_en_sent = True
                         payload["report_en_email_sent"] = True
+                    if "Skeleton video (MP4)" in vk:
+                        skeleton_sent = True
+                        payload["skeleton_email_sent"] = True
                     sent_any = True
 
             # 2) Dots email
@@ -2126,6 +2188,27 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 elif email_send_any_ok:
                     payload["attempts"] = 0
                 s3_put_json(key, payload)
+
+
+# Serialize email_pending processing (main loop + background poll) to avoid duplicate sends / S3 races.
+_email_pending_queue_lock = threading.Lock()
+
+
+def run_locked_email_queue(max_items: int) -> None:
+    """Run process_pending_email_queue under a lock (safe with background poller)."""
+    if not ENABLE_EMAIL_NOTIFICATIONS or max_items <= 0:
+        return
+    with _email_pending_queue_lock:
+        process_pending_email_queue(max_items=max_items)
+
+
+def _email_pending_background_loop(stop_event: threading.Event) -> None:
+    poll = max(3, int(EMAIL_PENDING_BACKGROUND_POLL_SECONDS))
+    while not stop_event.wait(timeout=poll):
+        try:
+            run_locked_email_queue(EMAIL_QUEUE_BACKGROUND_MAX_ITEMS)
+        except Exception as exc:
+            logger.warning("[email_pending_bg] poll failed: %s", exc)
 
 
 def list_pending_json_keys() -> Iterable[str]:
@@ -2872,8 +2955,25 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                         report_links["Report EN (PDF)"] = en_att
                     elif en_kind == "DOCX":
                         report_links["Report EN (DOCX)"] = en_att
-                if report_links:
-                    sent, status = send_result_email(job_info, video_keys_report, report_links)
+
+                sk_ready_immediate = (not expect_skeleton) or email_payload_skeleton_ready(payload)
+                defer_immediate = should_defer_report_email_until_skeleton_ready(
+                    expect_skeleton, sk_ready_immediate, report_links
+                )
+                if report_links and defer_immediate:
+                    logger.info(
+                        "[email] deferring report email until skeleton.mp4 exists job_id=%s",
+                        payload.get("job_id"),
+                    )
+                elif report_links:
+                    vk_immediate = merged_video_keys_for_report_email(
+                        video_keys_report,
+                        payload,
+                        expect_skeleton,
+                        sk_ready_immediate,
+                        skeleton_sent,
+                    )
+                    sent, status = send_result_email(job_info, vk_immediate, report_links)
                     statuses.append(f"reports:{status}")
                     if sent:
                         if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
@@ -2882,8 +2982,11 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                         if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
                             report_en_sent = True
                             payload["report_en_email_sent"] = True
+                        if "Skeleton video (MP4)" in vk_immediate:
+                            skeleton_sent = True
+                            payload["skeleton_email_sent"] = True
 
-                # 2) Skeleton email แยก
+                # 2) Skeleton email แยก (only if not bundled with report email above)
                 if (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload):
                     sk_key = str(payload.get("skeleton_key") or "").strip()
                     sent, status = send_result_email(
@@ -3110,6 +3213,20 @@ def main() -> None:
     last_recovery_ts = time.time()
     last_heartbeat_ts = time.time()
 
+    email_bg_stop = threading.Event()
+    if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_PENDING_BACKGROUND_POLL_SECONDS > 0:
+        threading.Thread(
+            target=_email_pending_background_loop,
+            args=(email_bg_stop,),
+            daemon=True,
+            name="email_pending_poll",
+        ).start()
+        logger.info(
+            "[email_pending_bg] started interval=%ss max_items=%s (drains jobs/email_pending/ during long report jobs)",
+            max(3, EMAIL_PENDING_BACKGROUND_POLL_SECONDS),
+            EMAIL_QUEUE_BACKGROUND_MAX_ITEMS,
+        )
+
     while True:
         try:
             now_ts = time.time()
@@ -3117,13 +3234,16 @@ def main() -> None:
                 recover_stale_processing_jobs()
                 last_recovery_ts = now_ts
 
-            # Prioritize report generation first to avoid email_pending backlog starving new results.
+            # Drain email queue before picking heavy report work so new mail is not blocked for whole job duration.
+            if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY > 0:
+                run_locked_email_queue(EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY)
+
             job_key = find_one_pending_job_key()
             if job_key:
                 process_job(job_key)
                 last_heartbeat_ts = time.time()
                 if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB > 0:
-                    process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB)
+                    run_locked_email_queue(EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB)
             else:
                 if now_ts - last_heartbeat_ts >= max(10, IDLE_HEARTBEAT_SECONDS):
                     processing_count = count_processing_jobs()
@@ -3141,8 +3261,8 @@ def main() -> None:
                         PENDING_PREFIX,
                     )
                     last_heartbeat_ts = now_ts
-                if ENABLE_EMAIL_NOTIFICATIONS:
-                    process_pending_email_queue(max_items=EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE)
+                if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE > 0:
+                    run_locked_email_queue(EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE)
                 time.sleep(POLL_INTERVAL)
         except Exception as exc:
             logger.exception("[main] Unexpected error: %s", exc)

@@ -1061,6 +1061,8 @@ if run:
             "notify_email": notify_email,
             "employee_email": notify_email,
         }
+        if enable_skeleton and report_languages:
+            job_skel["suppress_completion_email"] = True
 
         job_report = {
             "job_id": new_job_id(),

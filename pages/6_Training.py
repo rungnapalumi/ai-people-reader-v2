@@ -625,6 +625,7 @@ if run:
             "employee_id": base_user,
             "employee_email": "",
             "notify_email": "",
+            "suppress_completion_email": True,
         }
 
         job_report = {

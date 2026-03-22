@@ -724,6 +724,9 @@ if run:
 
     queued: list[str] = []
     queued_job_keys: List[str] = []
+    any_report_job = bool(
+        report_pdf_languages or report_docx_languages or report_html_languages
+    )
     try:
         if enable_dots:
             job_dots = {
@@ -751,6 +754,8 @@ if run:
                 "user_name": (name or "Anonymous").strip() or "Anonymous",
                 "notify_email": notify_email.strip(),
             }
+            if any_report_job:
+                job_skeleton["suppress_completion_email"] = True
             queued_job_keys.append(enqueue_job(job_skeleton))
             queued.append("skeleton")
         if report_pdf_languages:
