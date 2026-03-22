@@ -1798,6 +1798,9 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "updated_at": utc_now_iso(),
         # None = use env; False = TTB-style (email PDF as soon as ready); True = LPA-style (wait for skeleton)
         "defer_report_email_until_skeleton": job.get("defer_report_email_until_skeleton"),
+        # TTB: after first report email(s), send one follow-up with reports + skeleton together.
+        "ttb_phase2_bundle_email": bool(job.get("ttb_phase2_bundle_email")),
+        "ttb_bundle_followup_sent": bool(job.get("ttb_bundle_followup_sent") or False),
     }
 
 def email_payload_all_ready(payload: Dict[str, Any]) -> bool:
@@ -2120,8 +2123,47 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     payload["dots_email_sent"] = True
                     sent_any = True
 
-            # 3) Skeleton email
-            if (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload):
+            # 3) Skeleton email — or TTB phase-2: one bundled mail (reports + skeleton) after phase 1 finished
+            ttb_phase2 = bool(payload.get("ttb_phase2_bundle_email"))
+            reports_fully_sent = True
+            if expects_report_th:
+                reports_fully_sent = reports_fully_sent and report_th_sent
+            if expect_report_en:
+                reports_fully_sent = reports_fully_sent and report_en_sent
+            if (
+                ttb_phase2
+                and reports_fully_sent
+                and (not payload.get("ttb_bundle_followup_sent"))
+                and expect_skeleton
+                and email_payload_skeleton_ready(payload)
+                and (not skeleton_sent)
+            ):
+                email_send_attempted = True
+                sk_key = str(payload.get("skeleton_key") or "").strip()
+                bundle_reports: Dict[str, str] = {}
+                if email_payload_report_th_ready(payload):
+                    th_att, th_kind = choose_email_report_attachment(payload, "th")
+                    if th_kind == "PDF":
+                        bundle_reports["Report TH (PDF)"] = th_att
+                    elif th_kind == "DOCX":
+                        bundle_reports["Report TH (DOCX)"] = th_att
+                if email_payload_report_en_ready(payload):
+                    en_att, en_kind = choose_email_report_attachment(payload, "en")
+                    if en_kind == "PDF":
+                        bundle_reports["Report EN (PDF)"] = en_att
+                    elif en_kind == "DOCX":
+                        bundle_reports["Report EN (DOCX)"] = en_att
+                vk_bundle = {"Skeleton video (MP4)": sk_key}
+                sent, status = send_result_email(job_info, vk_bundle, bundle_reports)
+                statuses.append(f"ttb_phase2_bundle:{status}")
+                if sent:
+                    email_send_any_ok = True
+                    skeleton_sent = True
+                    payload["skeleton_email_sent"] = True
+                    payload["ttb_bundle_followup_sent"] = True
+                    sent_any = True
+            elif (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload) and (not ttb_phase2):
+                # TTB two-phase jobs must not send skeleton-only before the bundled follow-up.
                 email_send_attempted = True
                 sk_key = str(payload.get("skeleton_key") or "").strip()
                 sent, status = send_result_email(job_info, {"Skeleton video (MP4)": sk_key}, {})

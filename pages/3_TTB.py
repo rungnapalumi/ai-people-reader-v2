@@ -32,7 +32,6 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 import streamlit as st
-import streamlit.components.v1 as components
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
@@ -302,6 +301,114 @@ def s3_key_exists(key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def s3_output_ready(key: str) -> bool:
+    k = (key or "").strip()
+    if not k:
+        return False
+    if s3_key_exists(k):
+        return True
+    try:
+        resp = s3.list_objects_v2(Bucket=AWS_BUCKET, Prefix=k, MaxKeys=5)
+        for obj in resp.get("Contents", []):
+            if str(obj.get("Key") or "") == k:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def get_group_id_variants_ttb(group_id: str) -> List[str]:
+    g = (group_id or "").strip()
+    if not g:
+        return []
+    out = [g]
+    if g.startswith("0") and len(g) >= 7 and g[1:7].isdigit():
+        out.append("20" + g)
+    if "__" in g:
+        alt = g.replace("__", "_", 1)
+        if alt != g:
+            out.append(alt)
+    elif "_" in g:
+        parts = g.rsplit("_", 1)
+        if len(parts) == 2 and len(parts[1]) > 2:
+            alt = parts[0] + "__" + parts[1]
+            if alt != g:
+                out.append(alt)
+    return out
+
+
+def discover_ttb_skeleton_output(group_id: str, outputs: Dict[str, str], max_json: int = 400) -> None:
+    gid = (group_id or "").strip()
+    if not gid:
+        return
+    variants = set(get_group_id_variants_ttb(gid) or [gid])
+    date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
+    scan_prefix = f"{JOBS_FINISHED_PREFIX}{date_prefix}" if date_prefix else JOBS_FINISHED_PREFIX
+    seen = 0
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=scan_prefix):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                seen += 1
+                if seen > max_json:
+                    return
+                data = s3_read_json(key)
+                if not data:
+                    continue
+                gj = str(data.get("group_id") or "").strip()
+                if gj not in variants:
+                    continue
+                if str(data.get("status") or "").lower() != "finished":
+                    continue
+                if str(data.get("mode") or "").strip().lower() != "skeleton":
+                    continue
+                res = data.get("result") or {}
+                if res.get("ok") is False:
+                    continue
+                out_key = str(res.get("output_key") or "").strip()
+                if out_key:
+                    outputs["skeleton_video"] = out_key
+                    return
+    except Exception:
+        pass
+
+
+def ttb_merge_canonical_files_from_listing(group_id: str, resolved: Dict[str, str]) -> None:
+    gid = (group_id or "").strip()
+    if not gid:
+        return
+    prefixes = [
+        f"{JOBS_OUTPUT_PREFIX}groups/{gid}/",
+        f"{JOBS_GROUP_PREFIX}{gid}/",
+    ]
+    for pfx in prefixes:
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=pfx):
+                for item in page.get("Contents", []):
+                    k = str(item.get("Key") or "").strip()
+                    if not k or "/input/" in k.lower():
+                        continue
+                    bn = os.path.basename(k).lower()
+                    if bn == "skeleton.mp4" and not (resolved.get("skeleton_video") or "").strip():
+                        resolved["skeleton_video"] = k
+                    elif bn == "dots.mp4" and not (resolved.get("dots_video") or "").strip():
+                        resolved["dots_video"] = k
+                    elif bn == "report_th.pdf" and not (resolved.get("report_th_pdf") or "").strip():
+                        resolved["report_th_pdf"] = k
+                    elif bn == "report_en.pdf" and not (resolved.get("report_en_pdf") or "").strip():
+                        resolved["report_en_pdf"] = k
+                    elif bn == "report_th.docx" and not (resolved.get("report_th_docx") or "").strip():
+                        resolved["report_th_docx"] = k
+                    elif bn == "report_en.docx" and not (resolved.get("report_en_docx") or "").strip():
+                        resolved["report_en_docx"] = k
+        except Exception:
+            pass
 
 
 def s3_read_json(key: str) -> Optional[Dict[str, Any]]:
@@ -610,6 +717,10 @@ def get_report_format_for_group(group_id: str) -> str:
 def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
     """Find the finished report job and extract actual output paths"""
     found: Dict[str, str] = {}
+    gid = (group_id or "").strip()
+    variants = set(get_group_id_variants_ttb(gid) or [])
+    if gid:
+        variants.add(gid)
     try:
         # Search in both finished and failed jobs
         prefixes = [JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
@@ -626,9 +737,10 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
                     job_data = json.loads(obj["Body"].read().decode("utf-8"))
                     
+                    jg = str(job_data.get("group_id") or "").strip()
                     # Check if this job belongs to our group and is a report job
                     if (
-                        job_data.get("group_id") == group_id
+                        jg in variants
                         and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
                     ):
                         
@@ -712,6 +824,10 @@ def get_report_notification_status(group_id: str) -> Dict[str, Any]:
     """Read latest report job notification status for this group."""
     latest_key = ""
     latest_job: Dict[str, Any] = {}
+    gid = (group_id or "").strip()
+    variants = set(get_group_id_variants_ttb(gid) or [])
+    if gid:
+        variants.add(gid)
     try:
         prefixes = [JOBS_PENDING_PREFIX, JOBS_PROCESSING_PREFIX, JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
         for prefix in prefixes:
@@ -722,8 +838,9 @@ def get_report_notification_status(group_id: str) -> Dict[str, Any]:
                     if not key.endswith(".json"):
                         continue
                     job_data = s3_read_json(key) or {}
+                    jg = str(job_data.get("group_id") or "").strip()
                     if (
-                        job_data.get("group_id") == group_id
+                        jg in variants
                         and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
                     ):
                         if key > latest_key:
@@ -921,22 +1038,7 @@ def enqueue_video_only_job(
 ensure_session_defaults()
 apply_theme()
 render_top_banner()
-components.html(
-    """
-    <script>
-    (function () {
-      try {
-        var topLoc = window.top.location;
-        var path = topLoc.pathname || "/";
-        if (path !== "/" && !path.startsWith("/_stcore")) {
-          topLoc.replace(topLoc.origin + "/" + (topLoc.search || ""));
-        }
-      } catch (e) {}
-    })();
-    </script>
-    """,
-    height=0,
-)
+# No /TTB -> / redirect: breaks st.navigation and duplicates widgets (same fix as LPA).
 
 url_group_id = _read_group_id_from_url()
 if url_group_id:
@@ -975,6 +1077,18 @@ if notify_email:
 # Email-only flow: reuse email as stable identity key.
 employee_id = notify_email
 org_settings = get_org_settings(enterprise_folder)
+_ttb_reports_on = bool(
+    org_settings.get("enable_report_th", True) or org_settings.get("enable_report_en", True)
+) if org_settings else True
+_ttb_skel_on = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
+if _ttb_reports_on and _ttb_skel_on:
+    st.info(
+        "**อีเมล (TTB):** ฉบับแรกส่ง **รายงาน** ทันทีเมื่อรายงานพร้อม — "
+        "ฉบับถัดไปส่ง **รวมชุด** (รายงาน + วิดีโอ skeleton) อีกครั้งเมื่อ skeleton พร้อม "
+        "(อาจได้สูงสุด 2 ฉบับ ต่างเวลา)\n\n"
+        "**E-mail (TTB):** 1st e-mail: **report only** when ready. "
+        "2nd e-mail: **bundle** (report + skeleton MP4) when skeleton is ready (up to two e-mails)."
+    )
 
 uploaded = st.file_uploader(
     "Video (MP4/MOV/M4V/WEBM)",
@@ -1061,6 +1175,9 @@ if run:
             "notify_email": notify_email,
             "employee_email": notify_email,
         }
+        if enable_skeleton and report_languages:
+            # Report worker sends the bundled follow-up; avoid duplicate skeleton-only mail from video worker.
+            job_skel["suppress_completion_email"] = True
         job_report = {
             "job_id": new_job_id(),
             "group_id": group_id_submit,
@@ -1078,8 +1195,9 @@ if run:
             "report_style": effective_report_style,
             "report_format": effective_report_format,
             "expect_skeleton": bool(enable_skeleton),
-            # Email PDF as soon as ready; skeleton completion email from video worker separately.
+            # รายงานส่งก่อนทันที; รวมชุด (รายงาน+skeleton) ส่งทีหลังจาก report worker เมื่อ skeleton พร้อม
             "defer_report_email_until_skeleton": False,
+            "ttb_phase2_bundle_email": bool(enable_skeleton and report_languages),
             "notify_email": notify_email,
             "enterprise_folder": (enterprise_folder or "").strip(),
             "expect_dots": False,
@@ -1182,6 +1300,8 @@ if ttb_direct_group_id:
             ttb_direct_outputs[_k] = str(ttb_job_report_outputs.get(_k) or "").strip()
         elif ttb_direct_reports.get(_k):
             ttb_direct_outputs[_k] = str(ttb_direct_reports.get(_k) or "").strip()
+    discover_ttb_skeleton_output(ttb_direct_group_id, ttb_direct_outputs)
+    ttb_merge_canonical_files_from_listing(ttb_direct_group_id, ttb_direct_outputs)
     ttb_discovered_keys: set = set()
     for _pfx in (f"{JOBS_GROUP_PREFIX}{ttb_direct_group_id}/", f"{JOBS_OUTPUT_PREFIX}groups/{ttb_direct_group_id}/"):
         try:
@@ -1202,13 +1322,14 @@ if ttb_direct_group_id:
             ("Report TH", str(ttb_direct_outputs.get("report_th_pdf") or ttb_direct_outputs.get("report_th_docx") or "").strip(), "report_th.pdf"),
             ("Report EN", str(ttb_direct_outputs.get("report_en_pdf") or ttb_direct_outputs.get("report_en_docx") or "").strip(), "report_en.pdf"),
         ]
-        if key and (key in ttb_discovered_keys or s3_key_exists(key))
+        if key and (key in ttb_discovered_keys or s3_output_ready(key))
     ]
     if ttb_ready:
         st.success("พบไฟล์พร้อมดาวน์โหลด")
     else:
         st.caption("หากได้รับอีเมลแล้ว ลิงก์ด้านล่างจะทำงานเมื่อไฟล์พร้อม (กดรีเฟรชหลัง 2–5 นาที)")
     st.markdown("**ลิงก์ดาวน์โหลด**")
+    _ttb_gid_safe = re.sub(r"[^a-zA-Z0-9_]+", "_", ttb_direct_group_id)[:48]
     for label, key, fn in [
         ("Dots Video", str(ttb_direct_outputs.get("dots_video") or "").strip(), "dots.mp4"),
         ("Skeleton Video", str(ttb_direct_outputs.get("skeleton_video") or "").strip(), "skeleton.mp4"),
@@ -1219,16 +1340,23 @@ if ttb_direct_group_id:
             fn_use = os.path.basename(key) or fn
             try:
                 url = presigned_get_url(key, expires=3600, filename=fn_use)
-                st.link_button(f"⬇️ {label}", url, width="stretch")
+                _slug = re.sub(r"[^a-zA-Z0-9]+", "_", label)[:24]
+                st.link_button(f"⬇️ {label}", url, width="stretch", key=f"ttb_top_dl_{_ttb_gid_safe}_{_slug}")
             except Exception:
                 pass
-    ttb_skel_ready = bool(ttb_direct_outputs.get("skeleton_video")) and (str(ttb_direct_outputs.get("skeleton_video") or "") in ttb_discovered_keys or s3_key_exists(str(ttb_direct_outputs.get("skeleton_video") or "")))
+    ttb_skel_ready = bool(ttb_direct_outputs.get("skeleton_video")) and s3_output_ready(
+        str(ttb_direct_outputs.get("skeleton_video") or "")
+    )
     if not ttb_skel_ready:
-        _ttb_notify = str(st.session_state.get("last_notify_email") or "").strip()
+        _ttb_notify = str(notify_email or st.session_state.get("last_notify_email") or "").strip()
         ttb_rows = list_jobs_for_group(ttb_direct_group_id)
         skel_active = any(str(r.get("mode") or "").strip().lower() == "skeleton" and str(r.get("status") or "").strip().lower() in ("pending", "processing") for r in ttb_rows)
         st.warning("ยังไม่ครบทุกวิดีโอ สามารถกดส่งงานซ้ำเฉพาะรายการที่ขาดได้")
-        if st.button("Force ส่งงาน Skeleton" if skel_active else "ส่งงาน Skeleton ใหม่", key=f"ttb_force_skeleton_{ttb_direct_group_id}", width="stretch"):
+        if st.button(
+            "Force ส่งงาน Skeleton" if skel_active else "ส่งงาน Skeleton ใหม่",
+            key=f"ttb_force_skeleton_{_ttb_gid_safe}",
+            width="stretch",
+        ):
             try:
                 new_key = enqueue_video_only_job(group_id=ttb_direct_group_id, mode="skeleton", notify_email=_ttb_notify, employee_id=_ttb_notify, enterprise_folder=get_default_org_for_page("ttb") or "TTB")
                 st.success(f"ส่งงาน Skeleton แล้ว: {new_key}")
