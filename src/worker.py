@@ -65,6 +65,9 @@ PROCESSING_RECOVERY_MAX_ITEMS = int(os.getenv("PROCESSING_RECOVERY_MAX_ITEMS", "
 PROCESSING_RECOVERY_INTERVAL_SECONDS = int(os.getenv("PROCESSING_RECOVERY_INTERVAL_SECONDS", "60"))
 IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
 MAX_VIDEO_JOB_RETRIES = int(os.getenv("MAX_VIDEO_JOB_RETRIES", "2"))
+# S3 lists pending in lexicographic order; many report jobs can fill the first N keys and hide dots/skeleton.
+REPORT_JOB_MODES = frozenset({"report", "report_th_en", "report_generator"})
+WORKER_PENDING_MAX_SCAN = max(800, int(os.getenv("WORKER_PENDING_MAX_SCAN", "10000") or "10000"))
 
 
 # -----------------------------
@@ -207,38 +210,56 @@ def send_mode_ready_email(job: Dict[str, Any], result: Dict[str, Any]) -> Tuple[
     return sent_any, " | ".join(statuses)
 
 
-def list_pending(limit: int = 200) -> List[str]:
+def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
     """
-    List pending keys; dots jobs first (ทำ dots ก่อนเสมอ), then skeleton.
-    Report jobs are skipped (handled by report_worker).
+    List pending keys; dots jobs first, then skeleton/other. Report jobs excluded (report_worker).
+    Scans up to WORKER_PENDING_MAX_SCAN JSON keys so video jobs are not hidden behind many report JSONs.
     """
-    keys: List[str] = []
+    cap = max_scan if max_scan is not None else WORKER_PENDING_MAX_SCAN
+    raw: List[str] = []
     paginator = s3.get_paginator("list_objects_v2")
+    truncated = False
     for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PENDING):
         for item in page.get("Contents", []):
             key = str(item.get("Key") or "")
             if key.endswith(".json"):
-                keys.append(key)
-                if len(keys) >= limit:
+                raw.append(key)
+                if len(raw) >= cap:
+                    truncated = True
                     break
-        if len(keys) >= limit:
+        if truncated:
             break
-    # Sort: dots first, then skeleton (skip report - handled by report_worker)
+
+    if truncated:
+        logging.warning(
+            "list_pending: scanned %s pending JSON keys (cap=%s). Increase WORKER_PENDING_MAX_SCAN if jobs stay stuck.",
+            len(raw),
+            cap,
+        )
+
     dots_keys: List[str] = []
     other_keys: List[str] = []
-    for k in keys:
+    for k in raw:
         try:
             job = s3_read_json(k)
             mode = str(job.get("mode") or "").strip().lower()
-            if mode in ("report", "report_th_en", "report_generator"):
-                continue  # report_worker handles these
+            if mode in REPORT_JOB_MODES:
+                continue
             if mode == "dots":
                 dots_keys.append(k)
             else:
                 other_keys.append(k)
         except Exception:
             other_keys.append(k)
-    return dots_keys + other_keys
+
+    merged = (dots_keys + other_keys)[:limit]
+    if not dots_keys and other_keys:
+        logging.info(
+            "list_pending: no dots in this scan (%s non-report keys of %s JSON scanned)",
+            len(other_keys),
+            len(raw),
+        )
+    return merged
 
 
 def count_jobs(prefix: str) -> int:
@@ -1066,6 +1087,7 @@ def main_loop(poll_seconds: int = 3) -> None:
         poll_seconds,
     )
     logging.info("Retry cfg: max_video_job_retries=%s", MAX_VIDEO_JOB_RETRIES)
+    logging.info("Pending scan : WORKER_PENDING_MAX_SCAN=%s (report jobs skipped when picking video work)", WORKER_PENDING_MAX_SCAN)
     recovered = recover_stale_processing_jobs(PROCESSING_STALE_MINUTES, PROCESSING_RECOVERY_MAX_ITEMS)
     logging.info("[startup_recovery] completed recovered=%s", recovered)
     last_recovery_at = time.time()
@@ -1130,7 +1152,7 @@ def main_loop(poll_seconds: int = 3) -> None:
                 break
 
             pending_mode = (pending_job.get("mode") or "").strip().lower()
-            if pending_mode in ("report", "report_th_en", "report_generator"):
+            if pending_mode in REPORT_JOB_MODES:
                 logging.info(
                     "Skipping pending report job job_id=%s group_id=%s mode=%s (reserved for report_worker)",
                     pending_job.get("job_id"),
