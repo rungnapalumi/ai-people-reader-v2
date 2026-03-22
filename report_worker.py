@@ -748,10 +748,13 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             statuses: List[str] = []
             sent_any = False
+            email_send_attempted = False
+            email_send_any_ok = False
 
             # ส่งตามลำดับ: Report → Dots
             # Stage 1: TH report
             if (not report_th_sent) and email_payload_report_th_ready(payload):
+                email_send_attempted = True
                 sent, status = send_result_email(
                     {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
                     {},
@@ -759,12 +762,14 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 )
                 statuses.append(f"report_th:{status}")
                 if sent:
+                    email_send_any_ok = True
                     report_th_sent = True
                     payload["report_th_email_sent"] = True
                     sent_any = True
 
             # Stage 2: EN report
             if (not report_en_sent) and email_payload_report_en_ready(payload):
+                email_send_attempted = True
                 sent, status = send_result_email(
                     {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
                     {},
@@ -772,6 +777,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 )
                 statuses.append(f"report_en:{status}")
                 if sent:
+                    email_send_any_ok = True
                     report_en_sent = True
                     payload["report_en_email_sent"] = True
                     sent_any = True
@@ -779,6 +785,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             # Stage 3: Dots
             if (not dots_sent) and email_payload_dots_ready(payload):
                 if bool(payload.get("expect_dots", True)):
+                    email_send_attempted = True
                     sent, status = send_result_email(
                         {"job_id": job_id, "group_id": payload.get("group_id", ""), "notify_email": notify_email},
                         {"Dots video (MP4)": payload.get("dots_key", "")},
@@ -786,6 +793,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     )
                     statuses.append(f"dots:{status}")
                     if sent:
+                        email_send_any_ok = True
                         dots_sent = True
                         payload["dots_email_sent"] = True
                         sent_any = True
@@ -835,8 +843,11 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             if all_done:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
             else:
-                payload["attempts"] = int(payload.get("attempts") or 0) + 1
                 payload["updated_at"] = utc_now_iso()
+                if email_send_attempted and not email_send_any_ok:
+                    payload["attempts"] = int(payload.get("attempts") or 0) + 1
+                elif email_send_any_ok:
+                    payload["attempts"] = 0
                 s3_put_json(key, payload)
 
 

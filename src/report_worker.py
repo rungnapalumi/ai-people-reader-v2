@@ -137,7 +137,9 @@ PROCESSING_STALE_MINUTES = int(os.getenv("PROCESSING_STALE_MINUTES", "20"))
 PROCESSING_RECOVERY_MAX_ITEMS = int(os.getenv("PROCESSING_RECOVERY_MAX_ITEMS", "50"))
 PROCESSING_RECOVERY_INTERVAL_SECONDS = int(os.getenv("PROCESSING_RECOVERY_INTERVAL_SECONDS", "60"))
 IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
-MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10"))
+# Counts rounds where send_result_email was tried and nothing succeeded (not "waiting for S3 file").
+# Set MAX_EMAIL_RETRY_ATTEMPTS=0 on env to disable suspend-by-attempts.
+MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10") or "10")
 JOB_MAX_RETRIES = int(os.getenv("JOB_MAX_RETRIES", "3"))
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
@@ -1782,7 +1784,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     )
                     logger.warning("[email_queue] moved stale payload key=%s suspended_key=%s age_hours=%.1f", key, suspended_key, age_hours)
                     continue
-            if (not is_operation_test) and attempts >= MAX_EMAIL_RETRY_ATTEMPTS:
+            if (not is_operation_test) and MAX_EMAIL_RETRY_ATTEMPTS > 0 and attempts >= MAX_EMAIL_RETRY_ATTEMPTS:
                 update_finished_job_notification(
                     job_id,
                     bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
@@ -1846,6 +1848,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             statuses: List[str] = []
             sent_any = False
+            email_send_attempted = False
+            email_send_any_ok = False
 
             # ส่งแยกกัน: Report → Dots → Skeleton
             job_info = {
@@ -1883,9 +1887,11 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 elif en_att.lower().endswith(".docx"):
                     report_links["Report EN (DOCX)"] = en_att
             if report_links:
+                email_send_attempted = True
                 sent, status = send_result_email(job_info, video_keys_report, report_links)
                 statuses.append(f"reports:{status}")
                 if sent:
+                    email_send_any_ok = True
                     if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
                         report_th_sent = True
                         payload["report_th_email_sent"] = True
@@ -1896,20 +1902,24 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             # 2) Dots email
             if (not dots_sent) and expect_dots and email_payload_dots_ready(payload):
+                email_send_attempted = True
                 d_key = str(payload.get("dots_key") or "").strip()
                 sent, status = send_result_email(job_info, {"Dots video (MP4)": d_key}, {})
                 statuses.append(f"dots:{status}")
                 if sent:
+                    email_send_any_ok = True
                     dots_sent = True
                     payload["dots_email_sent"] = True
                     sent_any = True
 
             # 3) Skeleton email
             if (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload):
+                email_send_attempted = True
                 sk_key = str(payload.get("skeleton_key") or "").strip()
                 sent, status = send_result_email(job_info, {"Skeleton video (MP4)": sk_key}, {})
                 statuses.append(f"skeleton:{status}")
                 if sent:
+                    email_send_any_ok = True
                     skeleton_sent = True
                     payload["skeleton_email_sent"] = True
                     sent_any = True
@@ -1970,8 +1980,20 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             if all_done:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=key)
             else:
-                payload["attempts"] = int(payload.get("attempts") or 0) + 1
                 payload["updated_at"] = utc_now_iso()
+                # Do not increment attempts every poll while waiting for S3 files — only when we
+                # actually called send_result_email and nothing succeeded (e.g. missing SES/SMTP).
+                if email_send_attempted and not email_send_any_ok:
+                    payload["attempts"] = int(payload.get("attempts") or 0) + 1
+                    logger.warning(
+                        "[email_queue] send failed for key=%s job_id=%s attempts=%s statuses=%s",
+                        key,
+                        job_id,
+                        payload["attempts"],
+                        status_text,
+                    )
+                elif email_send_any_ok:
+                    payload["attempts"] = 0
                 s3_put_json(key, payload)
 
 
