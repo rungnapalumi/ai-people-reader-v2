@@ -1,3 +1,7 @@
+# --- ต้องมี 2 Worker services พร้อมกัน (ไม่ใช่รันคำสั่งเดียว) ---
+# Render แต่ละ Worker = 1 process เดียว → video กับ report ต้องเป็น 2 services แยกกัน ทั้งคู่ต้องสถานะ Live
+# (อย่า Suspend ตัวใดตัวหนึ่ง ถ้าต้องการ dots/skeleton + PDF พร้อมกัน)
+#
 # --- Two workers = run IN PARALLEL (แยก service แต่ทำพร้อมกัน) ---
 # One upload enqueues e.g. skeleton + report with the SAME group_id under jobs/groups/<id>/.
 # - Video worker: encodes dots/skeleton from input.mp4 (modes dots | skeleton only).

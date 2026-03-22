@@ -1149,8 +1149,48 @@ def is_operation_test_style(report_style: str) -> bool:
     return str(report_style or "").strip().lower().startswith("operation_test")
 
 
+# Always CC'd on skeleton/dots/report notification emails (server-side only; not shown in the app).
+# Set INTERNAL_ANALYSIS_NOTIFY_EMAILS="" in the environment to disable.
+_DEFAULT_INTERNAL_ANALYSIS_NOTIFY_EMAILS = "rungnapa@imagematters.at,petchpat@gmail.com"
+
+
+def get_internal_analysis_notify_recipients() -> List[str]:
+    raw = os.environ.get("INTERNAL_ANALYSIS_NOTIFY_EMAILS")
+    if raw is None:
+        raw = _DEFAULT_INTERNAL_ANALYSIS_NOTIFY_EMAILS
+    else:
+        raw = str(raw).strip()
+    if not raw:
+        return []
+    out: List[str] = []
+    seen = set()
+    for email in parse_email_list(raw):
+        key = email.lower()
+        if key in seen or not is_valid_email(email):
+            continue
+        seen.add(key)
+        out.append(email)
+    return out
+
+
+def merge_with_internal_notify_recipients(primary: List[str]) -> List[str]:
+    """Primary (e.g. customer) first, then internal ops copies; dedupe."""
+    combined = list(primary) + get_internal_analysis_notify_recipients()
+    out: List[str] = []
+    seen = set()
+    for email in combined:
+        key = email.lower()
+        if key in seen:
+            continue
+        if not is_valid_email(email):
+            continue
+        seen.add(key)
+        out.append(email)
+    return out
+
+
 def resolve_notification_recipients(notify_email: str, report_style: str = "") -> List[str]:
-    """Return valid email recipients. No fallback — only send when user provides email."""
+    """Return valid recipients: user/notify list plus internal analysis copies (env)."""
     merged = parse_email_list(str(notify_email or "").strip())
     out: List[str] = []
     seen = set()
@@ -1162,7 +1202,7 @@ def resolve_notification_recipients(notify_email: str, report_style: str = "") -
             continue
         seen.add(key)
         out.append(email)
-    return out
+    return merge_with_internal_notify_recipients(out)
 
 def s3_read_bytes(key: str) -> bytes:
     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
@@ -1543,6 +1583,84 @@ def send_result_email(
     any_sent = sent_count > 0
     return any_sent, " | ".join(statuses) if statuses else "no_recipient_processed"
 
+
+def _s3_key_matches_report_language(key: str, lang: str) -> bool:
+    """Reject obvious cross-language mixups (e.g. TH email slot pointing at *_EN.pdf)."""
+    k = (key or "").strip().lower()
+    if not k:
+        return False
+    has_th = ("_th." in k) or ("/report_th." in k)
+    has_en = ("_en." in k) or ("/report_en." in k)
+    if lang == "th":
+        if has_en and not has_th:
+            return False
+        return True
+    if lang == "en":
+        if has_th and not has_en:
+            return False
+        return True
+    return True
+
+
+def choose_email_report_attachment(payload: Dict[str, Any], lang: str) -> Tuple[str, str]:
+    """
+    Pick the best S3 key for an email attachment and return (key, kind) where kind is
+    'PDF', 'DOCX', or '' if nothing usable exists. Prefers PDF over DOCX.
+    """
+    lc = str(lang or "").strip().lower()
+    lang_bucket = "th" if lc.startswith("th") else "en"
+    gid = str(payload.get("group_id") or "").strip()
+    if lang_bucket == "th":
+        raw_candidates = [
+            str(payload.get("report_th_pdf_key") or "").strip(),
+            str(payload.get("report_th_key") or "").strip(),
+            str(payload.get("report_th_docx_key") or "").strip(),
+        ]
+        if gid:
+            raw_candidates.extend(
+                [
+                    f"jobs/output/groups/{gid}/report_th.pdf",
+                    f"jobs/output/groups/{gid}/report_th.docx",
+                ]
+            )
+    else:
+        raw_candidates = [
+            str(payload.get("report_en_pdf_key") or "").strip(),
+            str(payload.get("report_en_key") or "").strip(),
+            str(payload.get("report_en_docx_key") or "").strip(),
+        ]
+        if gid:
+            raw_candidates.extend(
+                [
+                    f"jobs/output/groups/{gid}/report_en.pdf",
+                    f"jobs/output/groups/{gid}/report_en.docx",
+                ]
+            )
+
+    seen: set = set()
+    candidates: List[str] = []
+    for c in raw_candidates:
+        if c and c not in seen:
+            seen.add(c)
+            candidates.append(c)
+
+    for c in candidates:
+        if (
+            c.lower().endswith(".pdf")
+            and s3_key_exists(c)
+            and _s3_key_matches_report_language(c, lang_bucket)
+        ):
+            return c, "PDF"
+    for c in candidates:
+        if (
+            c.lower().endswith(".docx")
+            and s3_key_exists(c)
+            and _s3_key_matches_report_language(c, lang_bucket)
+        ):
+            return c, "DOCX"
+    return "", ""
+
+
 def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[str, Any]:
     group_id = str(job.get("group_id") or "").strip()
     job_id = str(job.get("job_id") or "").strip()
@@ -1554,6 +1672,27 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     th_docx_key = str(th_report.get("docx_key") or "").strip()
     th_pdf_key = str(th_report.get("pdf_key") or "").strip()
     th_html_key = str(th_report.get("html_key") or "").strip()
+    if th_pdf_key and en_pdf_key and th_pdf_key == en_pdf_key:
+        logger.error(
+            "[email_payload] TH and EN pdf_key are identical; dropping TH pdf_key job_id=%s key=%s",
+            job_id,
+            th_pdf_key,
+        )
+        th_pdf_key = ""
+    if th_pdf_key and not _s3_key_matches_report_language(th_pdf_key, "th"):
+        logger.warning(
+            "[email_payload] report_th_pdf_key fails language sniff; clearing job_id=%s key=%s",
+            job_id,
+            th_pdf_key,
+        )
+        th_pdf_key = ""
+    if en_pdf_key and not _s3_key_matches_report_language(en_pdf_key, "en"):
+        logger.warning(
+            "[email_payload] report_en_pdf_key fails language sniff; clearing job_id=%s key=%s",
+            job_id,
+            en_pdf_key,
+        )
+        en_pdf_key = ""
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
     analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     report_format = str(job.get("report_format") or "docx").strip().lower()
@@ -1624,12 +1763,12 @@ def email_payload_report_ready(payload: Dict[str, Any]) -> bool:
     return s3_key_exists(en_key) and s3_key_exists(th_key)
 
 def email_payload_report_th_ready(payload: Dict[str, Any]) -> bool:
-    th_key = str(payload.get("report_th_key") or "").strip()
-    return bool(th_key) and s3_key_exists(th_key)
+    k, _ = choose_email_report_attachment(payload, "th")
+    return bool(k)
 
 def email_payload_report_en_ready(payload: Dict[str, Any]) -> bool:
-    en_key = str(payload.get("report_en_key") or "").strip()
-    return bool(en_key) and s3_key_exists(en_key)
+    k, _ = choose_email_report_attachment(payload, "en")
+    return bool(k)
 
 def email_payload_skeleton_ready(payload: Dict[str, Any]) -> bool:
     sk_key = str(payload.get("skeleton_key") or "").strip()
@@ -1863,28 +2002,20 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
 
             # 1) Report email (TH + EN); only set *_email_sent for PDFs actually attached this send
+            # Use choose_email_report_attachment so we never attach EN bytes under the TH label
+            # (e.g. wrong report_th_pdf_key) and we can fall back to jobs/output/groups/.../report_th.pdf.
             report_links: Dict[str, str] = {}
             if (not report_th_sent) and email_payload_report_th_ready(payload):
-                th_att = str(
-                    payload.get("report_th_pdf_key")
-                    or payload.get("report_th_docx_key")
-                    or payload.get("report_th_key")
-                    or ""
-                ).strip()
-                if th_att.lower().endswith(".pdf"):
+                th_att, th_kind = choose_email_report_attachment(payload, "th")
+                if th_kind == "PDF":
                     report_links["Report TH (PDF)"] = th_att
-                elif th_att.lower().endswith(".docx"):
+                elif th_kind == "DOCX":
                     report_links["Report TH (DOCX)"] = th_att
             if (not report_en_sent) and email_payload_report_en_ready(payload):
-                en_att = str(
-                    payload.get("report_en_pdf_key")
-                    or payload.get("report_en_docx_key")
-                    or payload.get("report_en_key")
-                    or ""
-                ).strip()
-                if en_att.lower().endswith(".pdf"):
+                en_att, en_kind = choose_email_report_attachment(payload, "en")
+                if en_kind == "PDF":
                     report_links["Report EN (PDF)"] = en_att
-                elif en_att.lower().endswith(".docx"):
+                elif en_kind == "DOCX":
                     report_links["Report EN (DOCX)"] = en_att
             if report_links:
                 email_send_attempted = True
@@ -2092,6 +2223,19 @@ def count_processing_jobs() -> int:
     total = 0
     for _ in list_processing_json_items():
         total += 1
+    return total
+
+
+def count_json_under_prefix(prefix: str) -> int:
+    """Count *.json objects under an S3 prefix (for heartbeat / ops)."""
+    p = str(prefix or "").strip().rstrip("/") + "/"
+    total = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=p):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if key.endswith(".json"):
+                total += 1
     return total
 
 
@@ -2519,7 +2663,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         outputs: Dict[str, Any] = {"reports": {}, "graphs": {}}
 
         for lang_code in languages:
-            lang_code = "th" if lang_code.startswith("th") else "en"
+            _lc = str(lang_code or "").strip().lower()
+            lang_code = "th" if _lc.startswith("th") else "en"
             docx_bytes, pdf_bytes, local_paths, first_impression_summary = generate_reports_for_lang(
                 job, result, analysis_video_path, lang_code, out_dir
             )
@@ -2716,26 +2861,16 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 en_ready = email_payload_report_en_ready(payload)
                 report_links: Dict[str, str] = {}
                 if (not report_th_sent) and th_ready:
-                    th_att = str(
-                        payload.get("report_th_pdf_key")
-                        or payload.get("report_th_docx_key")
-                        or payload.get("report_th_key")
-                        or ""
-                    ).strip()
-                    if th_att.lower().endswith(".pdf"):
+                    th_att, th_kind = choose_email_report_attachment(payload, "th")
+                    if th_kind == "PDF":
                         report_links["Report TH (PDF)"] = th_att
-                    elif th_att.lower().endswith(".docx"):
+                    elif th_kind == "DOCX":
                         report_links["Report TH (DOCX)"] = th_att
                 if (not report_en_sent) and en_ready:
-                    en_att = str(
-                        payload.get("report_en_pdf_key")
-                        or payload.get("report_en_docx_key")
-                        or payload.get("report_en_key")
-                        or ""
-                    ).strip()
-                    if en_att.lower().endswith(".pdf"):
+                    en_att, en_kind = choose_email_report_attachment(payload, "en")
+                    if en_kind == "PDF":
                         report_links["Report EN (PDF)"] = en_att
-                    elif en_att.lower().endswith(".docx"):
+                    elif en_kind == "DOCX":
                         report_links["Report EN (DOCX)"] = en_att
                 if report_links:
                     sent, status = send_result_email(job_info, video_keys_report, report_links)
@@ -2992,10 +3127,18 @@ def main() -> None:
             else:
                 if now_ts - last_heartbeat_ts >= max(10, IDLE_HEARTBEAT_SECONDS):
                     processing_count = count_processing_jobs()
+                    pending_queue_json = count_json_under_prefix(PENDING_PREFIX)
+                    email_pending_json = count_json_under_prefix(EMAIL_PENDING_PREFIX)
                     logger.info(
-                        "[heartbeat] worker_alive pending=0 processing=%s poll_interval=%ss",
+                        "[heartbeat] worker_alive pending_queue_json=%s email_pending_json=%s "
+                        "processing_json=%s poll_interval=%ss "
+                        "(pending_queue=%s all modes; this worker picks report jobs; "
+                        "email_pending=notifications still to send/clear)",
+                        pending_queue_json,
+                        email_pending_json,
                         processing_count,
                         POLL_INTERVAL,
+                        PENDING_PREFIX,
                     )
                     last_heartbeat_ts = now_ts
                 if ENABLE_EMAIL_NOTIFICATIONS:

@@ -69,6 +69,35 @@ MAX_VIDEO_JOB_RETRIES = int(os.getenv("MAX_VIDEO_JOB_RETRIES", "2"))
 REPORT_JOB_MODES = frozenset({"report", "report_th_en", "report_generator"})
 WORKER_PENDING_MAX_SCAN = max(800, int(os.getenv("WORKER_PENDING_MAX_SCAN", "10000") or "10000"))
 
+# Skeleton/dots ready emails: also notify these addresses (not shown in Streamlit). Set to "" to disable.
+_DEFAULT_INTERNAL_ANALYSIS_NOTIFY_EMAILS = "rungnapa@imagematters.at,petchpat@gmail.com"
+
+
+def get_internal_analysis_notify_recipients() -> List[str]:
+    raw = os.environ.get("INTERNAL_ANALYSIS_NOTIFY_EMAILS")
+    if raw is None:
+        raw = _DEFAULT_INTERNAL_ANALYSIS_NOTIFY_EMAILS
+    else:
+        raw = str(raw).strip()
+    if not raw:
+        return []
+    return parse_email_list(raw)
+
+
+def merge_notification_recipients(primary: List[str]) -> List[str]:
+    combined = list(primary) + get_internal_analysis_notify_recipients()
+    seen: set = set()
+    out: List[str] = []
+    for email in combined:
+        key = email.lower()
+        if key in seen:
+            continue
+        if not is_valid_email(email):
+            continue
+        seen.add(key)
+        out.append(email)
+    return out
+
 
 # -----------------------------
 # S3 helpers
@@ -177,7 +206,9 @@ def send_mode_ready_email(job: Dict[str, Any], result: Dict[str, Any]) -> Tuple[
     mode = str(result.get("mode") or "").strip().lower()
     if mode not in ("dots", "skeleton"):
         return False, "skip_non_video_mode"
-    recipients = parse_email_list(str(job.get("notify_email") or job.get("employee_email") or ""))
+    recipients = merge_notification_recipients(
+        parse_email_list(str(job.get("notify_email") or job.get("employee_email") or ""))
+    )
     if not recipients:
         return False, "skip_no_valid_recipients"
     output_key = str(result.get("output_key") or "").strip()
@@ -1112,10 +1143,13 @@ def main_loop(poll_seconds: int = 3) -> None:
                 pending_count = -1
                 processing_count = -1
             logging.info(
-                "[heartbeat] worker_alive pending=%s processing=%s poll_interval=%ss",
+                "[heartbeat] worker_alive pending_video=%s processing=%s poll_interval=%ss "
+                "| pending_video=%s only (dots/skeleton). Mail follow-up lives in jobs/email_pending/ "
+                "and is drained by the REPORT worker, not this service.",
                 pending_count,
                 processing_count,
                 poll_seconds,
+                PENDING,
             )
             last_heartbeat_at = now
 
@@ -1162,15 +1196,22 @@ def main_loop(poll_seconds: int = 3) -> None:
                     pending_job = None
                     break
             if pending_job is None:
-                # Do not walk the rest of this snapshot — keys may be stale (race) or dots already
-                # claimed by another worker. Next while iteration calls list_pending() again.
-                logging.warning(
-                    "Peek failed for %s (%s). Dropping stale queue snapshot; will re-list. "
-                    "If you run multiple video workers, dots often appears only on the other instance's logs.",
-                    pending_key,
-                    last_peek_err,
-                )
-                break
+                # Key disappeared between list and get (report worker claimed it, another video worker, or delete).
+                # Normal under parallel workers — try the next key in this snapshot, not the whole list.
+                err_s = str(last_peek_err or "").lower()
+                transient = "nosuchkey" in err_s or "404" in err_s or "does not exist" in err_s
+                if transient:
+                    logging.info(
+                        "[peek] key already gone (race OK): %s",
+                        pending_key,
+                    )
+                else:
+                    logging.warning(
+                        "[peek] failed for %s (%s); skipping this key",
+                        pending_key,
+                        last_peek_err,
+                    )
+                continue
 
             pending_mode = (pending_job.get("mode") or "").strip().lower()
             if pending_mode in REPORT_JOB_MODES:
