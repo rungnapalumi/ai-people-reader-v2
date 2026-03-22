@@ -21,7 +21,7 @@ import json
 import uuid
 import re
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -318,14 +318,6 @@ def s3_output_ready(key: str) -> bool:
     return False
 
 
-def s3_get_bytes(key: str) -> Optional[bytes]:
-    try:
-        obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
-        return obj["Body"].read()
-    except Exception:
-        return None
-
-
 def get_group_id_variants_lpa(group_id: str) -> List[str]:
     g = (group_id or "").strip()
     if not g:
@@ -379,6 +371,38 @@ def apply_lpa_skeleton_from_finished_job(group_id: str, outputs: Dict[str, str])
         outputs["skeleton_video"] = out_key
 
 
+def lpa_merge_canonical_files_from_listing(group_id: str, resolved: Dict[str, str]) -> None:
+    """Fill report/skeleton S3 keys from known basenames under group prefixes (Training-style reliability)."""
+    gid = (group_id or "").strip()
+    if not gid:
+        return
+    prefixes = [
+        f"{JOBS_OUTPUT_PREFIX}groups/{gid}/",
+        f"{JOBS_GROUP_PREFIX}{gid}/",
+    ]
+    for pfx in prefixes:
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=pfx):
+                for item in page.get("Contents", []):
+                    k = str(item.get("Key") or "").strip()
+                    if not k or "/input/" in k.lower():
+                        continue
+                    bn = os.path.basename(k).lower()
+                    if bn == "skeleton.mp4" and not (resolved.get("skeleton_video") or "").strip():
+                        resolved["skeleton_video"] = k
+                    elif bn == "report_th.pdf" and not (resolved.get("report_th_pdf") or "").strip():
+                        resolved["report_th_pdf"] = k
+                    elif bn == "report_en.pdf" and not (resolved.get("report_en_pdf") or "").strip():
+                        resolved["report_en_pdf"] = k
+                    elif bn == "report_th.docx" and not (resolved.get("report_th_docx") or "").strip():
+                        resolved["report_th_docx"] = k
+                    elif bn == "report_en.docx" and not (resolved.get("report_en_docx") or "").strip():
+                        resolved["report_en_docx"] = k
+        except Exception:
+            pass
+
+
 def discover_lpa_skeleton_output(group_id: str, outputs: Dict[str, str], max_json: int = 400) -> None:
     gid = (group_id or "").strip()
     if not gid:
@@ -424,47 +448,21 @@ def lpa_render_download_button(
     if not key:
         st.caption(f"Waiting for {label}")
         return
-    is_video = (mime or "").startswith("video/")
-    if is_video:
-        try:
-            url = presigned_get_url(key, expires=3600, filename=filename)
-            if ready:
-                btn_html = (
-                    '<a href="' + url + '" target="_blank" rel="noopener" '
-                    'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
-                    'color: white !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
-                    "✓ Download " + label + "</a>"
-                )
-                st.markdown(btn_html, unsafe_allow_html=True)
-            else:
-                st.link_button(f"Download {label}", url)
-        except Exception:
-            st.caption(f"Waiting for {label}")
-        return
-    data = s3_get_bytes(key)
-    if data and len(data) < 50 * 1024 * 1024:
-        st.download_button(
-            label=f"✓ Download {label}" if ready else f"Download {label}",
-            data=data,
-            file_name=filename,
-            mime=mime,
-            key=button_key,
-        )
-    else:
-        try:
-            url = presigned_get_url(key, expires=3600, filename=filename)
-            if ready:
-                btn_html = (
-                    '<a href="' + url + '" target="_blank" rel="noopener" '
-                    'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
-                    'color: white !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
-                    "✓ Download " + label + "</a>"
-                )
-                st.markdown(btn_html, unsafe_allow_html=True)
-            else:
-                st.link_button(f"Download {label}", url)
-        except Exception:
-            st.caption(f"Waiting for {label}")
+    # Presigned GET for everything (matches Training video links; avoids loading large PDFs into Streamlit memory).
+    try:
+        url = presigned_get_url(key, expires=3600, filename=filename)
+        if ready:
+            btn_html = (
+                '<a href="' + url + '" target="_blank" rel="noopener" '
+                'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
+                'color: white !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
+                "✓ Download " + label + "</a>"
+            )
+            st.markdown(btn_html, unsafe_allow_html=True)
+        else:
+            st.link_button(f"Download {label}", url, key=button_key)
+    except Exception:
+        st.caption(f"Waiting for {label}")
 
 
 def s3_read_json(key: str) -> Optional[Dict[str, Any]]:
@@ -773,6 +771,10 @@ def get_report_format_for_group(group_id: str) -> str:
 def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
     """Find the finished report job and extract actual output paths"""
     found: Dict[str, str] = {}
+    gid = (group_id or "").strip()
+    variants = set(get_group_id_variants_lpa(gid) or [])
+    if gid:
+        variants.add(gid)
     try:
         # Search in both finished and failed jobs
         prefixes = [JOBS_FINISHED_PREFIX, JOBS_FAILED_PREFIX]
@@ -789,9 +791,10 @@ def get_report_outputs_from_job(group_id: str) -> Dict[str, str]:
                     obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
                     job_data = json.loads(obj["Body"].read().decode("utf-8"))
                     
+                    jg = str(job_data.get("group_id") or "").strip()
                     # Check if this job belongs to our group and is a report job
                     if (
-                        job_data.get("group_id") == group_id
+                        jg in variants
                         and str(job_data.get("mode") or "").strip().lower() in ("report", "report_th_en", "report_generator")
                     ):
                         
@@ -1370,6 +1373,7 @@ else:
 
     apply_lpa_skeleton_from_finished_job(lpa_direct_group_id, resolved)
     discover_lpa_skeleton_output(lpa_direct_group_id, resolved)
+    lpa_merge_canonical_files_from_listing(lpa_direct_group_id, resolved)
 
     en_pdf_candidate = str(resolved.get("report_en_pdf") or "").strip()
     en_docx_candidate = str(resolved.get("report_en_docx") or "").strip()
@@ -1389,35 +1393,18 @@ else:
     skel_key = str(resolved.get("skeleton_video") or "").strip()
     sk_ready = bool(skel_key) and s3_output_ready(skel_key)
 
-    enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
-    enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
-    enable_skeleton = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
-
+    # Always show TH / EN / Skeleton like Training (org flags only affect new submissions, not downloads).
     th_ready = bool(th_key) and s3_output_ready(th_key)
     en_ready = bool(en_key) and s3_output_ready(en_key)
-    status_items: List[tuple] = []
-    if enable_report_th:
-        status_items.append(("Report Thai", th_ready))
-    if enable_report_en:
-        status_items.append(("Report English", en_ready))
-    if enable_skeleton:
-        status_items.append(("Skeleton Video", sk_ready))
-    if not status_items:
-        status_items = [("Report Thai", th_ready), ("Report English", en_ready), ("Skeleton Video", sk_ready)]
+    status_items: List[tuple] = [
+        ("Report Thai", th_ready),
+        ("Report English", en_ready),
+        ("Skeleton Video", sk_ready),
+    ]
 
     n_items = len(status_items)
     overall_pct = int(round((sum(1 for _, r in status_items if r) / n_items) * 100)) if n_items else 0
     st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
-
-    if overall_pct < 100:
-        try:
-
-            @st.fragment(run_every=timedelta(seconds=8))
-            def _lpa_auto_refresh():
-                st.rerun()
-
-        except Exception:
-            pass
 
     for label, ready in status_items:
         st.progress(100 if ready else 0, text=f"{label}: {'Ready' if ready else 'Processing'}")
@@ -1436,44 +1423,35 @@ else:
             return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         return "application/octet-stream"
 
-    if enable_report_th:
-        lpa_render_download_button(
-            label="Report Thai",
-            key=th_key,
-            filename=th_name,
-            mime=_lpa_report_mime(th_name),
-            button_key=f"lpa_dl_th_{_gid_safe}",
-            ready=th_ready,
-        )
-    if enable_report_en:
-        lpa_render_download_button(
-            label="Report English",
-            key=en_key,
-            filename=en_name,
-            mime=_lpa_report_mime(en_name),
-            button_key=f"lpa_dl_en_{_gid_safe}",
-            ready=en_ready,
-        )
-    if enable_skeleton:
-        lpa_render_download_button(
-            label="Skeleton",
-            key=skel_key,
-            filename="skeleton.mp4",
-            mime="video/mp4",
-            button_key=f"lpa_dl_skel_{_gid_safe}",
-            ready=sk_ready,
-        )
+    lpa_render_download_button(
+        label="Report Thai",
+        key=th_key,
+        filename=th_name,
+        mime=_lpa_report_mime(th_name),
+        button_key=f"lpa_dl_th_{_gid_safe}",
+        ready=th_ready,
+    )
+    lpa_render_download_button(
+        label="Report English",
+        key=en_key,
+        filename=en_name,
+        mime=_lpa_report_mime(en_name),
+        button_key=f"lpa_dl_en_{_gid_safe}",
+        ready=en_ready,
+    )
+    lpa_render_download_button(
+        label="Skeleton",
+        key=skel_key,
+        filename="skeleton.mp4",
+        mime="video/mp4",
+        button_key=f"lpa_dl_skel_{_gid_safe}",
+        ready=sk_ready,
+    )
 
-    if not any(
-        [
-            th_ready if enable_report_th else False,
-            en_ready if enable_report_en else False,
-            sk_ready if enable_skeleton else False,
-        ]
-    ):
+    if not (th_ready or en_ready or sk_ready):
         st.caption("ไฟล์ยังไม่พร้อม รอสักครู่แล้วกดรีเฟรช")
 
-    if enable_skeleton and not sk_ready:
+    if not sk_ready:
         _lpa_notify = str(notify_email or "").strip()
         lpa_rows = list_jobs_for_group(lpa_direct_group_id)
         skel_active = any(
@@ -1499,7 +1477,7 @@ else:
             except Exception as e:
                 st.error(f"ส่งงาน Skeleton ไม่สำเร็จ: {format_submit_error_message(e)}")
 
-    if enable_report_th and sk_ready and not th_ready:
+    if sk_ready and not th_ready:
         st.warning(
             "Thai report is still not ready. You can re-run report generation for this group. "
             "(รายงานภาษาไทยยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)"

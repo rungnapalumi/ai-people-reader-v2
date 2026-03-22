@@ -38,7 +38,7 @@ REPORT_MODES = frozenset(
 
 # Pending listing: S3 returns keys in lexicographic order. If the queue is large, dots jobs can
 # sit beyond the first N keys; a small cap causes "skeleton works but dots never runs".
-WORKER_PENDING_MAX_SCAN = max(800, int(os.getenv("WORKER_PENDING_MAX_SCAN", "10000") or "10000"))
+WORKER_PENDING_MAX_SCAN = max(800, int(os.getenv("WORKER_PENDING_MAX_SCAN", "25000") or "25000"))
 
 
 # -----------------------------
@@ -93,53 +93,52 @@ def s3_upload_file(path: str, key: str, content_type: str) -> None:
 
 def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
     """
-    Dots jobs first, then skeleton/other. Report jobs excluded entirely.
-    Paginates pending until max_scan JSON keys (see WORKER_PENDING_MAX_SCAN) so dots jobs are not
-    missed when many skeleton/report jobs sort earlier under jobs/pending/.
+    Dots jobs first, then skeleton/other. Report jobs are skipped.
+
+    Scan skips report JSONs while searching so dots/skeleton are found even when many report
+    jobs sort earlier lexicographically under jobs/pending/.
     """
-    cap = max_scan if max_scan is not None else WORKER_PENDING_MAX_SCAN
-    raw: List[str] = []
+    cap = max(max_scan if max_scan is not None else WORKER_PENDING_MAX_SCAN, 1)
+    dots_keys: List[str] = []
+    other_keys: List[str] = []
+    scanned = 0
     paginator = s3.get_paginator("list_objects_v2")
-    truncated = False
     for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PENDING):
         for item in page.get("Contents", []):
             k = str(item.get("Key") or "")
-            if k.endswith(".json"):
-                raw.append(k)
-                if len(raw) >= cap:
-                    truncated = True
-                    break
-        if truncated:
+            if not k.endswith(".json"):
+                continue
+            scanned += 1
+            try:
+                job = s3_read_json(k)
+                mode = str(job.get("mode") or "").strip().lower()
+                if mode in REPORT_MODES:
+                    continue
+                if mode == "dots":
+                    dots_keys.append(k)
+                else:
+                    other_keys.append(k)
+            except Exception:
+                other_keys.append(k)
+            if len(dots_keys) + len(other_keys) >= limit:
+                return (dots_keys + other_keys)[:limit]
+            if scanned >= cap:
+                break
+        if scanned >= cap:
             break
 
-    if truncated:
+    merged = (dots_keys + other_keys)[:limit]
+    if not merged and scanned >= cap:
         logging.warning(
-            "list_pending: scanned %s pending JSON keys (cap=%s). Increase WORKER_PENDING_MAX_SCAN if jobs stay stuck.",
-            len(raw),
+            "list_pending: read %s pending JSON keys (cap=%s), found no dots/skeleton — increase WORKER_PENDING_MAX_SCAN if jobs exist.",
+            scanned,
             cap,
         )
-
-    dots_keys: List[str] = []
-    other_keys: List[str] = []
-    for k in raw:
-        try:
-            job = s3_read_json(k)
-            mode = str(job.get("mode") or "").strip().lower()
-            if mode in REPORT_MODES:
-                continue
-            if mode == "dots":
-                dots_keys.append(k)
-            else:
-                other_keys.append(k)
-        except Exception:
-            other_keys.append(k)
-
-    merged = (dots_keys + other_keys)[:limit]
-    if not dots_keys and other_keys:
+    elif not dots_keys and other_keys:
         logging.info(
-            "list_pending: no dots in this scan (%s non-report keys of %s JSON keys) — dots may be deeper in queue or not enqueued",
+            "list_pending: no dots in this batch (%s other video keys of %s JSON scanned)",
             len(other_keys),
-            len(raw),
+            scanned,
         )
     return merged
 
@@ -157,7 +156,8 @@ def claim_job(key: str) -> Optional[str]:
         )
         s3.delete_object(Bucket=AWS_BUCKET, Key=key)
         return new_key
-    except Exception:
+    except Exception as exc:
+        logging.warning("claim_job failed pending_key=%s err=%s", key, exc)
         return None
 
 

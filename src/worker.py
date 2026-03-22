@@ -67,7 +67,9 @@ IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
 MAX_VIDEO_JOB_RETRIES = int(os.getenv("MAX_VIDEO_JOB_RETRIES", "2"))
 # S3 lists pending in lexicographic order; many report jobs can fill the first N keys and hide dots/skeleton.
 REPORT_JOB_MODES = frozenset({"report", "report_th_en", "report_generator"})
-WORKER_PENDING_MAX_SCAN = max(800, int(os.getenv("WORKER_PENDING_MAX_SCAN", "10000") or "10000"))
+# Max *.json keys to *read* under jobs/pending/ per poll while searching for dots/skeleton
+# (report jobs are skipped but still count toward this cap).
+WORKER_PENDING_MAX_SCAN = max(800, int(os.getenv("WORKER_PENDING_MAX_SCAN", "25000") or "25000"))
 
 # Skeleton/dots ready emails: also notify these addresses (not shown in Streamlit). Set to "" to disable.
 _DEFAULT_INTERNAL_ANALYSIS_NOTIFY_EMAILS = "rungnapa@imagematters.at,petchpat@gmail.com"
@@ -246,52 +248,54 @@ def send_mode_ready_email(job: Dict[str, Any], result: Dict[str, Any]) -> Tuple[
 
 def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
     """
-    List pending keys; dots jobs first, then skeleton/other. Report jobs excluded (report_worker).
-    Scans up to WORKER_PENDING_MAX_SCAN JSON keys so video jobs are not hidden behind many report JSONs.
+    List pending keys; dots jobs first, then skeleton/other. Report jobs are skipped (report_worker).
+
+    Important: S3 lists keys lexicographically. If the first N pending files are all mode=report,
+    we must keep scanning past them until we find dots/skeleton or hit max_scan JSON reads.
+    The old "collect N keys then filter" approach starved video jobs when N was all reports.
     """
-    cap = max_scan if max_scan is not None else WORKER_PENDING_MAX_SCAN
-    raw: List[str] = []
+    cap = max(max_scan if max_scan is not None else WORKER_PENDING_MAX_SCAN, 1)
+    dots_keys: List[str] = []
+    other_keys: List[str] = []
+    scanned = 0
     paginator = s3.get_paginator("list_objects_v2")
-    truncated = False
     for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PENDING):
         for item in page.get("Contents", []):
             key = str(item.get("Key") or "")
-            if key.endswith(".json"):
-                raw.append(key)
-                if len(raw) >= cap:
-                    truncated = True
-                    break
-        if truncated:
+            if not key.endswith(".json"):
+                continue
+            scanned += 1
+            try:
+                job = s3_read_json(key)
+                mode = str(job.get("mode") or "").strip().lower()
+                if mode in REPORT_JOB_MODES:
+                    continue
+                if mode == "dots":
+                    dots_keys.append(key)
+                else:
+                    other_keys.append(key)
+            except Exception:
+                other_keys.append(key)
+            if len(dots_keys) + len(other_keys) >= limit:
+                return (dots_keys + other_keys)[:limit]
+            if scanned >= cap:
+                break
+        if scanned >= cap:
             break
 
-    if truncated:
+    merged = (dots_keys + other_keys)[:limit]
+    if not merged and scanned >= cap:
         logging.warning(
-            "list_pending: scanned %s pending JSON keys (cap=%s). Increase WORKER_PENDING_MAX_SCAN if jobs stay stuck.",
-            len(raw),
+            "list_pending: read %s pending JSON keys (cap=%s), found no dots/skeleton. "
+            "Video jobs may sit behind more report jobs — increase WORKER_PENDING_MAX_SCAN.",
+            scanned,
             cap,
         )
-
-    dots_keys: List[str] = []
-    other_keys: List[str] = []
-    for k in raw:
-        try:
-            job = s3_read_json(k)
-            mode = str(job.get("mode") or "").strip().lower()
-            if mode in REPORT_JOB_MODES:
-                continue
-            if mode == "dots":
-                dots_keys.append(k)
-            else:
-                other_keys.append(k)
-        except Exception:
-            other_keys.append(k)
-
-    merged = (dots_keys + other_keys)[:limit]
-    if not dots_keys and other_keys:
+    elif not dots_keys and other_keys:
         logging.info(
-            "list_pending: no dots in this scan (%s non-report keys of %s JSON scanned)",
+            "list_pending: no dots in this batch (%s other video keys of %s JSON scanned)",
             len(other_keys),
-            len(raw),
+            scanned,
         )
     return merged
 
@@ -358,7 +362,8 @@ def claim_job(pending_key: str) -> Optional[str]:
         )
         s3.delete_object(Bucket=AWS_BUCKET, Key=pending_key)
         return processing_key
-    except Exception:
+    except Exception as exc:
+        logging.warning("claim_job failed pending_key=%s err=%s", pending_key, exc)
         return None
 
 
@@ -1146,13 +1151,12 @@ def main_loop(poll_seconds: int = 3) -> None:
                 pending_count = -1
                 processing_count = -1
             logging.info(
-                "[heartbeat] worker_alive pending_video=%s processing=%s poll_interval=%ss "
-                "| pending_video=%s only (dots/skeleton). Mail follow-up lives in jobs/email_pending/ "
-                "and is drained by the REPORT worker, not this service.",
+                "[heartbeat] worker_alive pending_json_all_modes=%s processing=%s poll_interval=%ss "
+                "| note: pending count is every jobs/pending/*.json (includes report). "
+                "Video worker only claims dots/skeleton; mail is drained by REPORT worker via jobs/email_pending/.",
                 pending_count,
                 processing_count,
                 poll_seconds,
-                PENDING,
             )
             last_heartbeat_at = now
 
