@@ -1227,7 +1227,8 @@ if hasattr(st, "Page") and hasattr(st, "navigation"):
                 st.Page("pages/7_LPA.py", title=LPA_PAGE_TITLE),
                 st.Page("pages/4_Operational_Test.py", title=OPERATION_TEST_PAGE_TITLE),
                 st.Page("pages/5_training-online-portal.py", title=TRAINING_ONLINE_PORTAL_PAGE_TITLE),
-                st.Page("pages/6_Training.py", title="Training")
+                st.Page("pages/6_Training.py", title="Training"),
+                st.Page("pages/8_People_Reader.py", title="People Reader"),
             ]
         }
     )

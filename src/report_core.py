@@ -1084,7 +1084,20 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     engaging_score = min(7, max(1, round(engaging_raw / 5.4 + 1.4)))
     convince_score = min(7, max(1, round(confidence_raw / 5.4 + 1.4)))
     authority_score = min(7, max(1, round(authority_raw / 5.4 + 1.4)))
-    
+
+    # Adaptability (People Reader): movement + effort variety — diverse effort types, less single-style dominance
+    diversity_signal = (1.0 - min(0.92, dominant_share)) * 55.0
+    variety_signal = (variety_count / 11.0) * 50.0
+    adaptability_raw = max(
+        0.0,
+        diversity_signal
+        + variety_signal
+        - monotony_penalty * 1.15
+        - max(0.0, dominant_share - 0.45) * 18.0,
+    )
+    adaptability_score = min(7, max(1, round(adaptability_raw / 15.0 + 1.25)))
+    adaptability_pos = int(adaptability_score / 7 * 445)
+
     return {
         "analysis_engine": "mediapipe_real_enhanced",
         "duration_seconds": duration,
@@ -1096,6 +1109,8 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         "convince_pos": int(convince_score / 7 * 475),
         "authority_score": authority_score,
         "authority_pos": int(authority_score / 7 * 445),
+        "adaptability_score": adaptability_score,
+        "adaptability_pos": adaptability_pos,
         "effort_detection": effort_detection,
         "shape_detection": shape_detection,
         "effort_counts": dict(effort_counts),
@@ -1127,6 +1142,7 @@ def analyze_video_placeholder(video_path: str, seed: int = None, job_id: str = N
     engaging_score = 6   # High (>= 5)
     convince_score = random.randint(3, 7)   # Moderate (3–4) or High (5–7)
     authority_score = random.randint(3, 7)  # Moderate (3–4) or High (5–7)
+    adaptability_score = random.randint(3, 7)
 
     return {
         "analysis_engine": "placeholder",
@@ -1139,6 +1155,8 @@ def analyze_video_placeholder(video_path: str, seed: int = None, job_id: str = N
         "convince_pos": int(convince_score / 7 * 475),
         "authority_score": authority_score,
         "authority_pos": int(authority_score / 7 * 445),
+        "adaptability_score": adaptability_score,
+        "adaptability_pos": int(adaptability_score / 7 * 445),
         "effort_detection": effort_detection,
         "shape_detection": shape_detection,
     }
@@ -1279,7 +1297,9 @@ def build_docx_report(
     style_name = str(report_style or "full").strip().lower()
     is_simple = style_name.startswith("simple")
     is_operation_test = style_name.startswith("operation_test")
-    
+    is_people_reader = style_name.startswith("people_reader")
+    layout_like_operation = is_operation_test or is_people_reader
+
     # Language-specific text
     is_thai = (lang == "th")
 
@@ -1345,6 +1365,17 @@ def build_docx_report(
         "focus": "▪ ความมีสมาธิ" if is_thai else "▪ Focus",
         "persuade": "▪ ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_thai else "▪ Ability to persuade and stand one's ground, in order to convince others.",
         "authority": "4.  ความเป็นผู้นำ (Authority):" if is_thai else "4. Authority:",
+        "adaptability": "5. ความยืดหยุ่นในการปรับตัว (Adaptability):" if is_thai else "5. Adaptability:",
+        "adapt_flexibility": (
+            "▪ ความยืดหยุ่น — ความสามารถในการปรับตัวตามสภาวะใหม่ ๆ และรับมือกับการเปลี่ยนแปลง"
+            if is_thai
+            else "▪ Flexibility — Ability to adjust to new conditions, handle changes."
+        ),
+        "adapt_agility": (
+            "▪ ความคล่องแคล่ว — ความสามารถในการคิดและสรุปได้อย่างรวดเร็วเพื่อปรับตัว"
+            if is_thai
+            else "▪ Agility — Ability to think and draw conclusions quickly in order to adjust."
+        ),
         "importance": "▪ แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_thai else "▪ Showing sense of importance and urgency in subject matter",
         "pressing": "▪ ผลักดันให้เกิดการลงมือทำ" if is_thai else "▪ Pressing for action",
         "scale": "ระดับ:" if is_thai else "Scale:",
@@ -1414,7 +1445,7 @@ def build_docx_report(
 
             pf = p.paragraph_format
             # Numbered section headings: "1.", "2.", "3.", "4."
-            if t[:2] in ("1.", "2.", "3.", "4."):
+            if t[:2] in ("1.", "2.", "3.", "4.", "5."):
                 pf.space_before = Pt(14)
                 pf.space_after = Pt(6)
                 pf.line_spacing = 1.1
@@ -1503,9 +1534,9 @@ def build_docx_report(
     compact_thai_first_page = True
 
     # Title section spacing: Thai first page — move title up 1 line
-    if is_operation_test and not is_thai:
+    if layout_like_operation and not is_thai:
         doc.add_paragraph()
-    elif not is_operation_test and not is_thai:
+    elif not layout_like_operation and not is_thai:
         doc.add_paragraph()
         if not compact_thai_first_page:
             doc.add_paragraph()
@@ -1538,7 +1569,7 @@ def build_docx_report(
     doc.add_paragraph(f"{texts['analysis_date']}  {analysis_date_display}")
     
     # Video info — operation_test EN: "Video Duration: 01:36" single line per reference
-    if is_operation_test and not is_thai:
+    if layout_like_operation and not is_thai:
         doc.add_paragraph(f"Video Duration: {report.video_length_str}")
     else:
         video_info = doc.add_paragraph(texts["video_info"])
@@ -1621,12 +1652,11 @@ def build_docx_report(
     for p in combo_paras[:-1]:
         p.paragraph_format.keep_with_next = True  # Keep combo block together
 
-    # Page 3: Engaging & Connecting, Confidence, Authority — page_break_before forces new page
+    # Page 3: skill sections — page_break_before forces new page
 
     # ============================================================
-    # PAGE 3: Engaging & Connecting + Confidence + Authority
+    # PAGE 3: Engaging + Confidence + Authority (+ Adaptability for People Reader page only)
     # ============================================================
-    
     # Section 2: Engaging & Connecting — start page 3
     engaging_cat = report.categories[0]
     section2 = doc.add_paragraph(texts["engaging"])
@@ -1686,6 +1716,24 @@ def build_docx_report(
     scale_para3.runs[0].bold = True
     _apply_scale_layout(scale_para3, left_indent_pt=28, space_before_pt=4, compact=False)
 
+    if is_people_reader:
+        if len(report.categories) < 4:
+            raise ValueError("people_reader report requires Adaptability as 4th category")
+        adaptability_cat = report.categories[3]
+        section5 = doc.add_paragraph(texts["adaptability"])
+        section5.runs[0].bold = True
+        section5.paragraph_format.space_before = Pt(8)
+        section5.paragraph_format.space_after = Pt(2)
+        section5.paragraph_format.keep_with_next = True
+        p_flex = doc.add_paragraph(_square_bullet_text(texts["adapt_flexibility"]))
+        _apply_bullet_layout(p_flex, compact=False)
+        p_flex.paragraph_format.keep_with_next = True
+        p_ag = doc.add_paragraph(_square_bullet_text(texts["adapt_agility"]))
+        _apply_bullet_layout(p_ag, compact=False)
+        scale_para5 = doc.add_paragraph(f"{texts['scale']} {_display_scale(adaptability_cat.scale, is_thai)}")
+        scale_para5.runs[0].bold = True
+        _apply_scale_layout(scale_para5, left_indent_pt=28, space_before_pt=4, compact=False)
+
     if not is_simple:
         # PAGE BREAK TO PAGE 4
         doc.add_page_break()
@@ -1695,7 +1743,7 @@ def build_docx_report(
         # ============================================================
         
         # Spacing: operation_test — EN: more top space to match PDF; TH: compact. Title up 1 line.
-        if is_operation_test:
+        if layout_like_operation:
             for _ in range(3 if not is_thai else 1):
                 doc.add_paragraph()
         else:
@@ -1729,7 +1777,7 @@ def build_docx_report(
         # ============================================================
         
         # Spacing: operation_test — EN: more top space to match PDF; TH: compact. Title up 1 line.
-        if is_operation_test:
+        if layout_like_operation:
             for _ in range(3 if not is_thai else 1):
                 doc.add_paragraph()
         else:
@@ -1839,6 +1887,8 @@ def build_pdf_report(
     style_name = str(report_style or "full").strip().lower()
     is_simple = style_name.startswith("simple")
     is_operation_test = style_name.startswith("operation_test")
+    is_people_reader = style_name.startswith("people_reader")
+    uses_op_layout = is_operation_test or is_people_reader
     lang_name = str(lang or "").strip().lower()
     is_thai = (lang_name == "th")
     thai_font_fallback = False
@@ -2034,9 +2084,9 @@ def build_pdf_report(
     # Customer requirement:
     # - Operational Test TH: prefer Noto Thai (better Thai diacritic rendering in PDF viewers), then Sarabun
     # - Operational Test EN: prefer Arial
-    if is_operation_test and lang_name == "en" and register_arial_fonts():
+    if uses_op_layout and lang_name == "en" and register_arial_fonts():
         pass
-    elif is_operation_test and lang_name == "th" and (
+    elif uses_op_layout and lang_name == "th" and (
         register_noto_thai_fonts() or register_sarabun_fonts() or register_tlwg_thai_fonts()
     ):
         pass
@@ -2220,7 +2270,7 @@ def build_pdf_report(
     )
 
     # English operation-test template: improve readability with looser spacing.
-    if is_operation_test and (not is_thai):
+    if uses_op_layout and (not is_thai):
         TITLE_STYLE.fontSize = 14
         TITLE_STYLE.leading = 22
         TITLE_STYLE.spaceAfter = 18
@@ -2531,7 +2581,7 @@ def build_pdf_report(
         for line in lines:
             write_line(line, size=size, bold=bold, gap=gap)
 
-    if is_operation_test:
+    if uses_op_layout:
         if is_thai:
             title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader"
             detailed_analysis_label = "รายละเอียดการวิเคราะห์การนำเสนอ"
@@ -2591,11 +2641,11 @@ def build_pdf_report(
 
     if is_thai:
         display_date = _date_th_display(report.analysis_date)
-    elif is_operation_test:
+    elif uses_op_layout:
         display_date = _date_en_display(report.analysis_date)
     else:
         display_date = report.analysis_date
-    if is_operation_test and is_thai:
+    if uses_op_layout and is_thai:
         # "AI People Reader" smaller to match Thai; title up 1 line (y increased)
         thai_title_html = _safe_text_for_font("รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader").replace("\n", "<br/>")
         thai_title_html = thai_title_html.replace("AI People Reader", '<font size="12">AI People Reader</font>')
@@ -2616,9 +2666,9 @@ def build_pdf_report(
         write_line(f"{'ชื่อลูกค้า' if is_thai else 'Client Name'}: {report.client_name}", bold=True)
         write_line(f"{'วันที่วิเคราะห์' if is_thai else 'Analysis Date'}: {display_date}")
     duration_label = _duration_th_text(report.video_length_str) if is_thai else report.video_length_str
-    if is_operation_test and is_thai:
+    if uses_op_layout and is_thai:
         write_kv_line("ความยาววิดีโอ:", duration_label, size=14, value_indent=118, gap_after=26)
-    elif is_operation_test and (not is_thai):
+    elif uses_op_layout and (not is_thai):
         write_line(f"Video Duration: {duration_label}", gap=22)  # Single line per reference format
     else:
         write_line(f"{'ความยาววิดีโอ' if is_thai else 'Duration'}: {duration_label}", gap=22)
@@ -2640,7 +2690,7 @@ def build_pdf_report(
     # First impression sections (scale: low/moderate/high)
     if report.first_impression:
         fi = report.first_impression
-        if is_operation_test:
+        if uses_op_layout:
             if is_thai:
                 write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
                 write_paragraph_block(f"▪ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
@@ -2726,7 +2776,7 @@ def build_pdf_report(
         write_line(first_impression_label, size=12, bold=True, gap=18)
         write_line("- Not available", gap=20)
 
-    if is_operation_test:
+    if uses_op_layout:
         if is_thai:
             def _scale_th(scale: str) -> str:
                 return _display_scale(scale, is_thai=True)
@@ -2751,7 +2801,7 @@ def build_pdf_report(
             write_paragraph_block("3. การสบตาสูง + ความตั้งตรงสูง + การยืนและการวางเท้าสูง", THAI_NOTE_STYLE, extra_gap=4)
             write_paragraph_block("บุคคลมักดูมีความมั่นใจและอำนาจในระดับสูง และอาจดูไม่เข้าถึงได้ง่ายหรือยืดหยุ่น", THAI_NOTE_STYLE, extra_gap=8)
 
-            # Page 3: Engaging & Connecting, Confidence, Authority
+            # Page 3: Engaging + Confidence + Authority (+ Adaptability for People Reader only)
             c.showPage()
             draw_header_footer()
             y = top_content_y
@@ -2777,6 +2827,25 @@ def build_pdf_report(
             write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=4, bullet_text="▪")
             write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=4, bullet_text="▪")
             write_line_indented(f"ระดับ: {authority_scale}", indent=28, bold=True, gap=6)
+
+            if is_people_reader:
+                if len(report.categories) < 4:
+                    raise ValueError("people_reader PDF requires Adaptability as 4th category")
+                adapt_scale = _scale_th(report.categories[3].scale)
+                write_paragraph_block("5. ความยืดหยุ่นในการปรับตัว (Adaptability):", SECTION_STYLE, extra_gap=0)
+                write_bullet(
+                    "ความยืดหยุ่น — ความสามารถในการปรับตัวตามสภาวะใหม่ ๆ และรับมือกับการเปลี่ยนแปลง",
+                    indent=28,
+                    space_after=4,
+                    bullet_text="▪",
+                )
+                write_bullet(
+                    "ความคล่องแคล่ว — ความสามารถในการคิดและสรุปได้อย่างรวดเร็วเพื่อปรับตัว",
+                    indent=28,
+                    space_after=4,
+                    bullet_text="▪",
+                )
+                write_line_indented(f"ระดับ: {adapt_scale}", indent=28, bold=True, gap=6)
         else:
             if thai_font_fallback and lang_name == "th":
                 write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
@@ -2809,7 +2878,7 @@ def build_pdf_report(
             write_line("3. High Eye Contact + High Uprightness + High Stance.", gap=4)
             write_line("The person tends to appear to possess high level of confidence and authority, and may not appear approachable or flexible.", gap=8)
 
-            # Page 3: Engaging & Connecting, Confidence, Authority
+            # Page 3: Engaging + Confidence + Authority (+ Adaptability for People Reader only)
             c.showPage()
             draw_header_footer()
             y = top_content_y
@@ -2834,6 +2903,23 @@ def build_pdf_report(
             write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
             write_line_indented("▪ Pressing for action.", indent=28, gap=en_section34_item_gap)
             write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+
+            if is_people_reader:
+                if len(report.categories) < 4:
+                    raise ValueError("people_reader PDF requires Adaptability as 4th category")
+                adapt_scale = _scale_en(report.categories[3].scale)
+                write_line("5. Adaptability:", size=12, bold=True, gap=en_section_gap)
+                write_line_indented(
+                    "▪ Flexibility — Ability to adjust to new conditions, handle changes.",
+                    indent=28,
+                    gap=en_section34_item_gap,
+                )
+                write_line_indented(
+                    "▪ Agility — Ability to think and draw conclusions quickly in order to adjust.",
+                    indent=28,
+                    gap=en_section34_item_gap,
+                )
+                write_line_indented(f"Scale: {adapt_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
         append_graph_pages_for_operation_test()
         c.save()
         return
