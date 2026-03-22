@@ -30,7 +30,6 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 import streamlit as st
-import streamlit.components.v1 as components
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
@@ -448,19 +447,16 @@ def lpa_render_download_button(
     if not key:
         st.caption(f"Waiting for {label}")
         return
-    # Presigned GET for everything (matches Training video links; avoids loading large PDFs into Streamlit memory).
+    # Always use st.link_button: many hosts disable/sanitize unsafe_allow_html, which hid "ready" downloads.
     try:
         url = presigned_get_url(key, expires=3600, filename=filename)
-        if ready:
-            btn_html = (
-                '<a href="' + url + '" target="_blank" rel="noopener" '
-                'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
-                'color: white !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
-                "✓ Download " + label + "</a>"
-            )
-            st.markdown(btn_html, unsafe_allow_html=True)
-        else:
-            st.link_button(f"Download {label}", url, key=button_key)
+        lbl = f"✓ Download {label}" if ready else f"Download {label}"
+        st.link_button(
+            lbl,
+            url,
+            key=button_key,
+            width="stretch",
+        )
     except Exception:
         st.caption(f"Waiting for {label}")
 
@@ -1089,22 +1085,8 @@ def enqueue_video_only_job(
 ensure_session_defaults()
 apply_theme()
 render_top_banner()
-components.html(
-    """
-    <script>
-    (function () {
-      try {
-        var topLoc = window.top.location;
-        var path = topLoc.pathname || "/";
-        if (path !== "/" && !path.startsWith("/_stcore")) {
-          topLoc.replace(topLoc.origin + "/" + (topLoc.search || ""));
-        }
-      } catch (e) {}
-    })();
-    </script>
-    """,
-    height=0,
-)
+# Do not redirect /LPA -> / here: st.navigation keeps pretty paths like /LPA; redirect caused
+# double-load and duplicate/disabled widgets. group_id still works via query params on /LPA.
 
 url_group_id = _read_group_id_from_url()
 if url_group_id:
