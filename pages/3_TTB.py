@@ -1061,9 +1061,6 @@ if run:
             "notify_email": notify_email,
             "employee_email": notify_email,
         }
-        if enable_skeleton and report_languages:
-            job_skel["suppress_completion_email"] = True
-
         job_report = {
             "job_id": new_job_id(),
             "group_id": group_id_submit,
@@ -1081,6 +1078,8 @@ if run:
             "report_style": effective_report_style,
             "report_format": effective_report_format,
             "expect_skeleton": bool(enable_skeleton),
+            # Email PDF as soon as ready; skeleton completion email from video worker separately.
+            "defer_report_email_until_skeleton": False,
             "notify_email": notify_email,
             "enterprise_folder": (enterprise_folder or "").strip(),
             "expect_dots": False,

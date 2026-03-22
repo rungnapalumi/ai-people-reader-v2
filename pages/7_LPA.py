@@ -1,9 +1,7 @@
-# pages/7_LPA.py — LPA portal (same flow as TTB)
-# Upload once (shared key) -> get downloads:
-#   1) Dots video
-#   2) Skeleton video
-#   3) English report (DOCX)
-#   4) Thai report (DOCX)
+# pages/7_LPA.py — LPA portal
+# Upload once (shared key) -> progress + downloads on page:
+#   Report Thai, Report English (PDF/DOCX), Skeleton video
+#   (Email for LPA can defer until skeleton is ready; see defer_report_email_until_skeleton on job.)
 #
 # Uses LEGACY queue:
 #   jobs/pending/<job_id>.json
@@ -23,7 +21,7 @@ import json
 import uuid
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -302,6 +300,171 @@ def s3_key_exists(key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def s3_output_ready(key: str) -> bool:
+    k = (key or "").strip()
+    if not k:
+        return False
+    if s3_key_exists(k):
+        return True
+    try:
+        resp = s3.list_objects_v2(Bucket=AWS_BUCKET, Prefix=k, MaxKeys=5)
+        for obj in resp.get("Contents", []):
+            if str(obj.get("Key") or "") == k:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def s3_get_bytes(key: str) -> Optional[bytes]:
+    try:
+        obj = s3.get_object(Bucket=AWS_BUCKET, Key=key)
+        return obj["Body"].read()
+    except Exception:
+        return None
+
+
+def get_group_id_variants_lpa(group_id: str) -> List[str]:
+    g = (group_id or "").strip()
+    if not g:
+        return []
+    out = [g]
+    if g.startswith("0") and len(g) >= 7 and g[1:7].isdigit():
+        out.append("20" + g)
+    if "__" in g:
+        alt = g.replace("__", "_", 1)
+        if alt != g:
+            out.append(alt)
+    elif "_" in g:
+        parts = g.rsplit("_", 1)
+        if len(parts) == 2 and len(parts[1]) > 2:
+            alt = parts[0] + "__" + parts[1]
+            if alt != g:
+                out.append(alt)
+    return out
+
+
+def apply_lpa_skeleton_from_finished_job(group_id: str, outputs: Dict[str, str]) -> None:
+    gid = (group_id or "").strip()
+    if not gid:
+        return
+    variants = set(get_group_id_variants_lpa(gid) or [gid])
+    m = st.session_state.get("lpa_jobs_by_group") or {}
+    entry: Dict[str, Any] = {}
+    for g in [gid] + [x for x in variants if x != gid]:
+        entry = m.get(g) or {}
+        if entry:
+            break
+    job_id = str(entry.get("skeleton_job_id") or "").strip()
+    if not job_id:
+        return
+    fk = f"{JOBS_FINISHED_PREFIX}{job_id}.json"
+    data = s3_read_json(fk)
+    if not data:
+        return
+    gj = str(data.get("group_id") or "").strip()
+    if gj not in variants and gj != gid:
+        return
+    if str(data.get("status") or "").lower() != "finished":
+        return
+    if str(data.get("mode") or "").strip().lower() != "skeleton":
+        return
+    res = data.get("result") or {}
+    if res.get("ok") is False:
+        return
+    out_key = str(res.get("output_key") or "").strip()
+    if out_key:
+        outputs["skeleton_video"] = out_key
+
+
+def discover_lpa_skeleton_output(group_id: str, outputs: Dict[str, str], max_json: int = 400) -> None:
+    gid = (group_id or "").strip()
+    if not gid:
+        return
+    variants = set(get_group_id_variants_lpa(gid) or [gid])
+    date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
+    scan_prefix = f"{JOBS_FINISHED_PREFIX}{date_prefix}" if date_prefix else JOBS_FINISHED_PREFIX
+    seen = 0
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=scan_prefix):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                seen += 1
+                if seen > max_json:
+                    return
+                data = s3_read_json(key)
+                if not data:
+                    continue
+                gj = str(data.get("group_id") or "").strip()
+                if gj not in variants:
+                    continue
+                if str(data.get("status") or "").lower() != "finished":
+                    continue
+                if str(data.get("mode") or "").strip().lower() != "skeleton":
+                    continue
+                res = data.get("result") or {}
+                if res.get("ok") is False:
+                    continue
+                out_key = str(res.get("output_key") or "").strip()
+                if out_key:
+                    outputs["skeleton_video"] = out_key
+                    return
+    except Exception:
+        pass
+
+
+def lpa_render_download_button(
+    label: str, key: str, filename: str, mime: str, button_key: str, ready: bool = False
+) -> None:
+    if not key:
+        st.caption(f"Waiting for {label}")
+        return
+    is_video = (mime or "").startswith("video/")
+    if is_video:
+        try:
+            url = presigned_get_url(key, expires=3600, filename=filename)
+            if ready:
+                btn_html = (
+                    '<a href="' + url + '" target="_blank" rel="noopener" '
+                    'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
+                    'color: white !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
+                    "✓ Download " + label + "</a>"
+                )
+                st.markdown(btn_html, unsafe_allow_html=True)
+            else:
+                st.link_button(f"Download {label}", url)
+        except Exception:
+            st.caption(f"Waiting for {label}")
+        return
+    data = s3_get_bytes(key)
+    if data and len(data) < 50 * 1024 * 1024:
+        st.download_button(
+            label=f"✓ Download {label}" if ready else f"Download {label}",
+            data=data,
+            file_name=filename,
+            mime=mime,
+            key=button_key,
+        )
+    else:
+        try:
+            url = presigned_get_url(key, expires=3600, filename=filename)
+            if ready:
+                btn_html = (
+                    '<a href="' + url + '" target="_blank" rel="noopener" '
+                    'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
+                    'color: white !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
+                    "✓ Download " + label + "</a>"
+                )
+                st.markdown(btn_html, unsafe_allow_html=True)
+            else:
+                st.link_button(f"Download {label}", url)
+        except Exception:
+            st.caption(f"Waiting for {label}")
 
 
 def s3_read_json(key: str) -> Optional[Dict[str, Any]]:
@@ -807,6 +970,8 @@ def ensure_session_defaults() -> None:
         st.session_state["clear_upload_counter"] = 0
     if "lpa_submission_id_override" not in st.session_state:
         st.session_state["lpa_submission_id_override"] = ""
+    if "lpa_jobs_by_group" not in st.session_state:
+        st.session_state["lpa_jobs_by_group"] = {}
 
 def _read_group_id_from_url() -> str:
     try:
@@ -1086,6 +1251,7 @@ if run:
             "expect_dots": False,
             "employee_id": (employee_id or "").strip(),
             "employee_email": notify_email,
+            "defer_report_email_until_skeleton": True,
         }
 
         try:
@@ -1121,6 +1287,11 @@ if run:
     st.session_state["last_outputs"] = outputs_submit
     st.session_state["last_jobs"] = queued_job_ids
     st.session_state["last_job_json_keys"] = queued_job_keys
+    jmap = st.session_state.setdefault("lpa_jobs_by_group", {})
+    jmap[group_id_submit] = {
+        "skeleton_job_id": str(queued_job_ids.get("skeleton") or ""),
+        "report_job_id": str(queued_job_ids.get("report") or ""),
+    }
 
     note.success(
         f"Submitted! submission_id = {group_id_submit} | report_style={effective_report_style}, report_format={effective_report_format}, "
@@ -1129,10 +1300,13 @@ if run:
     st.caption(f"Queued job keys: {', '.join(queued_job_keys.values())}")
     st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 
-# --- ดาวน์โหลดผลจากอีเมล (แสดงด้านล่างปุ่ม Run Analysis) ---
+# --- Download results (Training-style: progress + Report TH / EN + Skeleton) ---
 st.divider()
-st.markdown("### 📥 ดาวน์โหลดผลลัพธ์ (ได้รับอีเมลแล้ว)")
-st.caption("วาง Group ID จากอีเมล (บรรทัด 'Group ID: ...') ด้านล่าง แล้วกดรีเฟรช")
+st.markdown("### 📥 Download Results / ดาวน์โหลดผลลัพธ์")
+st.caption(
+    "Paste Group ID from your e-mail, then Refresh. Download **Report Thai**, **Report English**, and **Skeleton** here. "
+    "LPA e-mail notifications are sent together when the queue finishes bundled outputs."
+)
 _lpa_sub_id_key = f"lpa_submission_id_top_{st.session_state.get('clear_upload_counter', 0)}"
 lpa_submission_id_override = st.text_input(
     "Submission ID / Group ID (วางจากอีเมลได้)",
@@ -1159,6 +1333,7 @@ with _lpa_btn2:
     if _lpa_has_prev and st.button("🗑️ ล้างผลลัพธ์เพื่ออัปโหลดวิดีโอใหม่", key="lpa_clear_results_top", type="secondary"):
         for _k in ("lpa_submission_id_override", "last_group_id", "last_outputs", "last_jobs", "last_job_json_keys", "last_uploaded_filename"):
             st.session_state.pop(_k, None)
+        st.session_state["lpa_jobs_by_group"] = {}
         st.session_state["clear_upload_counter"] = st.session_state.get("clear_upload_counter", 0) + 1
         try:
             if "group_id" in st.query_params:
@@ -1168,9 +1343,18 @@ with _lpa_btn2:
         st.rerun()
 
 lpa_direct_group_id = str(lpa_submission_id_override or _read_group_id_from_url() or st.session_state.get("last_group_id") or "").strip()
-if lpa_direct_group_id:
-    st.caption(f"กำลังตรวจไฟล์จาก Submission ID: `{lpa_direct_group_id}`")
-    lpa_direct_outputs = build_output_keys(lpa_direct_group_id)
+
+has_identity_input = bool(employee_id.strip() and notify_email)
+identity_verified = is_employee_identity_verified(employee_id, notify_email) if has_identity_input else False
+if has_identity_input and not identity_verified:
+    st.warning("Please enter the correct email to view only your own jobs.")
+    st.stop()
+
+if not lpa_direct_group_id:
+    st.caption("Upload a video or paste Group ID above to see progress and downloads.")
+else:
+    st.info(f"Current Group ID: `{lpa_direct_group_id}`")
+    resolved: Dict[str, str] = build_output_keys(lpa_direct_group_id)
     lpa_job_report_outputs = get_report_outputs_from_job(lpa_direct_group_id)
     lpa_direct_reports = find_report_files_in_s3(f"{JOBS_OUTPUT_PREFIX}groups/{lpa_direct_group_id}")
     if not lpa_direct_reports.get("report_en_pdf") or not lpa_direct_reports.get("report_th_pdf"):
@@ -1180,73 +1364,174 @@ if lpa_direct_group_id:
                 lpa_direct_reports[k] = lpa_scanned[k]
     for _k in ("report_en_docx", "report_th_docx", "report_en_pdf", "report_th_pdf", "report_en_html", "report_th_html"):
         if lpa_job_report_outputs.get(_k):
-            lpa_direct_outputs[_k] = str(lpa_job_report_outputs.get(_k) or "").strip()
+            resolved[_k] = str(lpa_job_report_outputs.get(_k) or "").strip()
         elif lpa_direct_reports.get(_k):
-            lpa_direct_outputs[_k] = str(lpa_direct_reports.get(_k) or "").strip()
-    lpa_discovered_keys: set = set()
-    for _pfx in (f"{JOBS_GROUP_PREFIX}{lpa_direct_group_id}/", f"{JOBS_OUTPUT_PREFIX}groups/{lpa_direct_group_id}/"):
+            resolved[_k] = str(lpa_direct_reports.get(_k) or "").strip()
+
+    apply_lpa_skeleton_from_finished_job(lpa_direct_group_id, resolved)
+    discover_lpa_skeleton_output(lpa_direct_group_id, resolved)
+
+    en_pdf_candidate = str(resolved.get("report_en_pdf") or "").strip()
+    en_docx_candidate = str(resolved.get("report_en_docx") or "").strip()
+    th_pdf_candidate = str(resolved.get("report_th_pdf") or "").strip()
+    th_docx_candidate = str(resolved.get("report_th_docx") or "").strip()
+
+    en_pdf_ready = bool(en_pdf_candidate) and s3_output_ready(en_pdf_candidate)
+    en_docx_ready = bool(en_docx_candidate) and s3_output_ready(en_docx_candidate)
+    th_pdf_ready = bool(th_pdf_candidate) and s3_output_ready(th_pdf_candidate)
+    th_docx_ready = bool(th_docx_candidate) and s3_output_ready(th_docx_candidate)
+
+    en_key = en_pdf_candidate if en_pdf_ready else (en_docx_candidate if en_docx_ready else (en_pdf_candidate or en_docx_candidate))
+    th_key = th_pdf_candidate if th_pdf_ready else (th_docx_candidate if th_docx_ready else (th_pdf_candidate or th_docx_candidate))
+    en_name = "report_en.pdf" if en_pdf_ready else "report_en.docx"
+    th_name = "report_th.pdf" if th_pdf_ready else "report_th.docx"
+
+    skel_key = str(resolved.get("skeleton_video") or "").strip()
+    sk_ready = bool(skel_key) and s3_output_ready(skel_key)
+
+    enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
+    enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
+    enable_skeleton = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
+
+    th_ready = bool(th_key) and s3_output_ready(th_key)
+    en_ready = bool(en_key) and s3_output_ready(en_key)
+    status_items: List[tuple] = []
+    if enable_report_th:
+        status_items.append(("Report Thai", th_ready))
+    if enable_report_en:
+        status_items.append(("Report English", en_ready))
+    if enable_skeleton:
+        status_items.append(("Skeleton Video", sk_ready))
+    if not status_items:
+        status_items = [("Report Thai", th_ready), ("Report English", en_ready), ("Skeleton Video", sk_ready)]
+
+    n_items = len(status_items)
+    overall_pct = int(round((sum(1 for _, r in status_items if r) / n_items) * 100)) if n_items else 0
+    st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
+
+    if overall_pct < 100:
         try:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=_pfx):
-                for item in page.get("Contents", []):
-                    k = str(item.get("Key") or "").strip()
-                    kl = k.lower() if k else ""
-                    if k and (kl.endswith(".mp4") or kl.endswith(".pdf") or kl.endswith(".docx")) and "/input/" not in kl:
-                        lpa_discovered_keys.add(k)
+
+            @st.fragment(run_every=timedelta(seconds=8))
+            def _lpa_auto_refresh():
+                st.rerun()
+
         except Exception:
             pass
-    lpa_ready = [
-        (label, key, fn)
-        for label, key, fn in [
-            ("Dots Video", str(lpa_direct_outputs.get("dots_video") or "").strip(), "dots.mp4"),
-            ("Skeleton Video", str(lpa_direct_outputs.get("skeleton_video") or "").strip(), "skeleton.mp4"),
-            ("Report TH", str(lpa_direct_outputs.get("report_th_pdf") or lpa_direct_outputs.get("report_th_docx") or "").strip(), "report_th.pdf"),
-            ("Report EN", str(lpa_direct_outputs.get("report_en_pdf") or lpa_direct_outputs.get("report_en_docx") or "").strip(), "report_en.pdf"),
+
+    for label, ready in status_items:
+        st.progress(100 if ready else 0, text=f"{label}: {'Ready' if ready else 'Processing'}")
+
+    st.markdown("---")
+    st.subheader("Available Downloads")
+    st.caption("ดาวน์โหลด Report TH / EN และ Skeleton จากหน้านี้เมื่อไฟล์พร้อม")
+
+    _gid_safe = re.sub(r"[^a-zA-Z0-9_]+", "_", lpa_direct_group_id)[:48]
+
+    def _lpa_report_mime(fn: str) -> str:
+        f = (fn or "").lower()
+        if f.endswith(".pdf"):
+            return "application/pdf"
+        if f.endswith(".docx"):
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return "application/octet-stream"
+
+    if enable_report_th:
+        lpa_render_download_button(
+            label="Report Thai",
+            key=th_key,
+            filename=th_name,
+            mime=_lpa_report_mime(th_name),
+            button_key=f"lpa_dl_th_{_gid_safe}",
+            ready=th_ready,
+        )
+    if enable_report_en:
+        lpa_render_download_button(
+            label="Report English",
+            key=en_key,
+            filename=en_name,
+            mime=_lpa_report_mime(en_name),
+            button_key=f"lpa_dl_en_{_gid_safe}",
+            ready=en_ready,
+        )
+    if enable_skeleton:
+        lpa_render_download_button(
+            label="Skeleton",
+            key=skel_key,
+            filename="skeleton.mp4",
+            mime="video/mp4",
+            button_key=f"lpa_dl_skel_{_gid_safe}",
+            ready=sk_ready,
+        )
+
+    if not any(
+        [
+            th_ready if enable_report_th else False,
+            en_ready if enable_report_en else False,
+            sk_ready if enable_skeleton else False,
         ]
-        if key and (key in lpa_discovered_keys or s3_key_exists(key))
-    ]
-    if lpa_ready:
-        st.success("พบไฟล์พร้อมดาวน์โหลด")
-    else:
-        st.caption("หากได้รับอีเมลแล้ว ลิงก์ด้านล่างจะทำงานเมื่อไฟล์พร้อม (กดรีเฟรชหลัง 2–5 นาที)")
-    st.markdown("**ลิงก์ดาวน์โหลด**")
-    for label, key, fn in [
-        ("Dots Video", str(lpa_direct_outputs.get("dots_video") or "").strip(), "dots.mp4"),
-        ("Skeleton Video", str(lpa_direct_outputs.get("skeleton_video") or "").strip(), "skeleton.mp4"),
-        ("Report TH (PDF/DOCX)", str(lpa_direct_outputs.get("report_th_pdf") or lpa_direct_outputs.get("report_th_docx") or "").strip(), "report_th.pdf"),
-        ("Report EN (PDF/DOCX)", str(lpa_direct_outputs.get("report_en_pdf") or lpa_direct_outputs.get("report_en_docx") or "").strip(), "report_en.pdf"),
-    ]:
-        if key:
-            fn_use = os.path.basename(key) or fn
-            try:
-                url = presigned_get_url(key, expires=3600, filename=fn_use)
-                st.link_button(f"⬇️ {label}", url, width="stretch")
-            except Exception:
-                pass
-    lpa_skel_ready = bool(lpa_direct_outputs.get("skeleton_video")) and (str(lpa_direct_outputs.get("skeleton_video") or "") in lpa_discovered_keys or s3_key_exists(str(lpa_direct_outputs.get("skeleton_video") or "")))
-    if not lpa_skel_ready:
-        _lpa_notify = str(st.session_state.get("last_notify_email") or "").strip()
+    ):
+        st.caption("ไฟล์ยังไม่พร้อม รอสักครู่แล้วกดรีเฟรช")
+
+    if enable_skeleton and not sk_ready:
+        _lpa_notify = str(notify_email or "").strip()
         lpa_rows = list_jobs_for_group(lpa_direct_group_id)
-        skel_active = any(str(r.get("mode") or "").strip().lower() == "skeleton" and str(r.get("status") or "").strip().lower() in ("pending", "processing") for r in lpa_rows)
+        skel_active = any(
+            str(r.get("mode") or "").strip().lower() == "skeleton"
+            and str(r.get("status") or "").strip().lower() in ("pending", "processing")
+            for r in lpa_rows
+        )
         st.warning("ยังไม่ครบทุกวิดีโอ สามารถกดส่งงานซ้ำเฉพาะรายการที่ขาดได้")
-        if st.button("Force ส่งงาน Skeleton" if skel_active else "ส่งงาน Skeleton ใหม่", key=f"lpa_force_skeleton_{lpa_direct_group_id}", width="stretch"):
+        if st.button(
+            "Force ส่งงาน Skeleton" if skel_active else "ส่งงาน Skeleton ใหม่",
+            key=f"lpa_force_skeleton_{_gid_safe}",
+            width="stretch",
+        ):
             try:
-                new_key = enqueue_video_only_job(group_id=lpa_direct_group_id, mode="skeleton", notify_email=_lpa_notify, employee_id=_lpa_notify, enterprise_folder=get_default_org_for_page("lpa") or "LPA")
+                new_key = enqueue_video_only_job(
+                    group_id=lpa_direct_group_id,
+                    mode="skeleton",
+                    notify_email=_lpa_notify,
+                    employee_id=_lpa_notify,
+                    enterprise_folder=get_default_org_for_page("lpa") or "LPA",
+                )
                 st.success(f"ส่งงาน Skeleton แล้ว: {new_key}")
             except Exception as e:
                 st.error(f"ส่งงาน Skeleton ไม่สำเร็จ: {format_submit_error_message(e)}")
-elif not lpa_direct_group_id:
-    st.caption("กรุณาวาง Group ID จากอีเมลด้านบนเพื่อดูปุ่มดาวน์โหลด")
+
+    if enable_report_th and sk_ready and not th_ready:
+        st.warning(
+            "Thai report is still not ready. You can re-run report generation for this group. "
+            "(รายงานภาษาไทยยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)"
+        )
+        if st.button("Re-run report generation", key=f"lpa_rerun_report_{_gid_safe}", width="content"):
+            try:
+                guessed_name = lpa_direct_group_id.split("__", 1)[1] if "__" in lpa_direct_group_id else "Anonymous"
+                rerun_style = "simple"
+                rerun_format = get_report_format_for_group(lpa_direct_group_id)
+                rerun_email = notify_email
+                if not rerun_email:
+                    prev_notif = get_report_notification_status(lpa_direct_group_id)
+                    rerun_email = str(prev_notif.get("notify_email") or "").strip()
+                if rerun_email and ((not is_valid_email_format(rerun_email)) or is_blocked_typo_domain(rerun_email)):
+                    st.error("Cannot re-queue report job: invalid e-mail format. Please check e-mail again.")
+                    st.stop()
+                new_report_key = enqueue_report_only_job(
+                    group_id=lpa_direct_group_id,
+                    client_name=guessed_name,
+                    report_style=rerun_style,
+                    report_format=rerun_format,
+                    enterprise_folder=(enterprise_folder or "").strip(),
+                    notify_email=rerun_email,
+                )
+                st.success(f"Queued report job again ({rerun_style}, {rerun_format}): {new_report_key}")
+            except Exception as e:
+                st.error(f"Cannot re-queue report job: {format_submit_error_message(e)}")
 
 st.divider()
-has_identity_input = bool(employee_id.strip() and notify_email)
-identity_verified = False
-if has_identity_input:
-    identity_verified = is_employee_identity_verified(employee_id, notify_email)
 
 candidate_group_id = st.session_state.get("last_group_id", "") or url_group_id or lpa_direct_group_id
 active_group_id = ""
-blocked_group_id = ""
 if candidate_group_id:
     # Email-only UX: always show latest accessible group from current session/url.
     active_group_id = candidate_group_id
@@ -1288,178 +1573,3 @@ if group_id:
         elif status:
             st.warning(f"Email status: {status} (to: {email_to})")
         st.caption("Status updates are automatic. Keep this page open to follow progress.")
-
-
-# -------------------------
-# Download section
-# -------------------------
-st.divider()
-st.subheader("Downloads (ผลลัพธ์สำหรับดาวน์โหลด)")
-
-group_id = active_group_id
-if group_id:
-    outputs = build_output_keys(group_id)
-    # Get actual report paths from finished job JSON
-    report_outputs = get_report_outputs_from_job(group_id)
-    # Only override when a real key is discovered; never blank out defaults.
-    if report_outputs.get("report_en_docx"):
-        outputs["report_en_docx"] = report_outputs["report_en_docx"]
-    if report_outputs.get("report_th_docx"):
-        outputs["report_th_docx"] = report_outputs["report_th_docx"]
-    if report_outputs.get("report_en_pdf"):
-        outputs["report_en_pdf"] = report_outputs["report_en_pdf"]
-    if report_outputs.get("report_th_pdf"):
-        outputs["report_th_pdf"] = report_outputs["report_th_pdf"]
-else:
-    if has_identity_input and not identity_verified:
-        st.caption("Please enter the correct email to view only your own jobs.")
-    else:
-        st.caption("No accessible Submission ID for this account yet. Upload a video and click **Run Analysis**.")
-    st.stop()
-
-st.caption(f"Submission ID: `{group_id}`")
-
-
-def download_block(title: str, key: str, filename: str) -> None:
-    if not key:
-        st.write(f"- {title}: (missing key)")
-        return
-    ready = s3_key_exists(key)
-    if ready:
-        url = presigned_get_url(key, expires=3600, filename=filename)
-        st.success(f"✅ {title} ready")
-        st.link_button(f"Download {title}", url, width="stretch")
-        st.code(key, language="text")
-    else:
-        st.warning(f"⏳ {title} not ready yet")
-        st.caption(SUPPORT_CONTACT_TEXT)
-        st.code(key, language="text")
-
-
-# --- Downloads ---
-c1, c2 = st.columns(2)
-
-with c1:
-    st.markdown("### Videos")
-    download_block("Skeleton video", outputs.get("skeleton_video", ""), "skeleton.mp4")
-
-with c2:
-    st.markdown("### Reports")
-    en_pdf_candidate = outputs.get("report_en_pdf", "")
-    en_docx_candidate = outputs.get("report_en_docx", "")
-    th_pdf_candidate = outputs.get("report_th_pdf", "")
-    th_docx_candidate = outputs.get("report_th_docx", "")
-
-    en_pdf_ready = bool(en_pdf_candidate) and s3_key_exists(en_pdf_candidate)
-    en_docx_ready = bool(en_docx_candidate) and s3_key_exists(en_docx_candidate)
-    th_pdf_ready = bool(th_pdf_candidate) and s3_key_exists(th_pdf_candidate)
-    th_docx_ready = bool(th_docx_candidate) and s3_key_exists(th_docx_candidate)
-
-    en_key = en_pdf_candidate if en_pdf_ready else (en_docx_candidate if en_docx_ready else (en_pdf_candidate or en_docx_candidate))
-    th_key = th_pdf_candidate if th_pdf_ready else (th_docx_candidate if th_docx_ready else (th_pdf_candidate or th_docx_candidate))
-    en_name = "report_en.pdf" if en_pdf_ready else "report_en.docx"
-    th_name = "report_th.pdf" if th_pdf_ready else "report_th.docx"
-    report_label = "PDF" if (en_pdf_ready or th_pdf_ready) else ("DOCX" if (en_docx_ready or th_docx_ready) else "PDF/DOCX")
-    st.markdown("**English**")
-    download_block(f"Report EN ({report_label})", en_key, en_name)
-
-    st.markdown("**Thai**")
-    download_block(f"Report TH ({report_label})", th_key, th_name)
-
-    st.markdown("**HTML (Debug/Preview)**")
-    en_html_key = str(report_outputs.get("report_en_html") or "").strip()
-    th_html_key = str(report_outputs.get("report_th_html") or "").strip()
-    if en_html_key:
-        download_block("Report EN (HTML)", en_html_key, "report_en.html")
-    else:
-        st.caption("EN HTML: not available yet (generated when report format is PDF).")
-    if th_html_key:
-        download_block("Report TH (HTML)", th_html_key, "report_th.html")
-    else:
-        st.caption("TH HTML: not available yet (generated when report format is PDF).")
-
-reports_ready = bool(en_key) and bool(th_key) and s3_key_exists(en_key) and s3_key_exists(th_key)
-skeleton_ready = bool(outputs.get("skeleton_video")) and s3_key_exists(outputs.get("skeleton_video", ""))
-en_report_ready = bool(en_key) and s3_key_exists(en_key)
-th_report_ready = bool(th_key) and s3_key_exists(th_key)
-primary_done = th_report_ready
-
-# Show ready artifacts immediately without waiting for all outputs.
-ready_now = []
-if th_report_ready and th_key:
-    ready_now.append(("Report TH", th_key, th_name))
-if en_report_ready and en_key:
-    ready_now.append(("Report EN", en_key, en_name))
-if skeleton_ready:
-    ready_now.append(("Skeleton video", outputs.get("skeleton_video", ""), "skeleton.mp4"))
-
-st.divider()
-st.subheader("Ready to Download Now")
-if st.button("Refresh output status", key="lpa_refresh_ready_downloads", width="content"):
-    st.rerun()
-if ready_now:
-    for label, key, filename in ready_now:
-        url = presigned_get_url(key, expires=3600, filename=filename)
-        st.success(f"✅ {label} ready")
-        st.link_button(f"Download {label}", url, width="stretch")
-else:
-    st.info("No files are ready yet. Files will appear here immediately when each one is done.")
-st.caption("Each file appears as soon as it is ready. No need to wait for all outputs.")
-
-st.divider()
-st.subheader("Processing Status")
-status_items = [
-    ("Report TH (primary)", th_report_ready),
-    ("Report EN (follow-up)", en_report_ready),
-    ("Skeleton Video (follow-up)", skeleton_ready),
-]
-if primary_done:
-    overall_pct = 100
-else:
-    overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
-st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
-for label, ready in status_items:
-    item_pct = 100 if ready else 0
-    st.progress(item_pct, text=f"{label}: {'ready' if ready else 'processing'} ({item_pct}%)")
-
-# Clear step guidance for users while waiting.
-if th_report_ready and en_report_ready and skeleton_ready:
-    current_step = "All outputs are ready."
-    next_step = "Download files below. Email delivery (report/skeleton) should complete shortly."
-elif th_report_ready:
-    current_step = "Primary result is ready: Report TH."
-    next_step = "Other files (EN/Skeleton) will appear for download immediately when each one is done."
-else:
-    current_step = "Generating Report TH."
-    next_step = "Download buttons will appear immediately once each file is ready."
-
-st.info(f"Current step: {current_step}")
-st.caption(f"Next step: {next_step}")
-if th_report_ready:
-    st.success("ขอบคุณที่ใช้ AI People Reader การวิเคราะห์ทั้งหมดจะถูกส่งไปในเมล์ของคุณหลังจากนี้")
-
-if skeleton_ready and not th_report_ready:
-    st.warning("Thai report is still not ready. You can re-run report generation for this group. (รายงานภาษาไทยยังไม่พร้อม สามารถสั่งสร้างรายงานใหม่ได้)")
-    if st.button("Re-run report generation", width="content"):
-        try:
-            guessed_name = group_id.split("__", 1)[1] if "__" in group_id else "Anonymous"
-            rerun_style = "simple"
-            rerun_format = get_report_format_for_group(group_id)
-            rerun_email = notify_email
-            if not rerun_email:
-                prev_notif = get_report_notification_status(group_id)
-                rerun_email = str(prev_notif.get("notify_email") or "").strip()
-            if rerun_email and ((not is_valid_email_format(rerun_email)) or is_blocked_typo_domain(rerun_email)):
-                st.error("Cannot re-queue report job: invalid e-mail format. Please check e-mail again.")
-                st.stop()
-            new_report_key = enqueue_report_only_job(
-                group_id=group_id,
-                client_name=guessed_name,
-                report_style=rerun_style,
-                report_format=rerun_format,
-                enterprise_folder=(enterprise_folder or "").strip(),
-                notify_email=rerun_email,
-            )
-            st.success(f"Queued report job again ({rerun_style}, {rerun_format}): {new_report_key}")
-        except Exception as e:
-            st.error(f"Cannot re-queue report job: {format_submit_error_message(e)}")

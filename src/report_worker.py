@@ -1676,7 +1676,13 @@ def should_defer_report_email_until_skeleton_ready(
     expect_skeleton: bool,
     skeleton_ready: bool,
     report_links: Dict[str, str],
+    payload: Optional[Dict[str, Any]] = None,
 ) -> bool:
+    """Per-job override via payload['defer_report_email_until_skeleton']; else env DEFER_REPORT_EMAIL_UNTIL_SKELETON."""
+    if payload is not None and "defer_report_email_until_skeleton" in payload:
+        if not bool(payload.get("defer_report_email_until_skeleton")):
+            return False
+        return bool(expect_skeleton and not skeleton_ready and report_links)
     if not DEFER_REPORT_EMAIL_UNTIL_SKELETON:
         return False
     return bool(expect_skeleton and not skeleton_ready and report_links)
@@ -1689,8 +1695,15 @@ def merged_video_keys_for_report_email(
     skeleton_ready: bool,
     skeleton_sent: bool,
 ) -> Dict[str, str]:
-    """Include skeleton presigned link in the report email when skeleton is ready (avoids a second email)."""
+    """Bundle skeleton link with report email only when job defers until skeleton (LPA-style)."""
     out = dict(base or {})
+    defer = payload.get("defer_report_email_until_skeleton")
+    if defer is None:
+        bundle = DEFER_REPORT_EMAIL_UNTIL_SKELETON
+    else:
+        bundle = bool(defer)
+    if not bundle:
+        return out
     if (
         expect_skeleton
         and skeleton_ready
@@ -1783,6 +1796,8 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "dots_email_sent": False,
         "attempts": 0,
         "updated_at": utc_now_iso(),
+        # None = use env; False = TTB-style (email PDF as soon as ready); True = LPA-style (wait for skeleton)
+        "defer_report_email_until_skeleton": job.get("defer_report_email_until_skeleton"),
     }
 
 def email_payload_all_ready(payload: Dict[str, Any]) -> bool:
@@ -2062,7 +2077,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
 
             skeleton_ready = (not expect_skeleton) or email_payload_skeleton_ready(payload)
             defer_reports = should_defer_report_email_until_skeleton_ready(
-                expect_skeleton, skeleton_ready, report_links
+                expect_skeleton, skeleton_ready, report_links, payload
             )
             if report_links and defer_reports:
                 logger.info(
@@ -2958,7 +2973,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
                 sk_ready_immediate = (not expect_skeleton) or email_payload_skeleton_ready(payload)
                 defer_immediate = should_defer_report_email_until_skeleton_ready(
-                    expect_skeleton, sk_ready_immediate, report_links
+                    expect_skeleton, sk_ready_immediate, report_links, payload
                 )
                 if report_links and defer_immediate:
                     logger.info(
