@@ -1088,10 +1088,15 @@ def main_loop(poll_seconds: int = 3) -> None:
     )
     logging.info("Retry cfg: max_video_job_retries=%s", MAX_VIDEO_JOB_RETRIES)
     logging.info("Pending scan : WORKER_PENDING_MAX_SCAN=%s (report jobs skipped when picking video work)", WORKER_PENDING_MAX_SCAN)
+    logging.info(
+        "Scope: only modes dots|skeleton. mode=report stays in %s for the REPORT worker — both should run in parallel.",
+        PENDING,
+    )
     recovered = recover_stale_processing_jobs(PROCESSING_STALE_MINUTES, PROCESSING_RECOVERY_MAX_ITEMS)
     logging.info("[startup_recovery] completed recovered=%s", recovered)
     last_recovery_at = time.time()
     last_heartbeat_at = 0.0
+    last_queue_diag_ts = 0.0
 
     while True:
         now = time.time()
@@ -1118,6 +1123,22 @@ def main_loop(poll_seconds: int = 3) -> None:
         # by many report jobs.
         keys = list_pending(limit=200)
         if not keys:
+            # Throttled: if S3 has pending JSON but none are video jobs, explain why this worker is idle.
+            if (now - last_queue_diag_ts) >= 60.0:
+                last_queue_diag_ts = now
+                try:
+                    n_pending = count_jobs(PENDING)
+                    if n_pending > 0:
+                        logging.warning(
+                            "[queue] bucket=%s: %s file(s) under %s but none are dots/skeleton pickable "
+                            "(almost certainly all mode=report). This worker will stay idle; run/fix the REPORT worker. "
+                            "If you expect skeleton jobs, check Streamlit + this worker share the same AWS_BUCKET.",
+                            AWS_BUCKET,
+                            n_pending,
+                            PENDING,
+                        )
+                except Exception as exc:
+                    logging.warning("[queue] could not count pending prefix=%s err=%s", PENDING, exc)
             time.sleep(poll_seconds)
             continue
 

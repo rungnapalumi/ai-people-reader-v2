@@ -1,7 +1,10 @@
-# Two workers are required for a full submission (skeleton/dots + report):
-# - Video worker: mode dots / skeleton only (ignores mode=report).
-# - Report worker: mode report only. If it is stopped or missing AWS_* env, you get video but no DOCX/PDF.
-# Give BOTH the same AWS_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (or instance role).
+# --- Two workers = run IN PARALLEL (แยก service แต่ทำพร้อมกัน) ---
+# One upload enqueues e.g. skeleton + report with the SAME group_id under jobs/groups/<id>/.
+# - Video worker: encodes dots/skeleton from input.mp4 (modes dots | skeleton only).
+# - Report worker: analyzes the SAME input.mp4 for DOCX/PDF (mode report). It does NOT wait for
+#   skeleton.mp4 to exist — only email sequencing cares about expect_skeleton.
+# Both poll jobs/pending/ independently → heavy work runs concurrently. Keep BOTH services Live.
+# Same AWS_BUCKET (+ keys or IAM) on every service, or one worker "sees" an empty queue.
 #
 # Dots/Skeleton worker: processes dots and skeleton video jobs from S3 queue
 - type: worker
@@ -18,7 +21,8 @@
     pip install "setuptools>=65.0.0" "wheel>=0.38.0"
     pip cache purge
     pip install --no-cache-dir -r worker_requirements.txt
-  startCommand: python worker.py
+  # Use src/worker.py so Render matches local fixes (pending scan, queue diagnostics). Root worker.py is a slimmer alternate.
+  startCommand: python src/worker.py
   envVars:
     - key: PYTHON_VERSION
       value: 3.11.9
