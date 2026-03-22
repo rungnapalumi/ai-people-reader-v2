@@ -995,13 +995,137 @@ last_group_hint = str(st.session_state.get("last_group_id") or url_group_id or t
 if run and not uploaded:
     st.warning("ยังไม่ได้เลือกไฟล์วิดีโอ กรุณาเลือกไฟล์ก่อนกด Run Analysis")
 elif run and uploaded is not None:
-    st.info("กำลังตรวจสอบข้อมูลและส่งงานเข้าคิววิเคราะห์...")
+    st.caption("กำลังอัปโหลดและส่งคิว — รอสักครู่ (ไฟล์ใหญ่ใช้เวลาหลายนาที)")
 elif uploaded is not None:
     st.info("เลือกไฟล์แล้ว กด Run Analysis เพื่อเริ่มวิเคราะห์")
 elif last_group_hint:
     st.caption(f"งานล่าสุด: `{last_group_hint}` (เลื่อนลงไปดูผลลัพธ์/ดาวน์โหลดได้)")
 else:
     st.caption("ยังไม่เริ่มอัปโหลด กรุณาเลือกไฟล์และกด Run Analysis")
+
+note = st.empty()
+# Submit ก่อนส่วนดาวน์โหลด: เดิมสแกน S3 หลายรอบก่อนอัปโหลด ทำให้ค้างที่ "กำลังตรวจสอบ..." และ worker เห็น pending=0 ช้า
+if run:
+    if not uploaded:
+        note.error("Please upload a video first.")
+        st.stop()
+    if not notify_email:
+        note.error("Please enter User Name (Email Address).")
+        st.stop()
+    if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
+        note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
+        st.stop()
+    effective_report_style = "simple"
+    effective_report_format = org_settings.get("report_format") if org_settings else "pdf"
+    enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
+    enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
+    enable_skeleton = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
+    report_languages: List[str] = []
+    if enable_report_th:
+        report_languages.append("th")
+    if enable_report_en:
+        report_languages.append("en")
+    if not (enable_skeleton or report_languages):
+        note.error("This organization has no enabled outputs. Please update organization settings in Admin page.")
+        st.stop()
+
+    base_user = safe_slug(user_name, fallback="user")
+    group_id_submit = f"{new_group_id()}__{base_user}"
+    input_key_submit = f"{JOBS_GROUP_PREFIX}{group_id_submit}/input/input.mp4"
+
+    with st.spinner("กำลังอัปโหลดวิดีโอไป S3 และส่งคิววิเคราะห์ (ไฟล์ใหญ่ 30MB+ อาจใช้ 3–15 นาทีบน Render)..."):
+        try:
+            s3_upload_stream(
+                key=input_key_submit,
+                file_obj=uploaded,
+                content_type=guess_content_type(uploaded.name or "input.mp4"),
+            )
+        except Exception as e:
+            note.error(f"Upload to S3 failed: {format_submit_error_message(e)}")
+            st.warning(SUPPORT_CONTACT_TEXT)
+            st.stop()
+
+        outputs_submit = build_output_keys(group_id_submit)
+        created_at_submit = utc_now_iso()
+
+        job_skel = {
+            "job_id": new_job_id(),
+            "group_id": group_id_submit,
+            "created_at": created_at_submit,
+            "status": "pending",
+            "mode": "skeleton",
+            "input_key": input_key_submit,
+            "output_key": outputs_submit["skeleton_video"],
+            "user_name": user_name or "",
+            "employee_id": (employee_id or "").strip(),
+            "notify_email": notify_email,
+            "employee_email": notify_email,
+        }
+
+        job_report = {
+            "job_id": new_job_id(),
+            "group_id": group_id_submit,
+            "created_at": created_at_submit,
+            "status": "pending",
+            "mode": "report",
+            "input_key": input_key_submit,
+            "client_name": user_name or "Anonymous",
+            "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+            "languages": report_languages,
+            "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id_submit}",
+            "analysis_mode": "real",
+            "sample_fps": 3,
+            "max_frames": 150,
+            "report_style": effective_report_style,
+            "report_format": effective_report_format,
+            "expect_skeleton": bool(enable_skeleton),
+            "notify_email": notify_email,
+            "enterprise_folder": (enterprise_folder or "").strip(),
+            "expect_dots": False,
+            "employee_id": (employee_id or "").strip(),
+            "employee_email": notify_email,
+        }
+
+        try:
+            save_employee_registry(
+                employee_id=employee_id,
+                employee_email=notify_email,
+                organization_name=enterprise_folder,
+            )
+            queued_job_ids: Dict[str, str] = {}
+            queued_job_keys: Dict[str, str] = {}
+            if enable_skeleton:
+                queued_job_keys["skeleton"] = enqueue_legacy_job(job_skel)
+                queued_job_ids["skeleton"] = job_skel["job_id"]
+            if report_languages:
+                queued_job_keys["report"] = enqueue_legacy_job(job_report)
+                queued_job_ids["report"] = job_report["job_id"]
+        except Exception as e:
+            note.error(f"Enqueue job failed: {format_submit_error_message(e)}")
+            st.warning(SUPPORT_CONTACT_TEXT)
+            st.stop()
+
+        missing_pending = verify_pending_jobs_exist(list(queued_job_keys.values()))
+        if missing_pending:
+            note.error(
+                "Queued job verification failed: some jobs were not found in jobs/pending.\n"
+                f"Missing keys: {', '.join(missing_pending)}"
+            )
+            st.warning(SUPPORT_CONTACT_TEXT)
+            st.stop()
+
+    st.session_state["last_group_id"] = group_id_submit
+    _persist_group_id_to_url(group_id_submit)
+    st.session_state["last_outputs"] = outputs_submit
+    st.session_state["last_jobs"] = queued_job_ids
+    st.session_state["last_job_json_keys"] = queued_job_keys
+
+    note.success(
+        f"Submitted! submission_id = {group_id_submit} | report_style={effective_report_style}, report_format={effective_report_format}, "
+        f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
+    )
+    st.caption(f"Queued job keys: {', '.join(queued_job_keys.values())}")
+    st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 
 # --- ดาวน์โหลดผลจากอีเมล (แสดงด้านล่างปุ่ม Run Analysis) ---
 st.divider()
@@ -1126,135 +1250,6 @@ if candidate_group_id:
     active_group_id = candidate_group_id
     st.session_state["last_group_id"] = active_group_id
     _persist_group_id_to_url(active_group_id)
-
-note = st.empty()
-
-# -------------------------
-# Submit jobs
-# -------------------------
-if run:
-    if not uploaded:
-        note.error("Please upload a video first.")
-        st.stop()
-    if not notify_email:
-        note.error("Please enter User Name (Email Address).")
-        st.stop()
-    if (not is_valid_email_format(notify_email)) or is_blocked_typo_domain(notify_email):
-        note.error("รูปแบบ e-mail ไม่ถูกต้อง กรุณาตรวจสอบ e-mail อีกครั้ง")
-        st.stop()
-    # Page policy: TTB always uses simple report style.
-    effective_report_style = "simple"
-    effective_report_format = org_settings.get("report_format") if org_settings else "pdf"
-    enable_report_th = bool(org_settings.get("enable_report_th", True)) if org_settings else True
-    enable_report_en = bool(org_settings.get("enable_report_en", True)) if org_settings else True
-    enable_skeleton = bool(org_settings.get("enable_skeleton", True)) if org_settings else True
-    report_languages = []
-    if enable_report_th:
-        report_languages.append("th")
-    if enable_report_en:
-        report_languages.append("en")
-    if not (enable_skeleton or report_languages):
-        note.error("This organization has no enabled outputs. Please update organization settings in Admin page.")
-        st.stop()
-
-    base_user = safe_slug(user_name, fallback="user")
-    group_id = f"{new_group_id()}__{base_user}"
-    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
-
-    try:
-        s3_upload_stream(
-            key=input_key,
-            file_obj=uploaded,
-            content_type=guess_content_type(uploaded.name or "input.mp4"),
-        )
-    except Exception as e:
-        note.error(f"Upload to S3 failed: {format_submit_error_message(e)}")
-        st.warning(SUPPORT_CONTACT_TEXT)
-        st.stop()
-
-    outputs = build_output_keys(group_id)
-    created_at = utc_now_iso()
-
-    job_skel = {
-        "job_id": new_job_id(),
-        "group_id": group_id,
-        "created_at": created_at,
-        "status": "pending",
-        "mode": "skeleton",
-        "input_key": input_key,
-        "output_key": outputs["skeleton_video"],
-        "user_name": user_name or "",
-        "employee_id": (employee_id or "").strip(),
-        "notify_email": notify_email,
-        "employee_email": notify_email,
-    }
-
-    # Report job - handled by report_worker.py
-    job_report = {
-        "job_id": new_job_id(),
-        "group_id": group_id,
-        "created_at": created_at,
-        "status": "pending",
-        "mode": "report",  # report_worker.py handles this
-        "input_key": input_key,
-        "client_name": user_name or "Anonymous",
-        "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-        "languages": report_languages,
-        "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
-        "analysis_mode": "real",  # Use real MediaPipe analysis
-        "sample_fps": 3,
-        "max_frames": 150,
-        "report_style": effective_report_style,
-        "report_format": effective_report_format,
-        "expect_skeleton": bool(enable_skeleton),
-        "notify_email": notify_email,
-        "enterprise_folder": (enterprise_folder or "").strip(),
-        "expect_dots": False,
-        "employee_id": (employee_id or "").strip(),
-        "employee_email": notify_email,
-    }
-
-    try:
-        save_employee_registry(
-            employee_id=employee_id,
-            employee_email=notify_email,
-            organization_name=enterprise_folder,
-        )
-        queued_job_ids: Dict[str, str] = {}
-        queued_job_keys: Dict[str, str] = {}
-        if enable_skeleton:
-            queued_job_keys["skeleton"] = enqueue_legacy_job(job_skel)
-            queued_job_ids["skeleton"] = job_skel["job_id"]
-        if report_languages:
-            queued_job_keys["report"] = enqueue_legacy_job(job_report)
-            queued_job_ids["report"] = job_report["job_id"]
-    except Exception as e:
-        note.error(f"Enqueue job failed: {format_submit_error_message(e)}")
-        st.warning(SUPPORT_CONTACT_TEXT)
-        st.stop()
-
-    missing_pending = verify_pending_jobs_exist(list(queued_job_keys.values()))
-    if missing_pending:
-        note.error(
-            "Queued job verification failed: some jobs were not found in jobs/pending.\n"
-            f"Missing keys: {', '.join(missing_pending)}"
-        )
-        st.warning(SUPPORT_CONTACT_TEXT)
-        st.stop()
-
-    st.session_state["last_group_id"] = group_id
-    _persist_group_id_to_url(group_id)
-    active_group_id = group_id
-    st.session_state["last_outputs"] = outputs
-    st.session_state["last_jobs"] = queued_job_ids
-    st.session_state["last_job_json_keys"] = queued_job_keys
-
-    note.success(
-        f"Submitted! submission_id = {group_id} | report_style={effective_report_style}, report_format={effective_report_format}, "
-        f"outputs={','.join(list(queued_job_ids.keys())) or '-'}"
-    )
-    st.caption(f"Queued job keys: {', '.join(queued_job_keys.values())}")
-    st.info("ระบบได้ทำการวิเคราะห์แล้ว ท่านจะได้รับ e-mail แจ้งหลังจากนี้ ขอบคุณที่ใช้ AI People Reader")
 
 group_id = active_group_id
 if group_id:
