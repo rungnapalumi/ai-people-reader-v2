@@ -457,6 +457,9 @@ def _find_libreoffice_bin() -> str:
             "/Applications/LibreOffice.app/**/soffice",
             "/opt/render/project/src/.apt/**/soffice",
             "/opt/render/project/src/.apt/**/libreoffice",
+            # Debian/Ubuntu Docker (Render build): real binary often under program/, not only /usr/bin wrapper
+            "/usr/lib/libreoffice/**/soffice",
+            "/usr/lib/libreoffice/**/soffice.bin",
         ):
             for p in glob.glob(pat, recursive=True):
                 if os.path.isfile(p) and os.access(p, os.X_OK):

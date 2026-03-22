@@ -37,9 +37,9 @@
   buildCommand: |
     set -e
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y chromium libreoffice libreoffice-writer fonts-noto-core fonts-noto-ui-core fonts-thai-tlwg
+    DEBIAN_FRONTEND=noninteractive apt-get install -y chromium libreoffice libreoffice-writer libreoffice-core-nogui fonts-noto-core fonts-noto-ui-core fonts-thai-tlwg
     chromium --version || chromium-browser --version
-    echo "[build] LibreOffice check:" && (which libreoffice || which soffice || find /usr -name "soffice" -o -name "libreoffice" 2>/dev/null | head -5)
+    echo "[build] LibreOffice paths:" && (command -v libreoffice; command -v soffice; ls -la /usr/lib/libreoffice/program/soffice 2>/dev/null || true)
     pip install --upgrade pip
     pip install "setuptools>=65.0.0" "wheel>=0.38.0"
     pip cache purge
