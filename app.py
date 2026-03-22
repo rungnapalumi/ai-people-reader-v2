@@ -132,6 +132,7 @@ def _apply_theme() -> None:
 HOME_PAGE_TITLE = "Admin"
 SUBMIT_PAGE_TITLE = "SkillLane"
 TTB_PAGE_TITLE = "TTB"
+LPA_PAGE_TITLE = "LPA"
 OPERATION_TEST_PAGE_TITLE = "Operational Test"
 TRAINING_ONLINE_PORTAL_PAGE_TITLE = "Training-online-portal"
 ADMIN_USERNAME = "admin"
@@ -1035,7 +1036,14 @@ def _render_admin_panel() -> None:
             st.warning("No settings found for this organization yet. You can create it below.")
 
     default_style_ui = "Simple" if existing_org_cfg.get("report_style") == "simple" else "Full"
-    default_format_ui = "PDF" if existing_org_cfg.get("report_format") == "pdf" else "DOCX"
+    # Default PDF when unset: matches email worker (attachments) and TTB/LPA portal defaults.
+    _rf = str(existing_org_cfg.get("report_format") or "").strip().lower()
+    if _rf == "pdf":
+        default_format_ui = "PDF"
+    elif _rf == "docx":
+        default_format_ui = "DOCX"
+    else:
+        default_format_ui = "PDF"
     default_enable_report_th = bool(existing_org_cfg.get("enable_report_th", True))
     default_enable_report_en = bool(existing_org_cfg.get("enable_report_en", True))
     default_enable_skeleton = bool(existing_org_cfg.get("enable_skeleton", True))
@@ -1044,13 +1052,19 @@ def _render_admin_panel() -> None:
         "Any page": "",
         "AI People Reader page": "ai_people_reader",
         "TTB page": "ttb",
+        "LPA page": "lpa",
     }
     existing_page_value = str(existing_org_cfg.get("default_page") or "").strip().lower()
     existing_page_label = next((k for k, v in page_options.items() if v == existing_page_value), "Any page")
 
     with st.form("org_settings_form", clear_on_submit=False):
         report_style_ui = st.selectbox("Default Report Type", options=["Full", "Simple"], index=0 if default_style_ui == "Full" else 1)
-        report_format_ui = st.selectbox("Default Report File", options=["DOCX", "PDF"], index=0 if default_format_ui == "DOCX" else 1)
+        report_format_ui = st.selectbox(
+            "Default Report File",
+            options=["PDF", "DOCX"],
+            index=0 if default_format_ui == "PDF" else 1,
+            help="แนะนำ PDF สำหรับ TTB/LPA — อีเมลแนบรายงานและ worker ไปด้วยกันง่ายกว่า",
+        )
         st.markdown("**Allowed Outputs For This Organization**")
         enable_report_th_ui = st.checkbox("1) รายงานภาษาไทย (Thai Report)", value=default_enable_report_th)
         enable_report_en_ui = st.checkbox("2) English Report", value=default_enable_report_en)
@@ -1210,6 +1224,7 @@ if hasattr(st, "Page") and hasattr(st, "navigation"):
                 st.Page(_render_home, title=HOME_PAGE_TITLE),
                 st.Page("pages/2_SkillLane.py", title=SUBMIT_PAGE_TITLE),
                 st.Page("pages/3_TTB.py", title=TTB_PAGE_TITLE),
+                st.Page("pages/7_LPA.py", title=LPA_PAGE_TITLE),
                 st.Page("pages/4_Operational_Test.py", title=OPERATION_TEST_PAGE_TITLE),
                 st.Page("pages/5_training-online-portal.py", title=TRAINING_ONLINE_PORTAL_PAGE_TITLE),
                 st.Page("pages/6_Training.py", title="Training")

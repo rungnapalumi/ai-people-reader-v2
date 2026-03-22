@@ -1,3 +1,8 @@
+# Two workers are required for a full submission (skeleton/dots + report):
+# - Video worker: mode dots / skeleton only (ignores mode=report).
+# - Report worker: mode report only. If it is stopped or missing AWS_* env, you get video but no DOCX/PDF.
+# Give BOTH the same AWS_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (or instance role).
+#
 # Dots/Skeleton worker: processes dots and skeleton video jobs from S3 queue
 - type: worker
   name: ai-people-reader-v2-video-worker

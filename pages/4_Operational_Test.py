@@ -6,6 +6,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+
 import boto3
 import streamlit as st
 import streamlit.components.v1 as components
@@ -21,7 +25,11 @@ AWS_BUCKET = os.getenv("AWS_BUCKET") or os.getenv("S3_BUCKET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 
 if not AWS_BUCKET:
-    st.error("Missing AWS_BUCKET (or S3_BUCKET) environment variable.")
+    st.error(
+        "Missing **AWS_BUCKET** (or **S3_BUCKET**).\n\n"
+        "- **Local:** Copy `.env.example` → `.env` in the project root, set `AWS_BUCKET=...`, then restart Streamlit.\n"
+        "- **Render:** Add the variable under the service **Environment** tab."
+    )
     st.stop()
 
 s3 = boto3.client(

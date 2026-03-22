@@ -415,20 +415,35 @@ def send_result_email(
 
     job_id = str(job.get("job_id") or "").strip()
     group_id = str(job.get("group_id") or "").strip()
-    subject = f"AI People Reader - Results Ready ({group_id or job_id})"
+    gid = group_id or job_id
     has_video_links = any(bool(v) for v in video_keys.values())
-    has_report_links = any(bool(v) for v in report_docx_keys.values())
+    report_labels = [str(lab) for lab, k in (report_docx_keys or {}).items() if k]
+    has_report_links = bool(report_labels)
+    # Up to 3 separate sends (TH report, EN report, dots) share the same job — same subject looked like duplicates.
+    if has_report_links and has_video_links:
+        subject = f"AI People Reader — Report(s) + video links ({gid})"
+    elif has_report_links:
+        if len(report_labels) == 1:
+            subject = f"AI People Reader — {report_labels[0]} ready ({gid})"
+        else:
+            subject = f"AI People Reader — Reports ready ({gid})"
+    elif has_video_links:
+        v_labels = [str(lab) for lab, k in (video_keys or {}).items() if k]
+        v_part = v_labels[0] if len(v_labels) == 1 else "Video downloads"
+        subject = f"AI People Reader — {v_part} ({gid})"
+    else:
+        subject = f"AI People Reader — Update ({gid})"
     lines = [
         f"Job ID: {job_id}",
         f"Your analysis results are ready for group: {group_id}",
         "",
     ]
     if has_report_links:
+        attached_lines = [f"- {label}" for label in report_labels]
         lines.extend(
             [
                 "Attached files:",
-                "- Report EN",
-                "- Report TH",
+                *attached_lines,
                 "",
             ]
         )
@@ -485,7 +500,11 @@ def send_result_email(
             url = presigned_get_url(key, filename=rname)
             html_report_rows.append(f"<li><a href=\"{escape(url)}\">{escape(label)}</a></li>")
 
-    attached_html = "<p>Attached files:<br/>- Report EN<br/>- Report TH</p>" if has_report_links else ""
+    attached_html = (
+        "<p>Attached files:<br/>" + "<br/>".join(f"- {escape(lab)}" for lab in report_labels) + "</p>"
+        if has_report_links
+        else ""
+    )
     videos_html = f"<p><b>Video links</b></p><ul>{''.join(html_video_rows) if html_video_rows else '<li>Not available</li>'}</ul>" if has_video_links else ""
     reports_html = f"<p><b>Backup report links</b></p><ul>{''.join(html_report_rows) if html_report_rows else '<li>Not available</li>'}</ul>" if has_report_links else ""
     body_html = f"""
@@ -1070,6 +1089,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
     # output prefix
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
+    group_id_for_outputs = str(job.get("group_id") or "").strip()
     # We'll store files under:
     #   <output_prefix>/report_TH.docx, report_EN.docx, report_TH.pdf, report_EN.pdf
     #   <output_prefix>/Graph_1_TH.png, Graph_2_TH.png, ...
@@ -1110,6 +1130,13 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     docx_bytes,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
+                if group_id_for_outputs:
+                    ui_docx = f"jobs/output/groups/{group_id_for_outputs}/report_{lang_code}.docx"
+                    upload_bytes(
+                        ui_docx,
+                        docx_bytes,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
 
             # Upload PDF when requested format is PDF.
             pdf_key = None
@@ -1119,6 +1146,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 pdf_name = f"Presentation_Analysis_Report_{analysis_date}_{lang_code.upper()}.pdf"
                 pdf_key = f"{output_prefix}/{pdf_name}"
                 upload_bytes(pdf_key, pdf_bytes, "application/pdf")
+                if group_id_for_outputs:
+                    ui_pdf = f"jobs/output/groups/{group_id_for_outputs}/report_{lang_code}.pdf"
+                    upload_bytes(ui_pdf, pdf_bytes, "application/pdf")
 
             outputs["graphs"][lang_code.upper()] = {"graph1_key": g1_key, "graph2_key": g2_key}
             outputs["reports"][lang_code.upper()] = {"docx_key": docx_key, "pdf_key": pdf_key}

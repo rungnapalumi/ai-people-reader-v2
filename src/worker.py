@@ -350,14 +350,31 @@ def validate_video_file(path: str) -> None:
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open output video: {path}")
-    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    frames_meta = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-    duration = (frames / fps) if fps > 0 else 0.0
+
+    if frames_meta <= 0:
+        n = 0
+        while n < 2_000_000:
+            ok, _ = cap.read()
+            if not ok:
+                break
+            n += 1
+        cap.release()
+        if n <= 0:
+            raise RuntimeError(f"Output video has no frames: {path}")
+        logging.info("validate_video_file: counted %s frames (metadata was 0) %s", n, path)
+        return
+
     cap.release()
-    if frames <= 0:
-        raise RuntimeError(f"Output video has no frames: {path}")
     if fps <= 0:
-        raise RuntimeError(f"Output video has invalid fps: {path}")
+        logging.warning(
+            "validate_video_file: metadata fps missing for %s (frames=%s); skipping strict fps/duration check",
+            path,
+            frames_meta,
+        )
+        return
+    duration = frames_meta / fps
     if duration <= 0.2:
         raise RuntimeError(f"Output video duration too short ({duration:.3f}s): {path}")
 
@@ -533,7 +550,7 @@ POSE_LANDMARK_IDS = [
     PoseLandmark.RIGHT_ANKLE,
 ]
 
-# Skeleton joints: body only, exclude face (nose, eyes)
+# Skeleton: body only (no face). Neon style uses SKELETON_JOINT_IDS for joint highlights.
 SKELETON_JOINT_IDS = [
     PoseLandmark.LEFT_SHOULDER,
     PoseLandmark.RIGHT_SHOULDER,
@@ -588,6 +605,22 @@ def _frame_for_pose(frame: np.ndarray, max_width: int = 640) -> np.ndarray:
         return frame
     new_h = max(1, int(round(h * (float(max_width) / float(w)))))
     return cv2.resize(frame, (max_width, new_h), interpolation=cv2.INTER_AREA)
+
+
+def _prepare_pose_input_uniform(
+    frame_bgr: np.ndarray, max_side: int
+) -> Tuple[np.ndarray, int, int]:
+    """Uniform resize for pose; landmarks stay 1:1 with output when aspect is preserved."""
+    if frame_bgr is None:
+        raise ValueError("empty frame")
+    fh, fw = frame_bgr.shape[:2]
+    if max_side <= 0 or max(fw, fh) <= max_side:
+        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), fw, fh
+    scale = max_side / float(max(fw, fh))
+    pw = max(1, int(round(fw * scale)))
+    ph = max(1, int(round(fh * scale)))
+    small = cv2.resize(frame_bgr, (pw, ph), interpolation=cv2.INTER_AREA)
+    return cv2.cvtColor(small, cv2.COLOR_BGR2RGB), pw, ph
 
 
 def generate_dots_video(input_path: str, out_path: str) -> None:
@@ -652,51 +685,80 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    # White only (BGR). Thinner strokes + shrink toward center so overlay is not oversized.
-    SKELETON_WHITE = (255, 255, 255)  # BGR: blue=255, green=255, red=255 — not (0,255,0) green
-    skeleton_pose_spread = 0.76
+    # Cyan glow + white core; body-only; spread 1.0 = aligned to body (uniform pose resize).
+    CYAN_BGR = (255, 255, 0)
+    WHITE_BGR = (255, 255, 255)
+    skeleton_pose_spread = 1.0
+    vis_min = 0.35
+    glow_line_thick = 11
+    core_line_thick = 2
+    glow_joint_r = 7
+    core_joint_r = 3
+    glow_sigma = 4.0
+    glow_alpha = 0.52
     scale = 2
     w2, h2 = w * scale, h * scale
-    line_thick = 2
-    joint_radius = 2
-
-    # Process fewer frames for pose inference and reuse latest landmarks.
-    process_every_n = 2 if fps >= 20 else 1
+    kblur = max(3, int(round(glow_sigma * 4)) | 1)
+    pose_max_side = max(0, int(os.getenv("SKELETON_POSE_MAX_SIDE", "1280") or "1280"))
+    model_cx = max(0, min(2, int(os.getenv("SKELETON_MODEL_COMPLEXITY", "2") or "2")))
     last_landmarks = None
 
-    with Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False) as pose:
-        frame_idx = 0
+    with Pose(
+        static_image_mode=False,
+        model_complexity=model_cx,
+        enable_segmentation=False,
+    ) as pose:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
-            frame_idx += 1
 
-            if frame_idx % process_every_n == 0:
-                pose_frame = _frame_for_pose(frame, max_width=640)
-                rgb = cv2.cvtColor(pose_frame, cv2.COLOR_BGR2RGB)
-                res = pose.process(rgb)
-                last_landmarks = res.pose_landmarks.landmark if res.pose_landmarks else None
+            fh, fw = frame.shape[:2]
+            if fw != w or fh != h:
+                frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+
+            rgb, _pw, _ph = _prepare_pose_input_uniform(frame, pose_max_side)
+            res = pose.process(rgb)
+            last_landmarks = res.pose_landmarks.landmark if res.pose_landmarks else None
 
             if last_landmarks:
                 lms = last_landmarks
 
-                frame2 = cv2.resize(frame, (w2, h2), interpolation=cv2.INTER_LINEAR)
+                hi = cv2.resize(frame, (w2, h2), interpolation=cv2.INTER_LINEAR)
+                glow_layer = np.zeros_like(hi, dtype=np.uint8)
 
                 for a, b in SKELETON_EDGES:
                     la, lb = lms[a], lms[b]
-                    if la.visibility < 0.5 or lb.visibility < 0.5:
+                    if la.visibility < vis_min or lb.visibility < vis_min:
                         continue
                     xa, ya = _lm_to_px_spread(la, w2, h2, skeleton_pose_spread)
                     xb, yb = _lm_to_px_spread(lb, w2, h2, skeleton_pose_spread)
-                    cv2.line(frame2, (xa, ya), (xb, yb), SKELETON_WHITE, line_thick, cv2.LINE_8)
+                    cv2.line(glow_layer, (xa, ya), (xb, yb), CYAN_BGR, glow_line_thick, cv2.LINE_AA)
 
                 for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
-                    if lm.visibility < 0.5:
+                    if lm.visibility < vis_min:
                         continue
                     x, y = _lm_to_px_spread(lm, w2, h2, skeleton_pose_spread)
-                    cv2.circle(frame2, (x, y), joint_radius, SKELETON_WHITE, -1)
+                    cv2.circle(glow_layer, (x, y), glow_joint_r, CYAN_BGR, -1, lineType=cv2.LINE_AA)
+
+                glow_soft = cv2.GaussianBlur(glow_layer, (kblur, kblur), glow_sigma)
+                frame2 = cv2.addWeighted(hi, 1.0, glow_soft, glow_alpha, 0.0)
+
+                for a, b in SKELETON_EDGES:
+                    la, lb = lms[a], lms[b]
+                    if la.visibility < vis_min or lb.visibility < vis_min:
+                        continue
+                    xa, ya = _lm_to_px_spread(la, w2, h2, skeleton_pose_spread)
+                    xb, yb = _lm_to_px_spread(lb, w2, h2, skeleton_pose_spread)
+                    cv2.line(frame2, (xa, ya), (xb, yb), WHITE_BGR, core_line_thick, cv2.LINE_AA)
+
+                for pid in SKELETON_JOINT_IDS:
+                    lm = lms[pid]
+                    if lm.visibility < vis_min:
+                        continue
+                    x, y = _lm_to_px_spread(lm, w2, h2, skeleton_pose_spread)
+                    cv2.circle(frame2, (x, y), core_joint_r, WHITE_BGR, -1, lineType=cv2.LINE_AA)
 
                 frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_LINEAR)
 

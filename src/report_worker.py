@@ -1304,11 +1304,12 @@ def send_result_email(
     video_keys: Dict[str, str],
     report_docx_keys: Dict[str, str],
 ) -> Tuple[bool, str]:
-    # Email policy: only send PDF reports (exclude DOCX and HTML).
+    # Attach PDF and/or DOCX reports (exclude HTML). Simple/TTB jobs are often DOCX-only.
     report_pdf_keys = {
         label: key
         for label, key in (report_docx_keys or {}).items()
-        if key and str(key).strip().lower().endswith(".pdf")
+        if key
+        and str(key).strip().lower().endswith((".pdf", ".docx"))
     }
     recipients = resolve_notification_recipients(
         str(job.get("notify_email") or ""),
@@ -1323,10 +1324,25 @@ def send_result_email(
 
     job_id = str(job.get("job_id") or "").strip()
     group_id = str(job.get("group_id") or "").strip()
-    subject = f"AI People Reader - Results Ready ({group_id or job_id})"
+    gid = group_id or job_id
     has_video_links = any(bool(v) for v in video_keys.values())
     report_labels = [str(label) for label, key in report_pdf_keys.items() if key]
     has_report_links = bool(report_labels)
+    _all_pdf = all(str(k or "").lower().endswith(".pdf") for k in report_pdf_keys.values() if k)
+    _any_docx = any(str(k or "").lower().endswith(".docx") for k in report_pdf_keys.values() if k)
+    _report_word = "Report PDFs" if _all_pdf and not _any_docx else "Report files (PDF/DOCX)"
+    # Separate subjects per delivery: same group triggers up to 3 emails (reports, skeleton, dots).
+    # One generic "Results Ready" subject looked like duplicate spam in the inbox.
+    if has_report_links and has_video_links:
+        subject = f"AI People Reader — {_report_word} + video links ({gid})"
+    elif has_report_links:
+        subject = f"AI People Reader — {_report_word} ready ({gid})"
+    elif has_video_links:
+        v_labels = [str(lab) for lab, k in (video_keys or {}).items() if k]
+        v_part = v_labels[0] if len(v_labels) == 1 else "Video downloads"
+        subject = f"AI People Reader — {v_part} ({gid})"
+    else:
+        subject = f"AI People Reader — Update ({gid})"
     lines = [
         f"Job ID: {job_id}",
         f"Your analysis results are ready for group: {group_id}",
@@ -1358,7 +1374,7 @@ def send_result_email(
             vname = _video_filename_from_label(label)
             lines.append(f"- {label}: {presigned_get_url(key, filename=vname)}")
 
-    # Fallback links for report PDF in case attachment cannot be included.
+    # Fallback links for report files in case attachment cannot be included.
     report_link_lines: List[str] = []
     for label, key in report_pdf_keys.items():
         if key:
@@ -1425,7 +1441,7 @@ def send_result_email(
         alt.attach(MIMEText(body_text, "plain", "utf-8"))
         alt.attach(MIMEText(body_html, "html", "utf-8"))
         msg.attach(alt)
-        # Attach report PDF files only (exclude DOCX/HTML).
+        # Attach report PDF/DOCX (exclude HTML).
         for label, key in report_pdf_keys.items():
             if not key:
                 continue
@@ -1536,10 +1552,9 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
     analysis_date = str(job.get("analysis_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     report_format = str(job.get("report_format") or "docx").strip().lower()
-    # Email policy: only send PDF report links.
-    ext = "pdf"
-    en_key = en_pdf_key
-    th_key = th_pdf_key
+    # Prefer PDF for email when present; else DOCX (TTB/simple often use docx-only).
+    en_key = en_pdf_key or en_docx_key
+    th_key = th_pdf_key or th_docx_key
     raw_languages = job.get("languages") or ["th", "en"]
     if isinstance(raw_languages, str):
         raw_languages = [raw_languages]
@@ -1550,9 +1565,12 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         wants_th, wants_en = True, True
     report_style = str(job.get("report_style") or "").strip().lower()
     expect_skeleton = bool(job.get("expect_skeleton", False))
+    # Guess missing keys only with the extension we likely wrote (avoid expecting .pdf when job is docx-only).
     if output_prefix and wants_th and not th_key:
+        ext = "pdf" if report_format == "pdf" else "docx"
         th_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_TH.{ext}"
     if output_prefix and wants_en and not en_key:
+        ext = "pdf" if report_format == "pdf" else "docx"
         en_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_EN.{ext}"
     return {
         "job_id": job_id,
@@ -1837,24 +1855,40 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             if is_operation_test and str(payload.get("input_video_key") or "").strip():
                 video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
 
-            # 1) Report email (TH + EN)
+            # 1) Report email (TH + EN); only set *_email_sent for PDFs actually attached this send
             report_links: Dict[str, str] = {}
             if (not report_th_sent) and email_payload_report_th_ready(payload):
-                th_pdf = str(payload.get("report_th_pdf_key") or payload.get("report_th_key") or "").strip()
-                if th_pdf and th_pdf.lower().endswith(".pdf"):
-                    report_links["Report TH (PDF)"] = th_pdf
+                th_att = str(
+                    payload.get("report_th_pdf_key")
+                    or payload.get("report_th_docx_key")
+                    or payload.get("report_th_key")
+                    or ""
+                ).strip()
+                if th_att.lower().endswith(".pdf"):
+                    report_links["Report TH (PDF)"] = th_att
+                elif th_att.lower().endswith(".docx"):
+                    report_links["Report TH (DOCX)"] = th_att
             if (not report_en_sent) and email_payload_report_en_ready(payload):
-                en_pdf = str(payload.get("report_en_pdf_key") or payload.get("report_en_key") or "").strip()
-                if en_pdf and en_pdf.lower().endswith(".pdf"):
-                    report_links["Report EN (PDF)"] = en_pdf
+                en_att = str(
+                    payload.get("report_en_pdf_key")
+                    or payload.get("report_en_docx_key")
+                    or payload.get("report_en_key")
+                    or ""
+                ).strip()
+                if en_att.lower().endswith(".pdf"):
+                    report_links["Report EN (PDF)"] = en_att
+                elif en_att.lower().endswith(".docx"):
+                    report_links["Report EN (DOCX)"] = en_att
             if report_links:
                 sent, status = send_result_email(job_info, video_keys_report, report_links)
                 statuses.append(f"reports:{status}")
                 if sent:
-                    report_th_sent = True
-                    report_en_sent = True
-                    payload["report_th_email_sent"] = True
-                    payload["report_en_email_sent"] = True
+                    if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
+                        report_th_sent = True
+                        payload["report_th_email_sent"] = True
+                    if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
+                        report_en_sent = True
+                        payload["report_en_email_sent"] = True
                     sent_any = True
 
             # 2) Dots email
@@ -2495,7 +2529,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     docx_bytes,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
-                if report_style == "operation_test" and group_id:
+                # Canonical paths (TTB/LPA/SkillLane expect report_th.docx / report_en.docx next to skeleton/dots).
+                if group_id:
                     ui_docx = f"jobs/output/groups/{group_id}/report_{lang_code}.docx"
                     upload_bytes(
                         ui_docx,
@@ -2651,22 +2686,42 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 if is_operation_test and str(payload.get("input_video_key") or "").strip():
                     video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
 
-                # 1) Report email (TH + EN)
+                # 1) Report email (TH + EN in one message when both ready; only mark each language sent if included)
                 th_ready = email_payload_report_th_ready(payload)
                 en_ready = email_payload_report_en_ready(payload)
                 report_links: Dict[str, str] = {}
-                if th_ready and str(payload.get("report_th_pdf_key") or "").strip():
-                    report_links["Report TH (PDF)"] = str(payload.get("report_th_pdf_key") or "").strip()
-                if en_ready and str(payload.get("report_en_pdf_key") or "").strip():
-                    report_links["Report EN (PDF)"] = str(payload.get("report_en_pdf_key") or "").strip()
-                if report_links and (not report_th_sent or not report_en_sent):
+                if (not report_th_sent) and th_ready:
+                    th_att = str(
+                        payload.get("report_th_pdf_key")
+                        or payload.get("report_th_docx_key")
+                        or payload.get("report_th_key")
+                        or ""
+                    ).strip()
+                    if th_att.lower().endswith(".pdf"):
+                        report_links["Report TH (PDF)"] = th_att
+                    elif th_att.lower().endswith(".docx"):
+                        report_links["Report TH (DOCX)"] = th_att
+                if (not report_en_sent) and en_ready:
+                    en_att = str(
+                        payload.get("report_en_pdf_key")
+                        or payload.get("report_en_docx_key")
+                        or payload.get("report_en_key")
+                        or ""
+                    ).strip()
+                    if en_att.lower().endswith(".pdf"):
+                        report_links["Report EN (PDF)"] = en_att
+                    elif en_att.lower().endswith(".docx"):
+                        report_links["Report EN (DOCX)"] = en_att
+                if report_links:
                     sent, status = send_result_email(job_info, video_keys_report, report_links)
                     statuses.append(f"reports:{status}")
                     if sent:
-                        report_th_sent = True
-                        report_en_sent = True
-                        payload["report_th_email_sent"] = True
-                        payload["report_en_email_sent"] = True
+                        if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
+                            report_th_sent = True
+                            payload["report_th_email_sent"] = True
+                        if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
+                            report_en_sent = True
+                            payload["report_en_email_sent"] = True
 
                 # 2) Skeleton email แยก
                 if (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload):
