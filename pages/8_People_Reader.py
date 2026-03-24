@@ -7,7 +7,7 @@ import os
 import json
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import streamlit as st
@@ -127,9 +127,22 @@ S3_UPLOAD_CONFIG = TransferConfig(
 )
 
 JOBS_PENDING_PREFIX = "jobs/pending/"
+JOBS_PROCESSING_PREFIX = "jobs/processing/"
 JOBS_FINISHED_PREFIX = "jobs/finished/"
+JOBS_FAILED_PREFIX = "jobs/failed/"
 JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
+
+# Values must match movement_type_classifier.TYPE_TEMPLATES keys + "auto"
+PEOPLE_READER_MOVEMENT_TYPE_CHOICES: List[tuple] = [
+    ("Auto — closest match from video", "auto"),
+    ("Type 1 (Khun K)", "type_1"),
+    ("Type 2 (Irene)", "type_2"),
+    ("Type 3 (Khun Hongyok)", "type_3"),
+    ("Type 4 (Boon)", "type_4"),
+    ("Type 5 (Elisha)", "type_5"),
+    ("Type 6 (Alisa)", "type_6"),
+]
 
 
 # -------------------------
@@ -218,6 +231,14 @@ def s3_read_json_key(key: str) -> Optional[Dict[str, Any]]:
         return json.loads(raw.decode("utf-8"))
     except Exception:
         return None
+
+
+def _job_payload_output_key(data: Dict[str, Any]) -> str:
+    """Worker stores target path on the job; older workers only returned ok=True in result."""
+    if not isinstance(data, dict):
+        return ""
+    res = data.get("result") or {}
+    return str(res.get("output_key") or data.get("output_key") or "").strip()
 
 
 def s3_output_ready(key: str) -> bool:
@@ -384,7 +405,7 @@ def apply_finished_job_output_keys(group_id: str, outputs: Dict[str, str]) -> No
         res = data.get("result") or {}
         if res.get("ok") is False:
             return
-        out_key = str(res.get("output_key") or "").strip()
+        out_key = _job_payload_output_key(data)
         if out_key:
             outputs[field] = out_key
 
@@ -425,7 +446,7 @@ def discover_video_outputs_from_finished_jobs(group_id: str, outputs: Dict[str, 
                 res = data.get("result") or {}
                 if res.get("ok") is False:
                     continue
-                out_key = str(res.get("output_key") or "").strip()
+                out_key = _job_payload_output_key(data)
                 if not out_key:
                     continue
                 if mode == "dots":
@@ -436,6 +457,85 @@ def discover_video_outputs_from_finished_jobs(group_id: str, outputs: Dict[str, 
                     return
     except Exception:
         pass
+
+
+def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> Dict[str, str]:
+    """
+    Read dots/skeleton job JSONs from S3 (same YYYYMMDD prefix as group_id) to show queue/processing/failed.
+    """
+    gid = (group_id or "").strip()
+    out: Dict[str, str] = {}
+    if not gid or not AWS_BUCKET or AWS_BUCKET == "local":
+        return out
+    variants = set(get_group_id_variants(gid) or [gid])
+    date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
+    if not date_prefix:
+        return out
+
+    # Higher rank wins (user-facing severity)
+    best: Dict[str, Tuple[int, str]] = {}
+
+    def note(mode: str, rank: int, text: str) -> None:
+        cur = best.get(mode)
+        if cur is None or rank > cur[0]:
+            best[mode] = (rank, text)
+
+    folder_meta = [
+        (JOBS_FAILED_PREFIX, "failed"),
+        (JOBS_PROCESSING_PREFIX, "processing"),
+        (JOBS_PENDING_PREFIX, "pending"),
+        (JOBS_FINISHED_PREFIX, "finished"),
+    ]
+    for folder, fname in folder_meta:
+        scanned = 0
+        prefix = f"{folder}{date_prefix}"
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = str(item.get("Key") or "")
+                    if not key.endswith(".json"):
+                        continue
+                    scanned += 1
+                    if scanned > max_per_folder:
+                        break
+                    data = s3_read_json_key(key)
+                    if not data:
+                        continue
+                    gj = str(data.get("group_id") or "").strip()
+                    if gj not in variants:
+                        continue
+                    mode = str(data.get("mode") or "").strip().lower()
+                    if mode not in ("dots", "skeleton"):
+                        continue
+                    st = str(data.get("status") or "").strip().lower()
+                    msg = str(data.get("message") or "").strip()
+                    if len(msg) > 500:
+                        msg = msg[:497] + "..."
+                    res_ok = (data.get("result") or {}).get("ok")
+
+                    if fname == "failed" or st == "failed":
+                        note(mode, 4, (f"Failed: {msg}" if msg else "Failed — check video worker logs on the server"))
+                    elif res_ok is False:
+                        note(mode, 4, (f"Failed: {msg}" if msg else "Worker reported result ok=false"))
+                    elif fname == "processing" or st == "processing":
+                        note(mode, 3, "Processing on video worker…")
+                    elif fname == "pending" or st == "pending":
+                        note(
+                            mode,
+                            2,
+                            "Queued — waiting for a free worker. If the queue is large this can take many minutes.",
+                        )
+                    elif fname == "finished" or st == "finished":
+                        note(mode, 1, "Worker finished — verifying file on S3…")
+                if scanned > max_per_folder:
+                    break
+        except Exception:
+            pass
+
+    for mode, (_, text) in best.items():
+        out[mode] = text
+    return out
 
 
 def ensure_session_defaults() -> None:
@@ -547,6 +647,16 @@ audience_mode = st.radio(
     key="people_reader_audience_mode",
 )
 
+movement_type_mode = st.selectbox(
+    "Movement type (report profile)",
+    options=[c[1] for c in PEOPLE_READER_MOVEMENT_TYPE_CHOICES],
+    format_func=lambda v: next(label for label, key in PEOPLE_READER_MOVEMENT_TYPE_CHOICES if key == v),
+    index=0,
+    key="people_reader_movement_type_mode",
+    help="Auto: classify the video to the nearest type and blend scores into the report. "
+    "Or choose a type to align Engaging, Confidence, Authority, Adaptability and first-impression cues to that profile.",
+)
+
 uploaded = st.file_uploader(
     "Video (MP4 / MOV / M4V / WEBM)",
     type=["mp4", "mov", "m4v", "webm"],
@@ -655,6 +765,7 @@ if run:
             "employee_id": base_user,
             "employee_email": "",
             "audience_mode": audience_mode,
+            "movement_type_mode": movement_type_mode,
         }
 
         try:
@@ -754,13 +865,29 @@ if current_group_id:
     overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
     st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
 
+    job_hints = scan_dots_skeleton_job_status(current_group_id)
     if overall_pct < 100:
+        st.caption(
+            "Dots and skeleton videos are produced by the **video worker** (`worker.py` on Render or your server), "
+            "not by the report worker. If this stays at 0% for a long time, check that the worker is running and "
+            "that the queue is not overloaded."
+        )
+        with st.expander("Job status from S3 (same day as Group ID)", expanded=True):
+            st.write(f"**Dots:** {job_hints.get('dots', '— no matching job JSON found under jobs/pending|processing|finished|failed for this group —')}")
+            st.write(f"**Skeleton:** {job_hints.get('skeleton', '— same —')}")
+        if job_hints.get("dots", "").startswith("Failed") or job_hints.get("skeleton", "").startswith("Failed"):
+            st.error(
+                "At least one video job failed. Fix the error (often ffmpeg/MediaPipe on the worker), then upload again."
+            )
         try:
-            @st.fragment(run_every=timedelta(seconds=8))
-            def _auto_refresh():
+
+            @st.fragment(run_every=timedelta(seconds=10))
+            def _people_reader_auto_refresh():
                 st.rerun()
+
+            _people_reader_auto_refresh()
         except Exception:
-            pass
+            st.caption("Tip: click **Refresh** periodically to poll S3 for finished files.")
 
     for label, ready in status_items:
         st.progress(100 if ready else 0, text=f"{label}: {'Ready' if ready else 'Processing'}")

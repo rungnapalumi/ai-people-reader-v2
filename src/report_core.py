@@ -13,7 +13,7 @@ import unicodedata
 from xml.sax.saxutils import escape
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 import cv2
 import numpy as np
@@ -148,6 +148,7 @@ class ReportData:
     summary_comment: str
     generated_by: str
     first_impression: Optional[FirstImpressionData] = None
+    movement_type_info: Optional[Dict[str, Any]] = None
 
 # Helpers
 def format_seconds_to_mmss(total_seconds: float) -> str:
@@ -394,6 +395,164 @@ def analyze_first_impression_from_video(
         stability = 50.0  # วิเคราะห์ไม่ได้ → Moderate (ไม่ใช้ 0 ที่จะได้ Low)
 
     return FirstImpressionData(eye_contact_pct=eye_pct, upright_pct=upright_pct, stance_stability=stability)
+
+
+def extract_movement_type_frame_features_from_video(
+    video_path: str,
+    audience_mode: str = "one",
+    sample_every_n: int = 3,
+    max_frames: int = 200,
+) -> Dict[str, List[float]]:
+    """
+    Per-frame signals for movement_type_classifier.build_summary_features_from_timeseries.
+    Returns keys: eye_contact, uprightness, stance_width_ratio, weight_shift, gesture_energy,
+    gesture_variation, chest_blocking, chest_open, rotation (lists may be empty if MediaPipe fails).
+    """
+    out: Dict[str, List[float]] = {
+        "eye_contact": [],
+        "uprightness": [],
+        "stance_width_ratio": [],
+        "weight_shift": [],
+        "gesture_energy": [],
+        "gesture_variation": [],
+        "chest_blocking": [],
+        "chest_open": [],
+        "rotation": [],
+    }
+    if (Pose is None) or (PoseLandmark is None) or (not callable(Pose)):
+        return out
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return out
+
+    is_many_audience = str(audience_mode or "").strip().lower() == "many"
+    nose_offset_max = 0.50 if is_many_audience else 0.35
+
+    prev_ankle_mid: Optional[Tuple[float, float]] = None
+    prev_wrist_mid: Optional[Tuple[float, float]] = None
+    prev_sh_angle: Optional[float] = None
+    energy_window: List[float] = []
+
+    def _sh_angle_deg(lsh: Tuple[float, float], rsh: Tuple[float, float]) -> float:
+        return math.degrees(math.atan2(rsh[1] - lsh[1], rsh[0] - lsh[0]))
+
+    with Pose(static_image_mode=False, model_complexity=1) as pose:
+        i = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            i += 1
+            if i % sample_every_n != 0:
+                continue
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = pose.process(rgb)
+            if not res.pose_landmarks:
+                continue
+
+            lms = res.pose_landmarks.landmark
+            nose = lms[PoseLandmark.NOSE]
+            leye = lms[PoseLandmark.LEFT_EYE]
+            reye = lms[PoseLandmark.RIGHT_EYE]
+            lsh = lms[PoseLandmark.LEFT_SHOULDER]
+            rsh = lms[PoseLandmark.RIGHT_SHOULDER]
+            lhip = lms[PoseLandmark.LEFT_HIP]
+            rhip = lms[PoseLandmark.RIGHT_HIP]
+            lank = lms[PoseLandmark.LEFT_ANKLE]
+            rank = lms[PoseLandmark.RIGHT_ANKLE]
+            lw = lms[PoseLandmark.LEFT_WRIST]
+            rw = lms[PoseLandmark.RIGHT_WRIST]
+
+            if min(
+                nose.visibility,
+                leye.visibility,
+                reye.visibility,
+                lsh.visibility,
+                rsh.visibility,
+                lhip.visibility,
+                rhip.visibility,
+            ) < 0.5:
+                continue
+
+            lsh_pt = (float(lsh.x), float(lsh.y))
+            rsh_pt = (float(rsh.x), float(rsh.y))
+            lhip_pt = (float(lhip.x), float(lhip.y))
+            rhip_pt = (float(rhip.x), float(rhip.y))
+            lank_pt = (float(lank.x), float(lank.y))
+            rank_pt = (float(rank.x), float(rank.y))
+            leye_pt = (float(leye.x), float(leye.y))
+            reye_pt = (float(reye.x), float(reye.y))
+            nose_pt = (float(nose.x), float(nose.y))
+
+            eye_dist = abs(leye_pt[0] - reye_pt[0])
+            if eye_dist > 1e-4:
+                mid_eye_x = (leye_pt[0] + reye_pt[0]) / 2.0
+                nose_offset_ratio = abs(nose_pt[0] - mid_eye_x) / eye_dist
+                out["eye_contact"].append(1.0 if nose_offset_ratio <= nose_offset_max else 0.0)
+            else:
+                out["eye_contact"].append(0.5)
+
+            mid_sh = np.array([(lsh_pt[0] + rsh_pt[0]) / 2.0, (lsh_pt[1] + rsh_pt[1]) / 2.0])
+            mid_hip = np.array([(lhip_pt[0] + rhip_pt[0]) / 2.0, (lhip_pt[1] + rhip_pt[1]) / 2.0])
+            v = mid_sh - mid_hip
+            v_norm = np.linalg.norm(v) + 1e-9
+            vert = np.array([0.0, -1.0])
+            cosang = float(np.dot(v / v_norm, vert))
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+            out["uprightness"].append(max(0.0, min(1.0, 1.0 - ang / 55.0)))
+
+            shoulder_width = abs(lsh_pt[0] - rsh_pt[0]) + 1e-9
+            if min(float(lank.visibility), float(rank.visibility)) >= 0.5:
+                dx = lank_pt[0] - rank_pt[0]
+                dy = lank_pt[1] - rank_pt[1]
+                ankle_dist = math.sqrt(dx * dx + dy * dy)
+                out["stance_width_ratio"].append(ankle_dist / shoulder_width)
+                ankle_mid = ((lank_pt[0] + rank_pt[0]) / 2.0, (lank_pt[1] + rank_pt[1]) / 2.0)
+                if prev_ankle_mid is not None:
+                    shift = math.hypot(ankle_mid[0] - prev_ankle_mid[0], ankle_mid[1] - prev_ankle_mid[1])
+                    out["weight_shift"].append(min(1.0, shift / (shoulder_width * 0.8 + 1e-9)))
+                prev_ankle_mid = ankle_mid
+            else:
+                out["stance_width_ratio"].append(0.35)
+                out["weight_shift"].append(0.35)
+
+            if min(float(lw.visibility), float(rw.visibility)) >= 0.4:
+                wmid = ((float(lw.x) + float(rw.x)) / 2.0, (float(lw.y) + float(rw.y)) / 2.0)
+                if prev_wrist_mid is not None:
+                    vel = math.hypot(wmid[0] - prev_wrist_mid[0], wmid[1] - prev_wrist_mid[1])
+                    e = min(1.0, vel * 25.0)
+                    out["gesture_energy"].append(e)
+                    energy_window.append(e)
+                    if len(energy_window) > 7:
+                        energy_window.pop(0)
+                    if len(energy_window) >= 2:
+                        out["gesture_variation"].append(float(np.std(np.array(energy_window))))
+                    else:
+                        out["gesture_variation"].append(e)
+                prev_wrist_mid = wmid
+            else:
+                out["gesture_energy"].append(0.15)
+                out["gesture_variation"].append(0.12)
+
+            out["chest_blocking"].append(0.12)
+            out["chest_open"].append(min(1.0, shoulder_width * 1.8))
+
+            sh_ang = _sh_angle_deg(lsh_pt, rsh_pt)
+            if prev_sh_angle is not None:
+                delta = abs(sh_ang - prev_sh_angle)
+                while delta > 180.0:
+                    delta = 360.0 - delta
+                out["rotation"].append(min(1.0, delta / 45.0))
+            prev_sh_angle = sh_ang
+
+            if len(out["eye_contact"]) >= max_frames:
+                break
+
+    cap.release()
+    return out
+
 
 def generate_eye_contact_text(pct: float) -> list:
     """Generate descriptive text based on eye contact percentage - 10 levels"""
@@ -1385,6 +1544,14 @@ def build_docx_report(
         "effort_title": "ผลการวิเคราะห์การใช้น้ำหนัก (Efforts)" if is_thai else "Effort Motion Detection Results",
         "shape_title": "ผลการวิเคราะห์การใช้รูปทรงของมือร่วมกับร่างกาย (Shape)" if is_thai else "Shape Motion Detection Results",
         "generated": "สร้างโดย AI People Reader™" if is_thai else "Generated by AI People Reader™",
+        "movement_type_heading": "โปรไฟล์ประเภทการเคลื่อนไหว (Movement type)" if is_thai else "Movement type profile",
+        "movement_type_match": "การจับคู่ที่ใกล้เคียงที่สุด:" if is_thai else "Closest match:",
+        "movement_type_confidence": "ความมั่นใจในการจับคู่:" if is_thai else "Match confidence:",
+        "movement_type_mode_auto": "(วิเคราะห์อัตโนมัติจากวิดีโอ)" if is_thai else "(Auto-detected from video)",
+        "movement_type_mode_selected": "(เลือกประเภทด้วยตนเอง — ใช้โปรไฟล์นี้ในรายงาน)" if is_thai else "(Manually selected — report aligned to this profile)",
+        "movement_type_summary_label": "สรุป:" if is_thai else "Summary:",
+        "movement_type_traits": "ลักษณะจากประเภทนี้:" if is_thai else "Traits from this type:",
+        "movement_type_narrative_label": "ข้อสังเกต:" if is_thai else "Observation:",
     }
     
     # Impact texts in Thai
@@ -1733,6 +1900,26 @@ def build_docx_report(
         scale_para5 = doc.add_paragraph(f"{texts['scale']} {_display_scale(adaptability_cat.scale, is_thai)}")
         scale_para5.runs[0].bold = True
         _apply_scale_layout(scale_para5, left_indent_pt=28, space_before_pt=4, compact=False)
+
+    mt = getattr(report, "movement_type_info", None) or {}
+    if isinstance(mt, dict) and mt.get("type_name"):
+        mt_head = doc.add_paragraph(texts["movement_type_heading"])
+        mt_head.runs[0].bold = True
+        mt_head.paragraph_format.space_before = Pt(10)
+        mt_head.paragraph_format.space_after = Pt(4)
+        mode_note = (
+            texts["movement_type_mode_selected"]
+            if str(mt.get("mode") or "") == "selected"
+            else texts["movement_type_mode_auto"]
+        )
+        doc.add_paragraph(f"{texts['movement_type_match']} {mt.get('type_name', '')} {mode_note}")
+        doc.add_paragraph(f"{texts['movement_type_confidence']} {mt.get('confidence_pct', 0)}%")
+        doc.add_paragraph(f"{texts['movement_type_summary_label']} {mt.get('summary', '')}")
+        traits_txt = mt.get("traits_line_th" if is_thai else "traits_line_en", mt.get("traits_line_en", ""))
+        doc.add_paragraph(f"{texts['movement_type_traits']} {traits_txt}")
+        nar = mt.get("narrative_th" if is_thai else "narrative_en", mt.get("narrative_en", ""))
+        if nar:
+            doc.add_paragraph(f"{texts['movement_type_narrative_label']} {nar}")
 
     if not is_simple:
         # PAGE BREAK TO PAGE 4
@@ -2581,6 +2768,38 @@ def build_pdf_report(
         for line in lines:
             write_line(line, size=size, bold=bold, gap=gap)
 
+    def append_movement_type_pdf_block() -> None:
+        nonlocal y
+        if not is_people_reader:
+            return
+        mt = getattr(report, "movement_type_info", None) or {}
+        if not isinstance(mt, dict) or not str(mt.get("type_name") or "").strip():
+            return
+        write_line("", gap=10)
+        head = "โปรไฟล์ประเภทการเคลื่อนไหว (Movement type)" if is_thai else "Movement type profile"
+        write_line(head, size=12, bold=True, gap=10)
+        mode_note = str(
+            mt.get("mode_th" if is_thai else "mode_en")
+            or mt.get("mode_en" if not is_thai else "mode_th")
+            or ""
+        ).strip()
+        closest_lbl = "การจับคู่ที่ใกล้เคียงที่สุด:" if is_thai else "Closest match:"
+        conf_lbl = "ความมั่นใจในการจับคู่:" if is_thai else "Match confidence:"
+        sum_lbl = "สรุป:" if is_thai else "Summary:"
+        traits_lbl = "ลักษณะจากประเภทนี้:" if is_thai else "Traits from this type:"
+        obs_lbl = "ข้อสังเกต:" if is_thai else "Observation:"
+        match_line = f"{closest_lbl} {mt.get('type_name', '')}"
+        if mode_note:
+            match_line = f"{match_line} {mode_note}"
+        write_line(match_line, gap=8)
+        write_line(f"{conf_lbl} {mt.get('confidence_pct', 0)}%", gap=8)
+        write_line(f"{sum_lbl} {mt.get('summary', '')}", gap=8)
+        traits_txt = mt.get("traits_line_th" if is_thai else "traits_line_en", mt.get("traits_line_en", ""))
+        write_line(f"{traits_lbl} {traits_txt}", gap=8)
+        nar = mt.get("narrative_th" if is_thai else "narrative_en", mt.get("narrative_en", ""))
+        if nar:
+            write_line(f"{obs_lbl} {nar}", gap=10)
+
     if uses_op_layout:
         if is_thai:
             title = "รายงานการวิเคราะห์การนำเสนอด้วยการ\nเคลื่อนไหว กับ AI People Reader"
@@ -2846,6 +3065,7 @@ def build_pdf_report(
                     bullet_text="▪",
                 )
                 write_line_indented(f"ระดับ: {adapt_scale}", indent=28, bold=True, gap=6)
+                append_movement_type_pdf_block()
         else:
             if thai_font_fallback and lang_name == "th":
                 write_line("Note: Thai font is unavailable on server; this TH report is rendered in English fallback.", size=10, gap=12)
@@ -2920,6 +3140,7 @@ def build_pdf_report(
                     gap=en_section34_item_gap,
                 )
                 write_line_indented(f"Scale: {adapt_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+                append_movement_type_pdf_block()
         append_graph_pages_for_operation_test()
         c.save()
         return

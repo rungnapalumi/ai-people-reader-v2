@@ -78,6 +78,7 @@ try:
     analyze_video_mediapipe = _report_core.analyze_video_mediapipe
     analyze_video_placeholder = _report_core.analyze_video_placeholder
     analyze_first_impression_from_video = _report_core.analyze_first_impression_from_video
+    extract_movement_type_frame_features_from_video = _report_core.extract_movement_type_frame_features_from_video
     generate_effort_graph = _report_core.generate_effort_graph
     generate_shape_graph = _report_core.generate_shape_graph
     build_docx_report = _report_core.build_docx_report
@@ -738,6 +739,50 @@ def build_html_report_file(
             return _scale_display_for_lang(report.categories[i].scale, lang_code)
         return "-"
 
+    people_reader_page2_extra = ""
+    if is_people_reader:
+        people_reader_page2_extra = (
+            f'''
+      <b>{"5. ความยืดหยุ่นในการปรับตัว (Adaptability)" if is_th else "5. Adaptability"}</b>
+      <ul>
+        <li>{"ความยืดหยุ่น — ความสามารถในการปรับตัวตามสภาวะใหม่ ๆ และรับมือกับการเปลี่ยนแปลง" if is_th else "Flexibility — Ability to adjust to new conditions, handle changes."}</li>
+        <li>{"ความคล่องแคล่ว — ความสามารถในการคิดและสรุปได้อย่างรวดเร็วเพื่อปรับตัว" if is_th else "Agility — Ability to think and draw conclusions quickly in order to adjust."}</li>
+      </ul>
+      <div class="scale">{escape(scale_label)}: {escape(cat_scale(3))}</div>
+'''
+        )
+        mt_html = getattr(report, "movement_type_info", None) or {}
+        if isinstance(mt_html, dict) and str(mt_html.get("type_name") or "").strip():
+            mt_head = "โปรไฟล์ประเภทการเคลื่อนไหว" if is_th else "Movement type profile"
+            mt_closest = "การจับคู่ที่ใกล้เคียงที่สุด:" if is_th else "Closest match:"
+            mt_conf = "ความมั่นใจในการจับคู่:" if is_th else "Match confidence:"
+            mt_sum = "สรุป:" if is_th else "Summary:"
+            mt_traits = "ลักษณะจากประเภทนี้:" if is_th else "Traits from this type:"
+            mt_obs = "ข้อสังเกต:" if is_th else "Observation:"
+            mode_note = escape(str(mt_html.get("mode_th" if is_th else "mode_en") or "").strip())
+            match_name = escape(str(mt_html.get("type_name") or ""))
+            traits_txt = escape(
+                str(
+                    mt_html.get("traits_line_th" if is_th else "traits_line_en", mt_html.get("traits_line_en", ""))
+                )
+            )
+            nar = escape(str(mt_html.get("narrative_th" if is_th else "narrative_en", mt_html.get("narrative_en", ""))))
+            match_line = f"{escape(mt_closest)} {match_name}"
+            if mode_note:
+                match_line = f"{match_line} {mode_note}"
+            people_reader_page2_extra += f'''
+      <div style="margin-top:14px;"></div>
+      <div><b>{escape(mt_head)}</b></div>
+      <div style="margin-top:6px;">{match_line}</div>
+      <div style="margin-top:6px;">{escape(mt_conf)} {int(mt_html.get("confidence_pct") or 0)}%</div>
+      <div style="margin-top:6px;">{escape(mt_sum)} {escape(str(mt_html.get("summary") or ""))}</div>
+      <div style="margin-top:6px;">{escape(mt_traits)} {traits_txt}</div>
+'''
+            if nar:
+                people_reader_page2_extra += f'''
+      <div style="margin-top:6px;">{escape(mt_obs)} {nar}</div>
+'''
+
     header_img = _brand_asset_data_uri("Header.png")
     footer_img = _brand_asset_data_uri("Footer.png")
 
@@ -852,18 +897,7 @@ def build_html_report_file(
         <li>{"ผลักดันให้เกิดการลงมือทำ" if is_th else "Pressing for action"}</li>
       </ul>
       <div class="scale">{escape(scale_label)}: {escape(cat_scale(2))}</div>
-      {(
-        f'''
-      <b>{"5. ความยืดหยุ่นในการปรับตัว (Adaptability)" if is_th else "5. Adaptability"}</b>
-      <ul>
-        <li>{"ความยืดหยุ่น — ความสามารถในการปรับตัวตามสภาวะใหม่ ๆ และรับมือกับการเปลี่ยนแปลง" if is_th else "Flexibility — Ability to adjust to new conditions, handle changes."}</li>
-        <li>{"ความคล่องแคล่ว — ความสามารถในการคิดและสรุปได้อย่างรวดเร็วเพื่อปรับตัว" if is_th else "Agility — Ability to think and draw conclusions quickly in order to adjust."}</li>
-      </ul>
-      <div class="scale">{escape(scale_label)}: {escape(cat_scale(3))}</div>
-'''
-        if is_people_reader
-        else ""
-      )}
+      {people_reader_page2_extra}
     </div>
   </div>
   {f'<div class="graph"><h3>{"ผลการวิเคราะห์ Effort" if is_th else "Effort Motion Detection Results"}</h3><img src="{g1}" /></div>' if (graphs_and_combo_layout and g1) else ''}
@@ -1170,6 +1204,192 @@ def is_operation_test_style(report_style: str) -> bool:
 
 def is_people_reader_style(report_style: str) -> bool:
     return str(report_style or "").strip().lower().startswith("people_reader")
+
+
+_REPO_ROOT = os.path.dirname(_worker_dir)
+
+
+def _import_movement_type_classifier():
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
+    import movement_type_classifier as mtc  # noqa: WPS433 — runtime import from repo root
+
+    return mtc
+
+
+def apply_movement_type_classification(
+    video_path: str,
+    job: Dict[str, Any],
+    result: Dict[str, Any],
+    first_impression: FirstImpressionData,
+) -> Tuple[Dict[str, Any], FirstImpressionData, Optional[Dict[str, Any]]]:
+    """
+    When job['movement_type_mode'] is set ('auto' or 'type_1'..'type_6'), classify (or force type),
+    blend category scores + first impression toward template / features, return info for the report.
+    """
+    mode_raw = str(job.get("movement_type_mode") or "").strip().lower()
+    if not mode_raw:
+        return result, first_impression, None
+    try:
+        mtc = _import_movement_type_classifier()
+    except Exception as e:
+        logger.warning("[movement_type] cannot import movement_type_classifier: %s", e)
+        return result, first_impression, None
+
+    audience_mode = str(job.get("audience_mode") or "one").strip().lower()
+    if audience_mode not in ("one", "many"):
+        audience_mode = "one"
+
+    try:
+        feats = extract_movement_type_frame_features_from_video(
+            video_path,
+            audience_mode=audience_mode,
+            sample_every_n=3,
+            max_frames=200,
+        )
+        sf = mtc.build_summary_features_from_timeseries(feats)
+    except Exception as e:
+        logger.warning("[movement_type] feature extraction failed: %s", e)
+        sf = mtc.build_summary_features_from_timeseries({})
+
+    if mode_raw == "auto":
+        full = mtc.analyze_movement_type(summary_features=sf)
+        classification = full["classification"]
+        narrative_en = str(full.get("narrative") or "")
+        mode_flag = "auto"
+    elif mode_raw in mtc.TYPE_TEMPLATES:
+        tpl = mtc.TYPE_TEMPLATES[mode_raw]
+        classification = {
+            "best_match": {
+                "type_id": tpl.type_id,
+                "type_name": tpl.name,
+                "summary": tpl.summary,
+                "traits": dict(tpl.traits),
+                "score": 1.0,
+                "confidence": 1.0,
+                "confidence_pct": 100,
+                "matched_features": [],
+            },
+            "alternatives": [],
+            "scores": [],
+            "summary_features": sf,
+        }
+        narrative_en = mtc.generate_movement_type_narrative(classification)
+        mode_flag = "selected"
+    else:
+        logger.warning("[movement_type] unknown movement_type_mode=%r", mode_raw)
+        return result, first_impression, None
+
+    best = classification["best_match"]
+    traits = dict(best.get("traits") or {})
+
+    def trait_target(t: Any) -> int:
+        x = str(t or "").lower()
+        if x == "high":
+            return 6
+        if x == "low":
+            return 3
+        return 4
+
+    blend = 0.52
+    eng_feat = int(round(1 + 6 * float(sf.get("engagement_score", 0.5))))
+    result = dict(result)
+    result["engaging_score"] = int(
+        round((1 - blend) * int(result.get("engaging_score", 4)) + blend * eng_feat)
+    )
+    result["convince_score"] = int(
+        round((1 - blend) * int(result.get("convince_score", 4)) + blend * trait_target(traits.get("confidence")))
+    )
+    result["authority_score"] = int(
+        round((1 - blend) * int(result.get("authority_score", 4)) + blend * trait_target(traits.get("authority")))
+    )
+    result["adaptability_score"] = int(
+        round(
+            (1 - blend) * int(result.get("adaptability_score", 4))
+            + blend * trait_target(traits.get("adaptability"))
+        )
+    )
+    for k in ("engaging_score", "convince_score", "authority_score", "adaptability_score"):
+        result[k] = max(1, min(7, int(result[k])))
+    result["engaging_pos"] = int(result["engaging_score"] / 7 * 450)
+    result["convince_pos"] = int(result["convince_score"] / 7 * 475)
+    result["authority_pos"] = int(result["authority_score"] / 7 * 445)
+    result["adaptability_pos"] = int(result["adaptability_score"] / 7 * 445)
+
+    fi2 = FirstImpressionData(
+        eye_contact_pct=float(
+            0.42 * float(first_impression.eye_contact_pct)
+            + 0.58 * (float(sf.get("eye_contact", 0.5)) * 100.0)
+        ),
+        upright_pct=float(
+            0.42 * float(first_impression.upright_pct)
+            + 0.58 * (float(sf.get("uprightness", 0.5)) * 100.0)
+        ),
+        stance_stability=float(
+            0.42 * float(first_impression.stance_stability)
+            + 0.58
+            * (
+                50.0
+                + 50.0
+                * (
+                    0.55 * float(sf.get("stance_width_score", 0.5))
+                    + 0.45 * float(sf.get("weight_shift_score", 0.5))
+                )
+            )
+        ),
+    )
+
+    def traits_line_en(tr: Dict[str, Any]) -> str:
+        return (
+            f"Confidence: {tr.get('confidence', '-')}; "
+            f"Authority: {tr.get('authority', '-')}; "
+            f"Adaptability: {tr.get('adaptability', '-')}"
+        )
+
+    def traits_line_th(tr: Dict[str, Any]) -> str:
+        m = {"high": "สูง", "low": "ต่ำ", "moderate": "กลาง"}
+
+        def T(x: Any) -> str:
+            return m.get(str(x).lower(), str(x))
+
+        return (
+            f"ความมั่นใจ: {T(tr.get('confidence'))}; "
+            f"อำนาจ/ผู้นำ: {T(tr.get('authority'))}; "
+            f"ความยืดหยุ่น: {T(tr.get('adaptability'))}"
+        )
+
+    conf_pct = best.get("confidence_pct")
+    if conf_pct is None:
+        conf_pct = int(round(float(best.get("confidence", 0)) * 100))
+
+    info: Dict[str, Any] = {
+        "type_name": str(best.get("type_name") or ""),
+        "type_id": str(best.get("type_id") or ""),
+        "summary": str(best.get("summary") or ""),
+        "confidence_pct": int(conf_pct),
+        "traits_line_en": traits_line_en(traits),
+        "traits_line_th": traits_line_th(traits),
+        "narrative_en": narrative_en,
+        "narrative_th": narrative_en,
+        "mode": mode_flag,
+        "mode_en": (
+            "(Auto-detected from video)"
+            if mode_flag == "auto"
+            else "(Manually selected — report aligned to this profile)"
+        ),
+        "mode_th": (
+            "(วิเคราะห์อัตโนมัติจากวิดีโอ)"
+            if mode_flag == "auto"
+            else "(เลือกประเภทด้วยตนเอง — ปรับรายงานตามโปรไฟล์นี้)"
+        ),
+    }
+    logger.info(
+        "[movement_type] mode=%s best=%s confidence_pct=%s",
+        mode_flag,
+        info.get("type_id"),
+        info.get("confidence_pct"),
+    )
+    return result, fi2, info
 
 
 # Always CC'd on skeleton/dots/report notification emails (server-side only; not shown in the app).
@@ -2587,17 +2807,21 @@ def generate_reports_for_lang(
     audience_mode = str(job.get("audience_mode") or "one").strip().lower()
     if audience_mode not in ("one", "many"):
         audience_mode = "one"
-    try:
-        first_impression = analyze_first_impression_from_video(
-            video_path, sample_every_n=3, max_frames=100, audience_mode=audience_mode
-        )
-    except Exception as e:
-        logger.warning("[first_impression] analysis failed, using fallback (High/High/Moderate): %s", e)
-        first_impression = FirstImpressionData(
-            eye_contact_pct=65.0,
-            upright_pct=65.0,
-            stance_stability=50.0,
-        )
+    cached_fi = job.get("_first_impression_for_report")
+    if isinstance(cached_fi, FirstImpressionData):
+        first_impression = cached_fi
+    else:
+        try:
+            first_impression = analyze_first_impression_from_video(
+                video_path, sample_every_n=3, max_frames=100, audience_mode=audience_mode
+            )
+        except Exception as e:
+            logger.warning("[first_impression] analysis failed, using fallback (High/High/Moderate): %s", e)
+            first_impression = FirstImpressionData(
+                eye_contact_pct=65.0,
+                upright_pct=65.0,
+                stance_stability=50.0,
+            )
     
     # Log the actual detected values for debugging
     logger.info("[first_impression] Eye Contact: %.1f%%, Uprightness: %.1f%%, Stance: %.1f%%", 
@@ -2622,6 +2846,7 @@ def generate_reports_for_lang(
         summary_comment=str(job.get("summary_comment") or "").strip(),
         generated_by=_t(lang_code, "Generated by AI People Reader™", "จัดทำโดย AI People Reader™"),
         first_impression=first_impression,
+        movement_type_info=job.get("movement_type_info"),
     )
     report_format = str(job.get("report_format") or "docx").strip().lower()
     # Generate PDF for every report job (DOCX -> PDF via LibreOffice path is supported).
@@ -2844,6 +3069,31 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result = run_analysis(analysis_video_path, job)
         engine = str(result.get("analysis_engine") or "unknown")
         logger.info("[analysis] job_id=%s analysis_engine=%s (real=mediapipe, placeholder=fallback)", job_id, engine)
+
+        if report_style == "people_reader" and str(job.get("movement_type_mode") or "").strip():
+            aud = str(job.get("audience_mode") or "one").strip().lower()
+            if aud not in ("one", "many"):
+                aud = "one"
+            try:
+                fi_base = analyze_first_impression_from_video(
+                    analysis_video_path, sample_every_n=3, max_frames=100, audience_mode=aud
+                )
+            except Exception as e:
+                logger.warning("[movement_type] baseline first impression failed: %s", e)
+                fi_base = FirstImpressionData(
+                    eye_contact_pct=65.0,
+                    upright_pct=65.0,
+                    stance_stability=50.0,
+                )
+            result, fi_blended, mt_info = apply_movement_type_classification(
+                analysis_video_path, job, result, fi_base
+            )
+            if mt_info:
+                job["movement_type_info"] = mt_info
+                job["_first_impression_for_report"] = fi_blended
+            else:
+                job.pop("movement_type_info", None)
+                job.pop("_first_impression_for_report", None)
 
         outputs: Dict[str, Any] = {"reports": {}, "graphs": {}}
 

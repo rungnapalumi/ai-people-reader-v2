@@ -546,7 +546,7 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 raise RuntimeError("DOTS upload failed")
 
             logging.info("DOTS DONE job_id=%s", job.get("job_id"))
-            return {"ok": True}
+            return {"ok": True, "output_key": str(job.get("output_key") or "")}
 
         if mode == "skeleton":
             raw = os.path.join(td, "skeleton_raw.mp4")
@@ -563,7 +563,7 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 raise RuntimeError("SKELETON upload failed")
 
             logging.info("SKELETON DONE job_id=%s", job.get("job_id"))
-            return {"ok": True}
+            return {"ok": True, "output_key": str(job.get("output_key") or "")}
 
         raise RuntimeError(f"Unknown mode: {mode}")
 
