@@ -60,7 +60,6 @@ from html import escape
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
 
 # ------------------------------------------------------------
 # IMPORTANT:
@@ -194,45 +193,6 @@ s3 = boto3.client(
     config=Config(signature_version="s3v4"),
 )
 ses = boto3.client("ses", region_name=SES_REGION)
-
-_movement_cal_etag: Optional[str] = None
-_movement_cal_missing_logged = False
-
-
-def ensure_movement_type_calibration_from_s3(mtc: Any) -> None:
-    """
-    Load movement-type expected-range overrides from S3 (People Reader calibration JSON).
-    Cached by object ETag; safe to call before each classification.
-    """
-    global _movement_cal_etag, _movement_cal_missing_logged
-    if not AWS_BUCKET:
-        return
-    if str(os.getenv("MOVEMENT_TYPE_CALIBRATION_ENABLE", "true")).strip().lower() in ("0", "false", "no", "off"):
-        return
-    key = str(os.getenv("MOVEMENT_TYPE_CALIBRATION_S3_KEY") or "config/movement_type_calibration.json").strip()
-    try:
-        head = s3.head_object(Bucket=AWS_BUCKET, Key=key)
-        etag = str(head.get("ETag") or "")
-        if etag and etag == _movement_cal_etag:
-            return
-        raw = s3.get_object(Bucket=AWS_BUCKET, Key=key)["Body"].read()
-        data = json.loads(raw.decode("utf-8"))
-        mtc.apply_calibration_json(data)
-        _movement_cal_etag = etag
-        logger.info("[movement_type] loaded calibration s3://%s/%s", AWS_BUCKET, key)
-    except ClientError as e:
-        err = (e.response or {}).get("Error") or {}
-        code = str(err.get("Code") or "")
-        if code in ("404", "NoSuchKey", "NotFound"):
-            mtc.clear_expected_range_overrides()
-            _movement_cal_etag = ""
-            if not _movement_cal_missing_logged:
-                logger.info("[movement_type] no calibration object s3://%s/%s", AWS_BUCKET, key)
-                _movement_cal_missing_logged = True
-        else:
-            logger.warning("[movement_type] calibration S3 error: %s", e)
-    except Exception as e:
-        logger.warning("[movement_type] calibration load failed: %s", e)
 
 def log_ses_runtime_context() -> None:
     """Log actual runtime sender context. Non-blocking: SES permission errors are logged but do not affect worker."""
@@ -1276,7 +1236,8 @@ def apply_movement_type_classification(
         logger.warning("[movement_type] cannot import movement_type_classifier: %s", e)
         return result, first_impression, None
 
-    ensure_movement_type_calibration_from_s3(mtc)
+    # Use only built-in TYPE_TEMPLATES in movement_type_classifier.py (no S3 / UI calibration).
+    mtc.clear_expected_range_overrides()
 
     audience_mode = str(job.get("audience_mode") or "one").strip().lower()
     if audience_mode not in ("one", "many"):

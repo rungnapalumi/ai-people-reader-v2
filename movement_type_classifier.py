@@ -209,7 +209,8 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
 }
 
 
-# Optional overrides for `expected` ranges (loaded from S3 JSON or set in UI export).
+# Optional overrides for `expected` ranges (e.g. tests or future tooling).
+# Report worker clears this before each job so classification uses TYPE_TEMPLATES only.
 # Keys: type_id -> feature_name -> (low, high)
 _EXPECTED_RANGE_OVERRIDES: Dict[str, Dict[str, Tuple[float, float]]] = {}
 
@@ -220,7 +221,7 @@ def clear_expected_range_overrides() -> None:
 
 def apply_calibration_json(payload: Any) -> None:
     """
-    Merge calibration from JSON saved by People Reader page or hand-edited.
+    Merge calibration from JSON (e.g. hand-edited or tests). Report worker does not load this from S3.
 
     Supported shapes:
       { "types": { "type_1": { "expected": { "eye_contact": [0.7, 0.92], ... } } } }
