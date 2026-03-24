@@ -938,15 +938,24 @@ if current_group_id:
             st.error(
                 "At least one video job failed. Fix the error (often ffmpeg/MediaPipe on the worker), then upload again."
             )
-        try:
+        # Full reruns while waiting break st.file_uploader (HTTP 400 on /_stcore/upload_file) — keep polling opt-in.
+        st.checkbox(
+            "Auto-refresh every 15s while waiting for dots/skeleton (turn **off** before uploading videos or calibrating)",
+            value=False,
+            key="people_reader_enable_s3_poll",
+        )
+        if st.session_state.get("people_reader_enable_s3_poll"):
+            try:
 
-            @st.fragment(run_every=timedelta(seconds=10))
-            def _people_reader_auto_refresh():
-                st.rerun()
+                @st.fragment(run_every=timedelta(seconds=15))
+                def _people_reader_auto_refresh():
+                    st.rerun()
 
-            _people_reader_auto_refresh()
-        except Exception:
-            st.caption("Tip: click **Refresh** periodically to poll S3 for finished files.")
+                _people_reader_auto_refresh()
+            except Exception:
+                st.caption("Polling unavailable in this Streamlit version — use **Refresh**.")
+        else:
+            st.caption("Tip: click **Refresh** to poll S3, or enable auto-refresh above (disable it before file upload).")
 
     for label, ready in status_items:
         st.progress(100 if ready else 0, text=f"{label}: {'Ready' if ready else 'Processing'}")
@@ -988,7 +997,9 @@ with st.expander("Upload reference videos to tune the 6 type profiles (expected 
         "For each type, upload a **reference** clip that best represents that profile. "
         "We extract the same summary features as the report worker and suggest `expected` min/max ranges. "
         "**Stage** each type, then **Save to S3** at `config/movement_type_calibration.json` (or your env key). "
-        "The **report worker** merges this into classification on each job (when `movement_type_mode` is set)."
+        "The **report worker** merges this into classification on each job (when `movement_type_mode` is set). "
+        "If upload returns **HTTP 400**, disable **Auto-refresh** under Download Results (or clear Group ID) — "
+        "full-page polling breaks Streamlit’s upload session."
     )
     bundled_cal = st.session_state.get("people_reader_calibration_bundled")
     if not isinstance(bundled_cal, dict):

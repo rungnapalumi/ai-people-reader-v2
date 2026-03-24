@@ -1,5 +1,9 @@
 [server]
-# 1 GB upload limit for all Streamlit file uploaders in this app.
+headless = true
+address = "0.0.0.0"
+# 1 GB upload limit (MB). maxMessageSize must be >= maxUploadSize or large uploads can fail.
 maxUploadSize = 1024
 maxMessageSize = 1024
+# Render terminates TLS; keep XSRF on. If uploads still fail with 400, check proxy body limits and
+# avoid full-page auto-rerun during upload (see Page 8 “Auto-refresh” checkbox).
 

@@ -26,7 +26,10 @@ class TypeTemplate:
 # =========================================================
 # 6 movement type templates
 # Values are normalized to 0.0 - 1.0
-# Adjust later after testing with your 6 example videos
+# Expected ranges calibrated from project reference clips "Type 1.mov" … "Type 6.mov"
+# (MediaPipe pose + report_core.extract_movement_type_frame_features_from_video, sample_every_n=3, max_frames=300).
+# Note: weight_shift_raw is uniformly low across these six files in the current feature pipeline;
+# discrimination leans on engagement_score, gesture_variation_score, stance_width_score, uprightness.
 # =========================================================
 
 TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
@@ -35,14 +38,14 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         name="Type 1 (Khun K)",
         summary="Stable, upright, controlled, confident and authoritative with low adaptability.",
         expected={
-            "eye_contact": (0.70, 1.00),
-            "uprightness": (0.75, 1.00),
-            "stance_width_score": (0.65, 1.00),
-            "weight_shift_score": (0.75, 1.00),   # high score = low weight shift
-            "engagement_score": (0.40, 0.65),     # moderate engagement with same shapes
-            "gesture_variation_score": (0.20, 0.45),
-            "chest_open_score": (0.55, 0.90),
-            "rotation_control_score": (0.75, 1.00),
+            "eye_contact": (0.90, 1.00),
+            "uprightness": (0.86, 1.00),
+            "stance_width_score": (0.35, 0.55),
+            "weight_shift_score": (0.89, 1.00),   # high score = low weight shift (stable)
+            "engagement_score": (0.00, 0.17),
+            "gesture_variation_score": (0.00, 0.14),
+            "chest_open_score": (0.18, 0.38),
+            "rotation_control_score": (0.90, 1.00),
         },
         weights={
             "eye_contact": 1.2,
@@ -65,19 +68,19 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         name="Type 2 (Irene)",
         summary="Strong eye contact and posture, but lower engagement due to chest blocking; still confident and authoritative.",
         expected={
-            "eye_contact": (0.70, 1.00),
-            "uprightness": (0.75, 1.00),
-            "stance_width_score": (0.65, 1.00),
-            "weight_shift_score": (0.75, 1.00),
-            "engagement_score": (0.00, 0.30),
-            "gesture_variation_score": (0.00, 0.25),
-            "chest_blocking_score": (0.65, 1.00),
-            "rotation_control_score": (0.75, 1.00),
+            "eye_contact": (0.90, 1.00),
+            "uprightness": (0.78, 0.90),
+            "stance_width_score": (0.40, 0.54),
+            "weight_shift_score": (0.89, 1.00),
+            "engagement_score": (0.10, 0.24),
+            "gesture_variation_score": (0.01, 0.16),
+            "chest_blocking_score": (0.00, 0.22),  # pipeline metric on reference clip
+            "rotation_control_score": (0.90, 1.00),
         },
         weights={
             "eye_contact": 1.2,
             "uprightness": 1.2,
-            "stance_width_score": 1.2,
+            "stance_width_score": 1.35,
             "weight_shift_score": 1.2,
             "engagement_score": 1.0,
             "gesture_variation_score": 0.8,
@@ -95,13 +98,13 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         name="Type 3 (Khun Hongyok)",
         summary="Good eye contact but weaker stance, moderate uprightness with upper-body rotation, low confidence and authority.",
         expected={
-            "eye_contact": (0.70, 1.00),
-            "uprightness": (0.45, 0.70),
-            "stance_width_score": (0.00, 0.25),   # no clear stance
-            "weight_shift_score": (0.45, 0.75),
-            "engagement_score": (0.35, 0.65),
-            "gesture_variation_score": (0.20, 0.45),
-            "rotation_control_score": (0.35, 0.65),
+            "eye_contact": (0.90, 1.00),
+            "uprightness": (0.82, 1.00),
+            "stance_width_score": (0.20, 0.40),
+            "weight_shift_score": (0.89, 1.00),
+            "engagement_score": (0.00, 0.19),
+            "gesture_variation_score": (0.00, 0.16),
+            "rotation_control_score": (0.90, 1.00),
         },
         weights={
             "eye_contact": 1.2,
@@ -123,21 +126,22 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         name="Type 4 (Boon)",
         summary="Moderate eye contact and posture, clear weight shifting and varied engagement; highly adaptable but lower confidence and authority.",
         expected={
-            "eye_contact": (0.50, 0.80),
-            "uprightness": (0.45, 0.70),
-            "stance_width_score": (0.35, 0.75),
-            "weight_shift_raw": (0.45, 0.70),     # raw shift is high here
-            "engagement_score": (0.45, 0.75),
-            "gesture_variation_score": (0.60, 1.00),
-            "rotation_raw": (0.35, 0.70),
+            "eye_contact": (0.90, 1.00),
+            "uprightness": (0.82, 1.00),
+            "stance_width_score": (0.38, 0.58),
+            "weight_shift_raw": (0.00, 0.12),
+            # Narrow vs type_5: reference Type 4 ~0.33 engagement, ~0.21 gesture variation (Type 5 ~0.27 / ~0.17).
+            "engagement_score": (0.30, 0.40),
+            "gesture_variation_score": (0.185, 0.24),
+            "rotation_raw": (0.00, 0.11),
         },
         weights={
             "eye_contact": 1.0,
             "uprightness": 1.0,
             "stance_width_score": 0.8,
             "weight_shift_raw": 1.3,
-            "engagement_score": 1.0,
-            "gesture_variation_score": 1.4,
+            "engagement_score": 1.25,
+            "gesture_variation_score": 1.45,
             "rotation_raw": 1.0,
         },
         traits={
@@ -151,22 +155,22 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         name="Type 5 (Elisha)",
         summary="High eye contact and engagement but unstable posture, frequent rotation and leg shuffling; high adaptability with low confidence and authority.",
         expected={
-            "eye_contact": (0.70, 1.00),
-            "uprightness": (0.35, 0.65),
-            "stance_width_score": (0.00, 0.30),
-            "weight_shift_raw": (0.70, 1.00),     # shuffling all the time
-            "engagement_score": (0.65, 1.00),
-            "gesture_variation_score": (0.60, 1.00),
-            "rotation_raw": (0.60, 1.00),
+            "eye_contact": (0.89, 1.00),
+            "uprightness": (0.86, 0.94),
+            "stance_width_score": (0.38, 0.52),
+            "weight_shift_raw": (0.00, 0.11),
+            "engagement_score": (0.24, 0.30),
+            "gesture_variation_score": (0.14, 0.18),
+            "rotation_raw": (0.00, 0.10),
         },
         weights={
             "eye_contact": 1.1,
             "uprightness": 1.0,
             "stance_width_score": 1.2,
-            "weight_shift_raw": 1.4,
-            "engagement_score": 1.1,
-            "gesture_variation_score": 1.3,
-            "rotation_raw": 1.4,
+            "weight_shift_raw": 1.0,
+            "engagement_score": 1.5,
+            "gesture_variation_score": 1.5,
+            "rotation_raw": 1.2,
         },
         traits={
             "confidence": "low",
@@ -179,21 +183,21 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         name="Type 6 (Alisa)",
         summary="Strong eye contact, upright posture, clear stance with some weight shifts, high engagement and adaptability, high confidence and authority.",
         expected={
-            "eye_contact": (0.70, 1.00),
-            "uprightness": (0.75, 1.00),
-            "stance_width_score": (0.65, 1.00),
-            "weight_shift_raw": (0.30, 0.60),     # some weight shift but not excessive
-            "engagement_score": (0.65, 1.00),
-            "gesture_variation_score": (0.60, 1.00),
-            "rotation_control_score": (0.55, 0.90),
+            "eye_contact": (0.90, 1.00),
+            "uprightness": (0.90, 0.98),
+            "stance_width_score": (0.54, 0.66),
+            "weight_shift_raw": (0.00, 0.11),
+            "engagement_score": (0.18, 0.30),
+            "gesture_variation_score": (0.12, 0.22),
+            "rotation_control_score": (0.90, 1.00),
         },
         weights={
             "eye_contact": 1.2,
-            "uprightness": 1.2,
-            "stance_width_score": 1.2,
-            "weight_shift_raw": 1.1,
-            "engagement_score": 1.2,
-            "gesture_variation_score": 1.3,
+            "uprightness": 1.25,
+            "stance_width_score": 1.45,
+            "weight_shift_raw": 1.0,
+            "engagement_score": 1.15,
+            "gesture_variation_score": 1.2,
             "rotation_control_score": 1.0,
         },
         traits={
