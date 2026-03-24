@@ -205,6 +205,106 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
 }
 
 
+# Optional overrides for `expected` ranges (loaded from S3 JSON or set in UI export).
+# Keys: type_id -> feature_name -> (low, high)
+_EXPECTED_RANGE_OVERRIDES: Dict[str, Dict[str, Tuple[float, float]]] = {}
+
+
+def clear_expected_range_overrides() -> None:
+    _EXPECTED_RANGE_OVERRIDES.clear()
+
+
+def apply_calibration_json(payload: Any) -> None:
+    """
+    Merge calibration from JSON saved by People Reader page or hand-edited.
+
+    Supported shapes:
+      { "types": { "type_1": { "expected": { "eye_contact": [0.7, 0.92], ... } } } }
+      { "type_1": { "expected": { ... } }, ... }
+    """
+    clear_expected_range_overrides()
+    if not isinstance(payload, dict):
+        return
+    root = payload.get("types") if isinstance(payload.get("types"), dict) else payload
+    if not isinstance(root, dict):
+        return
+    for tid, block in root.items():
+        tid_s = str(tid).strip()
+        if tid_s not in TYPE_TEMPLATES:
+            continue
+        if not isinstance(block, dict):
+            continue
+        exp = block.get("expected")
+        if not isinstance(exp, dict):
+            continue
+        parsed: Dict[str, Tuple[float, float]] = {}
+        for fk, pair in exp.items():
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                lo, hi = float(pair[0]), float(pair[1])
+                lo, hi = clamp01(lo), clamp01(hi)
+                if lo > hi:
+                    lo, hi = hi, lo
+                parsed[str(fk)] = (lo, hi)
+        if parsed:
+            _EXPECTED_RANGE_OVERRIDES[tid_s] = parsed
+
+
+def export_calibration_json_obj() -> Dict[str, Any]:
+    """Current overrides suitable for saving to S3 (wrapped for version field)."""
+    types_out: Dict[str, Any] = {}
+    for tid, exp in _EXPECTED_RANGE_OVERRIDES.items():
+        types_out[tid] = {
+            "expected": {k: [round(v[0], 4), round(v[1], 4)] for k, v in exp.items()},
+        }
+    return {
+        "version": 1,
+        "types": types_out,
+    }
+
+
+def effective_expected_for_type(
+    type_id: str,
+    tpl: TypeTemplate,
+    session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
+) -> Dict[str, Tuple[float, float]]:
+    base = dict(tpl.expected)
+    ov = _EXPECTED_RANGE_OVERRIDES.get(type_id)
+    if ov:
+        base.update(ov)
+    if session_overrides:
+        extra = session_overrides.get(type_id)
+        if extra:
+            base.update(extra)
+    return base
+
+
+def suggested_expected_from_reference_video_summary(
+    summary_features: Dict[str, float],
+    template: TypeTemplate,
+    margin: float = 0.08,
+    min_band: float = 0.06,
+) -> Dict[str, Tuple[float, float]]:
+    """
+    From a reference recording for this type, propose (low, high) per template feature
+    as value ± margin, clamped to [0,1], with a minimum band width.
+    """
+    m = max(0.02, min(0.30, float(margin)))
+    bw = max(0.04, min(0.25, float(min_band)))
+    out: Dict[str, Tuple[float, float]] = {}
+    for feat_name in template.expected.keys():
+        v = float(summary_features.get(feat_name, 0.0))
+        lo = clamp01(v - m)
+        hi = clamp01(v + m)
+        if hi - lo < bw:
+            mid = clamp01((lo + hi) / 2.0)
+            lo = clamp01(mid - bw / 2.0)
+            hi = clamp01(mid + bw / 2.0)
+        if lo > hi:
+            lo, hi = hi, lo
+        out[str(feat_name)] = (round(lo, 4), round(hi, 4))
+    return out
+
+
 # =========================================================
 # Helper functions
 # =========================================================
@@ -332,7 +432,10 @@ def build_summary_features_from_timeseries(frame_features: Dict[str, List[float]
 # Classification
 # =========================================================
 
-def classify_movement_type(summary_features: Dict[str, float]) -> Dict[str, Any]:
+def classify_movement_type(
+    summary_features: Dict[str, float],
+    session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
+) -> Dict[str, Any]:
     """
     Returns:
       {
@@ -342,15 +445,15 @@ def classify_movement_type(summary_features: Dict[str, float]) -> Dict[str, Any]
         "summary_features": {...}
       }
     """
-
     scores: List[Dict[str, Any]] = []
 
     for type_id, tpl in TYPE_TEMPLATES.items():
         weighted_sum = 0.0
         total_weight = 0.0
         matched_features = []
+        expected_map = effective_expected_for_type(type_id, tpl, session_overrides)
 
-        for feat_name, feat_range in tpl.expected.items():
+        for feat_name, feat_range in expected_map.items():
             value = float(summary_features.get(feat_name, 0.0))
             low, high = feat_range
             feat_score = score_feature_against_range(value, low, high)

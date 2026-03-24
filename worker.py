@@ -14,6 +14,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _configure_mediapipe_headless_env() -> None:
+    if str(os.getenv("MEDIAPIPE_USE_GPU", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+
+_configure_mediapipe_headless_env()
+
 # -----------------------------
 # CONFIG
 # -----------------------------

@@ -1,11 +1,26 @@
 # report_core.py — shared report logic for report generation
-REPORT_CORE_VERSION = "2026-03-07-relaxed"  # Bump when changing first-impression logic (verify deploy)
+REPORT_CORE_VERSION = "2026-03-24-headless-mp"  # Bump when changing analysis / verify Render deploy
 CAP_HIGH_TO_MODERATE = False  # Allow High/สูง to display (no cap to Moderate)
 
 import os
 import sys
 import io
 import math
+
+
+def _configure_mediapipe_headless_env() -> None:
+    """
+    MediaPipe pose graphs can request GpuService / GL (ImageToTensor). On headless Linux (e.g. Render)
+    there is no display unless you use xvfb-run; on macOS SSH/CI you may see NSOpenGLPixelFormat errors.
+    Call before importing mediapipe. Override with MEDIAPIPE_USE_GPU=1 on a real desktop with GPU.
+    """
+    if str(os.getenv("MEDIAPIPE_USE_GPU", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+
+_configure_mediapipe_headless_env()
 import random
 import time
 import logging

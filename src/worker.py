@@ -21,6 +21,17 @@ import boto3
 # Heavy libs
 import cv2
 import numpy as np
+
+
+def _configure_mediapipe_headless_env() -> None:
+    if str(os.getenv("MEDIAPIPE_USE_GPU", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+
+_configure_mediapipe_headless_env()
+
 try:
     # Try new MediaPipe API first (0.10.8+)
     from mediapipe.python.solutions import pose as mp_pose_module

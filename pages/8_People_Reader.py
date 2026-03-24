@@ -4,8 +4,10 @@
 # No email dependency
 
 import os
+import sys
 import json
 import uuid
+import tempfile
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -132,6 +134,9 @@ JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_FAILED_PREFIX = "jobs/failed/"
 JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
+MOVEMENT_CALIBRATION_S3_KEY = str(
+    os.getenv("MOVEMENT_TYPE_CALIBRATION_S3_KEY") or "config/movement_type_calibration.json"
+).strip()
 
 # Values must match movement_type_classifier.TYPE_TEMPLATES keys + "auto"
 PEOPLE_READER_MOVEMENT_TYPE_CHOICES: List[tuple] = [
@@ -538,6 +543,51 @@ def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> D
     return out
 
 
+def _repo_root_and_src() -> Tuple[str, str]:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return root, os.path.join(root, "src")
+
+
+def import_movement_calibration_modules() -> Tuple[Any, Any]:
+    """movement_type_classifier at repo root; report_core in src/."""
+    root, src = _repo_root_and_src()
+    for p in (src, root):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    import movement_type_classifier as mtc  # noqa: WPS433
+
+    from report_core import extract_movement_type_frame_features_from_video  # noqa: WPS433
+
+    return mtc, extract_movement_type_frame_features_from_video
+
+
+def bundled_expected_to_session_overrides(bundled: Dict[str, Any]) -> Dict[str, Dict[str, Tuple[float, float]]]:
+    out: Dict[str, Dict[str, Tuple[float, float]]] = {}
+    if not isinstance(bundled, dict):
+        return out
+    for tid, block in bundled.items():
+        if not isinstance(block, dict):
+            continue
+        exp = block.get("expected")
+        if not isinstance(exp, dict):
+            continue
+        inner: Dict[str, Tuple[float, float]] = {}
+        for k, pair in exp.items():
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                inner[str(k)] = (float(pair[0]), float(pair[1]))
+        if inner:
+            out[str(tid)] = inner
+    return out
+
+
+def build_calibration_download_payload(bundled: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "version": 1,
+        "updated_at": utc_now_iso(),
+        "types": dict(bundled) if isinstance(bundled, dict) else {},
+    }
+
+
 def ensure_session_defaults() -> None:
     defaults = {
         "people_reader_last_group_id": "",
@@ -545,6 +595,7 @@ def ensure_session_defaults() -> None:
         "people_reader_last_name": "",
         "people_reader_audience_mode": "one",
         "people_reader_jobs_by_group": {},
+        "people_reader_calibration_bundled": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -627,6 +678,14 @@ st.caption(
     "Upload one video and download the outputs directly from this page. "
     "Reports match the standard layout (Engaging, Confidence, Authority, Effort/Shape graphs) "
     "plus **Adaptability** (Flexibility & Agility) — only for jobs from this page."
+)
+_git = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("APP_GIT_SHA") or "").strip()
+_build = f"`{_git[:10]}`" if len(_git) >= 7 else "`local`"
+st.caption(
+    f"**Deploy:** Streamlit app build {_build}. "
+    "PDF/DOCX files are **not** rendered here — they are built by the separate **report worker** "
+    "(`src/report_worker.py` + `src/report_core.py` on Render). After `git push`, redeploy **that** worker "
+    "and use **Clear build cache** if reports still look old."
 )
 st.divider()
 
@@ -918,6 +977,240 @@ if current_group_id:
 
 else:
     st.caption("Upload a video above or paste an existing Group ID to download results.")
+
+# -------------------------
+# Movement type calibration (reference videos → expected ranges → S3 for report worker)
+# -------------------------
+st.divider()
+st.markdown("## Calibrate movement types")
+with st.expander("Upload reference videos to tune the 6 type profiles (expected feature ranges)", expanded=False):
+    st.caption(
+        "For each type, upload a **reference** clip that best represents that profile. "
+        "We extract the same summary features as the report worker and suggest `expected` min/max ranges. "
+        "**Stage** each type, then **Save to S3** at `config/movement_type_calibration.json` (or your env key). "
+        "The **report worker** merges this into classification on each job (when `movement_type_mode` is set)."
+    )
+    bundled_cal = st.session_state.get("people_reader_calibration_bundled")
+    if not isinstance(bundled_cal, dict):
+        bundled_cal = {}
+        st.session_state["people_reader_calibration_bundled"] = bundled_cal
+
+    st.write("**Staged types:**", ", ".join(sorted(bundled_cal.keys())) if bundled_cal else "— none —")
+    if st.button("Clear staged calibration", key="people_reader_cal_clear_bundled"):
+        st.session_state["people_reader_calibration_bundled"] = {}
+        st.session_state.pop("people_reader_cal_last_suggested", None)
+        st.session_state.pop("people_reader_cal_last_summary", None)
+        st.session_state.pop("people_reader_cal_last_type", None)
+        st.rerun()
+
+    cal_type_pick = st.selectbox(
+        "Type to calibrate",
+        options=["type_1", "type_2", "type_3", "type_4", "type_5", "type_6"],
+        format_func=lambda t: next((lbl for lbl, k in PEOPLE_READER_MOVEMENT_TYPE_CHOICES if k == t), t),
+        key="people_reader_cal_type",
+    )
+    cal_audience = st.radio(
+        "Audience (match your recordings)",
+        options=["one", "many"],
+        format_func=lambda x: "1 person" if x == "one" else "Multiple",
+        horizontal=True,
+        key="people_reader_cal_audience",
+    )
+    cal_margin = st.slider("Half-width ± around measured value", 0.03, 0.20, 0.08, 0.01, key="people_reader_cal_margin")
+    cal_min_band = st.slider("Minimum band width", 0.04, 0.20, 0.06, 0.01, key="people_reader_cal_minband")
+    cal_sample_n = st.number_input("Sample every N frames", 1, 10, 3, key="people_reader_cal_sample_n")
+    cal_max_frames = st.number_input("Max frames", 50, 400, 200, 10, key="people_reader_cal_max_frames")
+
+    cal_video = st.file_uploader(
+        "Reference video for the selected type",
+        type=["mp4", "mov", "m4v", "webm"],
+        key="people_reader_cal_video",
+    )
+
+    if st.button("Run calibration on uploaded video", type="primary", key="people_reader_cal_run"):
+        if cal_video is None:
+            st.warning("Upload a reference video first.")
+        else:
+            try:
+                mtc, extract_fn = import_movement_calibration_modules()
+                tpl = mtc.TYPE_TEMPLATES.get(cal_type_pick)
+                if tpl is None:
+                    st.error("Unknown type.")
+                else:
+                    suf = os.path.splitext(cal_video.name or ".mp4")[1] or ".mp4"
+                    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=suf)
+                    tfile.write(cal_video.getvalue())
+                    tfile.close()
+                    tpath = tfile.name
+                    try:
+                        feats = extract_fn(
+                            tpath,
+                            audience_mode=cal_audience,
+                            sample_every_n=int(cal_sample_n),
+                            max_frames=int(cal_max_frames),
+                        )
+                        sf_loc = mtc.build_summary_features_from_timeseries(feats)
+                        suggested_loc = mtc.suggested_expected_from_reference_video_summary(
+                            sf_loc,
+                            tpl,
+                            margin=float(cal_margin),
+                            min_band=float(cal_min_band),
+                        )
+                        st.session_state["people_reader_cal_last_type"] = cal_type_pick
+                        st.session_state["people_reader_cal_last_summary"] = sf_loc
+                        st.session_state["people_reader_cal_last_suggested"] = suggested_loc
+                        st.success("Done — review the table below and stage if you agree.")
+                    finally:
+                        try:
+                            os.unlink(tpath)
+                        except OSError:
+                            pass
+            except Exception as e:
+                st.error(
+                    f"Calibration failed: {e}. "
+                    "The Streamlit server needs the same deps as analysis (OpenCV, MediaPipe, `src/report_core.py`)."
+                )
+
+    last_sug = st.session_state.get("people_reader_cal_last_suggested")
+    last_tid = str(st.session_state.get("people_reader_cal_last_type") or "")
+    if last_sug and isinstance(last_sug, dict) and last_tid:
+        try:
+            mtc2, _ = import_movement_calibration_modules()
+            tpl2 = mtc2.TYPE_TEMPLATES.get(last_tid)
+            sf_loc = st.session_state.get("people_reader_cal_last_summary") or {}
+            if tpl2 is not None:
+                st.subheader(f"Suggested ranges for `{last_tid}` — {tpl2.name}")
+                rows_cal = []
+                for fname in sorted(last_sug.keys()):
+                    old_r = tpl2.expected.get(fname, (0.0, 0.0))
+                    nlo, nhi = last_sug[fname]
+                    v = float(sf_loc.get(fname, 0.0)) if isinstance(sf_loc, dict) else 0.0
+                    rows_cal.append(
+                        {
+                            "feature": fname,
+                            "measured": round(v, 4),
+                            "current_low": old_r[0],
+                            "current_high": old_r[1],
+                            "suggested_low": nlo,
+                            "suggested_high": nhi,
+                        }
+                    )
+                st.dataframe(rows_cal, use_container_width=True)
+                if st.button("Stage suggested ranges for this type", key="people_reader_cal_stage"):
+                    bd = dict(st.session_state.get("people_reader_calibration_bundled") or {})
+
+                    def _pair_to_list(v: Any) -> List[float]:
+                        if isinstance(v, (list, tuple)) and len(v) >= 2:
+                            return [float(v[0]), float(v[1])]
+                        return [0.0, 0.0]
+
+                    bd[last_tid] = {
+                        "name": tpl2.name,
+                        "expected": {str(k): _pair_to_list(last_sug[k]) for k in last_sug},
+                    }
+                    st.session_state["people_reader_calibration_bundled"] = bd
+                    st.success(f"Staged `{last_tid}`. Repeat for other types, then save to S3.")
+                    st.rerun()
+        except Exception as e:
+            st.warning(f"Could not render calibration table: {e}")
+
+    bundled_cal = st.session_state.get("people_reader_calibration_bundled")
+    if not isinstance(bundled_cal, dict):
+        bundled_cal = {}
+    payload_cal = build_calibration_download_payload(bundled_cal)
+    st.download_button(
+        "Download calibration JSON",
+        data=json.dumps(payload_cal, ensure_ascii=False, indent=2).encode("utf-8"),
+        file_name="movement_type_calibration.json",
+        mime="application/json",
+        key="people_reader_cal_dl",
+        disabled=not bundled_cal,
+    )
+
+    c_save, c_load = st.columns(2)
+    with c_save:
+        if st.button("Save staged calibration to S3", key="people_reader_cal_save_s3"):
+            if not AWS_BUCKET or AWS_BUCKET == "local":
+                st.error("Configure AWS_BUCKET for S3.")
+            elif not bundled_cal:
+                st.warning("Stage at least one type first.")
+            else:
+                try:
+                    blob = json.dumps(build_calibration_download_payload(bundled_cal), ensure_ascii=False, indent=2).encode(
+                        "utf-8"
+                    )
+                    s3.put_object(
+                        Bucket=AWS_BUCKET,
+                        Key=MOVEMENT_CALIBRATION_S3_KEY,
+                        Body=blob,
+                        ContentType="application/json; charset=utf-8",
+                    )
+                    st.success(f"Saved `s3://{AWS_BUCKET}/{MOVEMENT_CALIBRATION_S3_KEY}`. Redeploy or wait for report worker ETag refresh.")
+                except Exception as e:
+                    st.error(str(e))
+    with c_load:
+        if st.button("Load calibration from S3 into session", key="people_reader_cal_load_s3"):
+            if not AWS_BUCKET or AWS_BUCKET == "local":
+                st.error("Configure AWS_BUCKET.")
+            else:
+                try:
+                    raw = s3_get_bytes(MOVEMENT_CALIBRATION_S3_KEY)
+                    if not raw:
+                        st.error("Object missing or not readable.")
+                    else:
+                        data = json.loads(raw.decode("utf-8"))
+                        types_block = data.get("types") if isinstance(data, dict) else None
+                        if isinstance(types_block, dict):
+                            st.session_state["people_reader_calibration_bundled"] = types_block
+                            st.success("Loaded into session.")
+                            st.rerun()
+                        else:
+                            st.error("Invalid JSON (expected top-level `types`).")
+                except Exception as e:
+                    st.error(str(e))
+
+    st.markdown("**Preview:** classify a test clip using **staged** overrides only (session).")
+    test_cal_clip = st.file_uploader(
+        "Test video",
+        type=["mp4", "mov", "m4v", "webm"],
+        key="people_reader_cal_test_vid",
+    )
+    if st.button("Preview best match (staged overrides)", key="people_reader_cal_preview"):
+        if not bundled_cal:
+            st.warning("Stage at least one type.")
+        elif test_cal_clip is None:
+            st.warning("Upload a test video.")
+        else:
+            try:
+                mtc3, extract_fn3 = import_movement_calibration_modules()
+                suf3 = os.path.splitext(test_cal_clip.name or ".mp4")[1] or ".mp4"
+                tf3 = tempfile.NamedTemporaryFile(delete=False, suffix=suf3)
+                tf3.write(test_cal_clip.getvalue())
+                tf3.close()
+                p3 = tf3.name
+                try:
+                    feats3 = extract_fn3(
+                        p3,
+                        audience_mode=cal_audience,
+                        sample_every_n=3,
+                        max_frames=200,
+                    )
+                    sf3 = mtc3.build_summary_features_from_timeseries(feats3)
+                    ov3 = bundled_expected_to_session_overrides(bundled_cal)
+                    cls3 = mtc3.classify_movement_type(sf3, session_overrides=ov3)
+                    best3 = cls3.get("best_match") or {}
+                    st.write(
+                        f"**Best match:** {best3.get('type_name')} "
+                        f"(score={best3.get('score')}, confidence≈{best3.get('confidence_pct')}%)"
+                    )
+                    st.json({str(x.get("type_id")): x.get("score") for x in (cls3.get("scores") or [])})
+                finally:
+                    try:
+                        os.unlink(p3)
+                    except OSError:
+                        pass
+            except Exception as e:
+                st.error(str(e))
 
 # -------------------------
 # Recording guide

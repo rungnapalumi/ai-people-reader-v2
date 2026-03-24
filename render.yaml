@@ -10,6 +10,8 @@
 # Both poll jobs/pending/ independently → heavy work runs concurrently. Keep BOTH services Live.
 # Same AWS_BUCKET (+ keys or IAM) on every service, or one worker "sees" an empty queue.
 #
+# MediaPipe needs a virtual framebuffer on headless Linux: xvfb-run + libgl1 in build/start (below).
+#
 # Dots/Skeleton worker: processes dots and skeleton video jobs from S3 queue
 - type: worker
   name: ai-people-reader-v2-video-worker
@@ -19,20 +21,20 @@
   buildCommand: |
     set -e
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg xvfb xauth libgl1 libglib2.0-0
     ffmpeg -version
     pip install --upgrade pip
     pip install "setuptools>=65.0.0" "wheel>=0.38.0"
     pip cache purge
     pip install --no-cache-dir -r worker_requirements.txt
   # Use src/worker.py so Render matches local fixes (pending scan, queue diagnostics). Root worker.py is a slimmer alternate.
-  startCommand: python src/worker.py
+  startCommand: xvfb-run -a python src/worker.py
   envVars:
     - key: PYTHON_VERSION
       value: 3.11.9
 
 # Report worker: after code changes to src/report_core.py, use "Clear build cache & deploy"
-# in Render Dashboard to ensure new code is used. Check logs for "report_core version: 2026-03-07-relaxed"
+# in Render Dashboard to ensure new code is used. Check logs for REPORT_CORE_VERSION in report_core.py
 - type: worker
   name: ai-people-reader-v2-report-worker
   runtime: python
@@ -41,14 +43,14 @@
   buildCommand: |
     set -e
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y chromium libreoffice libreoffice-writer libreoffice-core-nogui fonts-noto-core fonts-noto-ui-core fonts-thai-tlwg
+    DEBIAN_FRONTEND=noninteractive apt-get install -y chromium libreoffice libreoffice-writer libreoffice-core-nogui fonts-noto-core fonts-noto-ui-core fonts-thai-tlwg xvfb xauth libgl1 libglib2.0-0
     chromium --version || chromium-browser --version
     echo "[build] LibreOffice paths:" && (command -v libreoffice; command -v soffice; ls -la /usr/lib/libreoffice/program/soffice 2>/dev/null || true)
     pip install --upgrade pip
     pip install "setuptools>=65.0.0" "wheel>=0.38.0"
     pip cache purge
     pip install --no-cache-dir -r worker_report_requirements.txt
-  startCommand: sh -c 'export PATH="/usr/bin:/usr/local/bin:$PATH" && python src/report_worker.py'
+  startCommand: sh -c 'export PATH="/usr/bin:/usr/local/bin:$PATH" && xvfb-run -a python src/report_worker.py'
   envVars:
     - key: PYTHON_VERSION
       value: 3.11.9
