@@ -939,9 +939,9 @@ else:
 st.divider()
 st.caption(
     "Movement type (Auto) matches video to the six built-in profiles in **`movement_type_classifier.py`** "
-    "using seven levels (Low/Moderate/High): all from pose/movement summary vs each profile’s expected ranges "
-    "(including authority, confidence, adaptability as composites aligned with those profiles). "
-    "Report category bars follow the chosen profile’s levels. No S3 calibration."
+    "using seven rubric levels per profile (`people_reader_seven`): eye, stance, upright, engaging, authority, "
+    "confidence, adaptability. Video side uses pose-summary tertiles (1–4) and movement composites as high/low (5–7). "
+    "Report bars follow the chosen profile’s rubric. No S3 calibration."
 )
 
 # -------------------------

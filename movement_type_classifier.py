@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # =========================================================
@@ -21,6 +21,8 @@ class TypeTemplate:
     expected: Dict[str, Tuple[float, float]]
     weights: Dict[str, float]
     traits: Dict[str, str]
+    # People Reader 7-dim rubric: eye, stance, upright, engaging, authority, confidence, adaptability
+    people_reader_seven: Tuple[str, str, str, str, str, str, str]
 
 
 # =========================================================
@@ -30,6 +32,7 @@ class TypeTemplate:
 # (MediaPipe pose + report_core.extract_movement_type_frame_features_from_video, sample_every_n=3, max_frames=300).
 # Note: weight_shift_raw is uniformly low across these six files in the current feature pipeline;
 # discrimination leans on engagement_score, gesture_variation_score, stance_width_score, uprightness.
+# People Reader matching/report uses `people_reader_seven` (product rubric); `expected` stays for weighted distance.
 # =========================================================
 
 TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
@@ -62,6 +65,15 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
             "authority": "high",
             "adaptability": "low",
         },
+        people_reader_seven=(
+            "high",
+            "high",
+            "high",
+            "moderate",
+            "high",
+            "high",
+            "low",
+        ),
     ),
     "type_2": TypeTemplate(
         type_id="type_2",
@@ -92,6 +104,15 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
             "authority": "high",
             "adaptability": "low",
         },
+        people_reader_seven=(
+            "high",
+            "high",
+            "high",
+            "low",
+            "high",
+            "high",
+            "low",
+        ),
     ),
     "type_3": TypeTemplate(
         type_id="type_3",
@@ -120,6 +141,15 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
             "authority": "low",
             "adaptability": "low",
         },
+        people_reader_seven=(
+            "high",
+            "low",
+            "moderate",
+            "moderate",
+            "low",
+            "low",
+            "low",
+        ),
     ),
     "type_4": TypeTemplate(
         type_id="type_4",
@@ -149,6 +179,15 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
             "authority": "low",
             "adaptability": "high",
         },
+        people_reader_seven=(
+            "moderate",
+            "moderate",
+            "moderate",
+            "moderate",
+            "low",
+            "low",
+            "high",
+        ),
     ),
     "type_5": TypeTemplate(
         type_id="type_5",
@@ -177,6 +216,15 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
             "authority": "low",
             "adaptability": "high",
         },
+        people_reader_seven=(
+            "high",
+            "low",
+            "moderate",
+            "high",
+            "low",
+            "low",
+            "high",
+        ),
     ),
     "type_6": TypeTemplate(
         type_id="type_6",
@@ -205,6 +253,15 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
             "authority": "high",
             "adaptability": "high",
         },
+        people_reader_seven=(
+            "high",
+            "high",
+            "high",
+            "high",
+            "high",
+            "high",
+            "high",
+        ),
     ),
 }
 
@@ -646,10 +703,10 @@ def analyze_movement_type(
 
 
 # =========================================================
-# People Reader (page 8): 7-dimension Low/Moderate/High match vs all 6 TYPE_TEMPLATES
-# Video and template use the same rules: tertiles on 0–1 for eye, stance, upright, engaging,
-# and on movement-derived composites for authority, confidence, adaptability (no main analysis 1–7).
-# Report category bars use the chosen type’s seven template levels (dims 4–7 → engaging, authority, confidence, adaptability).
+# People Reader (page 8): 7-dimension match vs all 6 TYPE_TEMPLATES
+# Template side: each type’s `people_reader_seven` (product spreadsheet: low / moderate / high per dim).
+# Video side: dims 1–4 = movement tertiles; dims 5–7 = high/low from movement composites (≥0.5 → high).
+# Report category bars use the chosen type’s `people_reader_seven`. Weighted `classify_movement_type` still uses `expected`.
 # =========================================================
 
 PEOPLE_READER_SEVEN_DIM_LABELS_EN: Tuple[str, ...] = (
@@ -683,6 +740,23 @@ def people_reader_level_from_01(v: float) -> str:
     return "high"
 
 
+def people_reader_high_low_from_signal01(v: float) -> str:
+    """High vs low for video dims 5–7 (template rubric uses only high/low on those axes)."""
+    return "high" if clamp01(float(v)) >= 0.5 else "low"
+
+
+def normalize_people_reader_rubric_level(label: Any) -> str:
+    """Normalize spreadsheet labels to low | moderate | high."""
+    s = str(label or "").strip().lower()
+    if s in ("low", "l"):
+        return "low"
+    if s in ("high", "h"):
+        return "high"
+    if s in ("moderate", "medium", "mod", "m", "med"):
+        return "moderate"
+    return "moderate"
+
+
 def _video_authority_signal(sf: Dict[str, float]) -> float:
     up = clamp01(float(sf.get("uprightness", 0.0)))
     rot = clamp01(float(sf.get("rotation_control_score", 0.0)))
@@ -712,54 +786,17 @@ def _mid_expected(exp: Dict[str, Tuple[float, float]], key: str, default: float 
     return (lo + hi) / 2.0
 
 
-def _template_rotation_control_mid(exp: Dict[str, Tuple[float, float]]) -> float:
-    if "rotation_control_score" in exp:
-        return _mid_expected(exp, "rotation_control_score")
-    if "rotation_raw" in exp:
-        return clamp01(1.0 - _mid_expected(exp, "rotation_raw"))
-    return 0.9
-
-
-def _template_weight_stability_mid(exp: Dict[str, Tuple[float, float]]) -> float:
-    if "weight_shift_score" in exp:
-        return _mid_expected(exp, "weight_shift_score")
-    if "weight_shift_raw" in exp:
-        return clamp01(1.0 - _mid_expected(exp, "weight_shift_raw"))
-    return 0.9
-
-
-def _template_authority_signal(exp: Dict[str, Tuple[float, float]]) -> float:
-    up = _mid_expected(exp, "uprightness")
-    rot = _template_rotation_control_mid(exp)
-    stab = _template_weight_stability_mid(exp)
-    return clamp01(0.38 * up + 0.32 * rot + 0.30 * stab)
-
-
-def _template_confidence_signal(exp: Dict[str, Tuple[float, float]]) -> float:
-    ec = _mid_expected(exp, "eye_contact")
-    up = _mid_expected(exp, "uprightness")
-    gv = _mid_expected(exp, "gesture_variation_score")
-    return clamp01(0.40 * ec + 0.35 * up + 0.25 * gv)
-
-
-def _template_adaptability_signal(exp: Dict[str, Tuple[float, float]]) -> float:
-    gv = _mid_expected(exp, "gesture_variation_score")
-    eng = _mid_expected(exp, "engagement_score")
-    co = _mid_expected(exp, "chest_open_score", 0.35)
-    return clamp01(0.50 * gv + 0.30 * eng + 0.20 * co)
-
-
 def video_seven_levels_people_reader(summary_features: Dict[str, float]) -> List[str]:
-    """All seven levels from movement `summary_features` only (same composites as templates)."""
+    """Movement-only: dims 1–4 tertiles; dims 5–7 high/low from composites (aligned with trait rubric)."""
     sf = summary_features
     return [
         people_reader_level_from_01(float(sf.get("eye_contact", 0.0))),
         people_reader_level_from_01(float(sf.get("stance_width_score", 0.0))),
         people_reader_level_from_01(float(sf.get("uprightness", 0.0))),
         people_reader_level_from_01(float(sf.get("engagement_score", 0.0))),
-        people_reader_level_from_01(_video_authority_signal(sf)),
-        people_reader_level_from_01(_video_confidence_signal(sf)),
-        people_reader_level_from_01(_video_adaptability_signal(sf)),
+        people_reader_high_low_from_signal01(_video_authority_signal(sf)),
+        people_reader_high_low_from_signal01(_video_confidence_signal(sf)),
+        people_reader_high_low_from_signal01(_video_adaptability_signal(sf)),
     ]
 
 
@@ -767,24 +804,16 @@ def template_seven_levels_people_reader(
     tpl: TypeTemplate,
     session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
 ) -> List[str]:
-    """Template side: same seven semantics as `video_seven_levels_people_reader` (expected mids + composites)."""
-    exp = effective_expected_for_type(tpl.type_id, tpl, session_overrides)
-    return [
-        people_reader_level_from_01(_mid_expected(exp, "eye_contact")),
-        people_reader_level_from_01(_mid_expected(exp, "stance_width_score")),
-        people_reader_level_from_01(_mid_expected(exp, "uprightness")),
-        people_reader_level_from_01(_mid_expected(exp, "engagement_score")),
-        people_reader_level_from_01(_template_authority_signal(exp)),
-        people_reader_level_from_01(_template_confidence_signal(exp)),
-        people_reader_level_from_01(_template_adaptability_signal(exp)),
-    ]
+    """Template: explicit per-type rubric (`people_reader_seven`); session overrides affect `expected` only, not this."""
+    _ = session_overrides
+    return [normalize_people_reader_rubric_level(x) for x in tpl.people_reader_seven]
 
 
 def people_reader_category_scales_from_template(
     tpl: TypeTemplate,
     session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
 ) -> Dict[str, str]:
-    """Category scales for the report: same Low/Moderate/High as dims 4–7 of this type’s seven template levels."""
+    """Report bars from `people_reader_seven` (dims 3–6 → engaging … adaptability)."""
     levels = template_seven_levels_people_reader(tpl, session_overrides=session_overrides)
     return {
         "engaging": levels[3],
@@ -809,9 +838,8 @@ def rank_people_reader_types_by_seven_match(
     session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    For each of 6 types, compare video vs template on 7 dimensions (low/moderate/high), all from
-    movement summary vs each profile’s expected mids and composites (no main analysis scores).
-    Match count 0–7; tie-break by legacy classify_movement_type score, then type_id.
+    Compare video vs each profile: movement tertiles (1–4) and composite high/low (5–7) vs template rubric
+    `people_reader_seven` (no main analysis 1–7 scores). Tie-break: legacy classify_movement_type score, then type_id.
     """
     v_levels = video_seven_levels_people_reader(summary_features)
     cls = classify_movement_type(summary_features, session_overrides=session_overrides)
