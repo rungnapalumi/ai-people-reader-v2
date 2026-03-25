@@ -919,10 +919,14 @@ def _t(lang: str, en: str, th: str) -> str:
 
 
 def _build_categories_from_result(result: Dict[str, Any], total: int) -> List[CategoryResult]:
-    """Build categories; Low is capped to Moderate so report never shows Low."""
+    """Build categories; scale from score 1–7 → low / moderate / high."""
+
     def _scale(score: int) -> str:
-        raw = "moderate" if score in [3, 4] else ("high" if score >= 5 else "low")
-        return "moderate" if raw == "low" else raw
+        if score in (3, 4):
+            return "moderate"
+        if score >= 5:
+            return "high"
+        return "low"
 
     categories = [
         CategoryResult(

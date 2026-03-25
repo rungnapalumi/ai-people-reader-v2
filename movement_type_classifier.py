@@ -643,3 +643,163 @@ def analyze_movement_type(
         "report_block": report_block,
         "narrative": narrative,
     }
+
+
+# =========================================================
+# People Reader (page 8): 7-dimension Low/Moderate/High match vs templates
+# =========================================================
+
+PEOPLE_READER_SEVEN_DIM_LABELS_EN: Tuple[str, ...] = (
+    "Eye contact",
+    "Uprightness",
+    "Stance width",
+    "Engagement",
+    "Gesture variety",
+    "Lower-body stability",
+    "Upper-body rotation control",
+)
+
+PEOPLE_READER_SEVEN_DIM_LABELS_TH: Tuple[str, ...] = (
+    "การสบตา",
+    "ความตั้งตรง",
+    "ความกว้างท่ายืน",
+    "การมีส่วนร่วม",
+    "ความหลากหลายของท่าทางมือ",
+    "ความมั่นคงล่าง",
+    "การควบคุมการหมุนลำตัว",
+)
+
+
+def people_reader_level_from_01(v: float) -> str:
+    """Map a 0–1 value to low / moderate / high by equal tertiles."""
+    x = clamp01(float(v))
+    if x < 1.0 / 3.0:
+        return "low"
+    if x < 2.0 / 3.0:
+        return "moderate"
+    return "high"
+
+
+def _mid_expected(exp: Dict[str, Tuple[float, float]], key: str, default: float = 0.5) -> float:
+    pair = exp.get(key)
+    if not pair or len(pair) < 2:
+        return default
+    lo, hi = float(pair[0]), float(pair[1])
+    return (lo + hi) / 2.0
+
+
+def _template_stability_mid(tpl: TypeTemplate) -> float:
+    exp = tpl.expected
+    if "weight_shift_score" in exp:
+        return _mid_expected(exp, "weight_shift_score")
+    if "weight_shift_raw" in exp:
+        return 1.0 - _mid_expected(exp, "weight_shift_raw")
+    return 0.5
+
+
+def _template_rotation_mid(tpl: TypeTemplate) -> float:
+    exp = tpl.expected
+    if "rotation_control_score" in exp:
+        return _mid_expected(exp, "rotation_control_score")
+    if "rotation_raw" in exp:
+        return 1.0 - _mid_expected(exp, "rotation_raw")
+    return 0.5
+
+
+def template_seven_reference_values(tpl: TypeTemplate) -> List[float]:
+    """Seven mids aligned with video_seven_reference_values (same order)."""
+    exp = tpl.expected
+    return [
+        _mid_expected(exp, "eye_contact"),
+        _mid_expected(exp, "uprightness"),
+        _mid_expected(exp, "stance_width_score"),
+        _mid_expected(exp, "engagement_score"),
+        _mid_expected(exp, "gesture_variation_score"),
+        _template_stability_mid(tpl),
+        _template_rotation_mid(tpl),
+    ]
+
+
+def video_seven_reference_values(summary_features: Dict[str, float]) -> List[float]:
+    sf = summary_features
+    return [
+        float(sf.get("eye_contact", 0.0)),
+        float(sf.get("uprightness", 0.0)),
+        float(sf.get("stance_width_score", 0.0)),
+        float(sf.get("engagement_score", 0.0)),
+        float(sf.get("gesture_variation_score", 0.0)),
+        float(sf.get("weight_shift_score", 0.0)),
+        float(sf.get("rotation_control_score", 0.0)),
+    ]
+
+
+def levels_from_reference_values(vals: List[float]) -> List[str]:
+    return [people_reader_level_from_01(x) for x in vals]
+
+
+def people_reader_category_scales_from_template(tpl: TypeTemplate) -> Dict[str, str]:
+    """
+    People Reader category row scales (low/moderate/high) from the chosen type template.
+    Engaging uses engagement dimension tertile of template mids; traits map high/low (+ moderate if unknown).
+    """
+    mids = template_seven_reference_values(tpl)
+    engaging = people_reader_level_from_01(mids[3])
+
+    def _trait_scale(key: str) -> str:
+        s = str(tpl.traits.get(key) or "").strip().lower()
+        if s == "high":
+            return "high"
+        if s == "low":
+            return "low"
+        return "moderate"
+
+    return {
+        "engaging": engaging,
+        "confidence": _trait_scale("confidence"),
+        "authority": _trait_scale("authority"),
+        "adaptability": _trait_scale("adaptability"),
+    }
+
+
+def people_reader_scale_to_category_score(scale: str) -> int:
+    """Map scale label to 1–7 score for report bars (low→2, moderate→4, high→6)."""
+    s = str(scale or "").strip().lower()
+    if s == "low":
+        return 2
+    if s == "high":
+        return 6
+    return 4
+
+
+def rank_people_reader_types_by_seven_match(
+    summary_features: Dict[str, float],
+    session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    For each of 6 types, compare video vs template on 7 dimensions (each low/moderate/high via tertiles).
+    Match count 0–7; tie-break by legacy classify_movement_type score, then type_id.
+    """
+    v_vals = video_seven_reference_values(summary_features)
+    v_levels = levels_from_reference_values(v_vals)
+    cls = classify_movement_type(summary_features, session_overrides=session_overrides)
+    legacy_by_id = {str(x["type_id"]): float(x.get("score") or 0.0) for x in cls.get("scores") or []}
+
+    ranked: List[Dict[str, Any]] = []
+    for tid, tpl in TYPE_TEMPLATES.items():
+        t_vals = template_seven_reference_values(tpl)
+        t_levels = levels_from_reference_values(t_vals)
+        matches = sum(1 for a, b in zip(v_levels, t_levels) if a == b)
+        ranked.append(
+            {
+                "type_id": tid,
+                "type_name": tpl.name,
+                "matches": int(matches),
+                "match_pct": int(round(100.0 * float(matches) / 7.0)),
+                "legacy_classifier_score": round(legacy_by_id.get(tid, 0.0), 6),
+                "template_levels": t_levels,
+            }
+        )
+    ranked.sort(key=lambda r: (-int(r["matches"]), -float(r["legacy_classifier_score"]), str(r["type_id"])))
+    for i, row in enumerate(ranked, start=1):
+        row["rank"] = i
+    return ranked

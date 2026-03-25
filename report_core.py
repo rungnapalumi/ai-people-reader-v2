@@ -1,5 +1,4 @@
 # report_core.py — shared report logic for report generation
-CAP_HIGH_TO_MODERATE = False  # Allow High/สูง to display (no cap to Moderate)
 
 import os
 import io
@@ -47,24 +46,6 @@ class FirstImpressionData:
     upright_pct: float
     stance_stability: float
 
-def _cap_high_to_moderate(level: str, is_thai: bool) -> str:
-    """Cap High/สูง to Moderate/กลาง when CAP_HIGH_TO_MODERATE is True."""
-    if not CAP_HIGH_TO_MODERATE:
-        return level
-    s = str(level or "").strip().lower()
-    if s.startswith("high") or s == "สูง":
-        return "กลาง" if is_thai else "Moderate"
-    return level
-
-
-def _cap_low_to_moderate(level: str, is_thai: bool) -> str:
-    """Cap Low/ต่ำ to Moderate/กลาง so report never shows Low."""
-    s = str(level or "").strip().lower()
-    if s.startswith("low") or s == "ต่ำ":
-        return "กลาง" if is_thai else "Moderate"
-    return level
-
-
 def first_impression_level(value: float, metric: str = "") -> str:
     """High/Moderate/Low. Eye contact, uprightness, stance: relaxed thresholds (60/35)."""
     v = float(value or 0.0)
@@ -82,19 +63,18 @@ def first_impression_level(value: float, metric: str = "") -> str:
             raw = "Moderate"
         else:
             raw = "Low"
-    raw = _cap_high_to_moderate(raw, is_thai=False)
-    return _cap_low_to_moderate(raw, is_thai=False)
+    return raw
 
 
 def _display_scale(scale: str, is_thai: bool) -> str:
-    """Convert scale for display (High/Moderate/Low). Low is capped to Moderate."""
+    """Convert internal scale string to localized High / Moderate / Low."""
     s = str(scale or "").strip().lower()
     if s.startswith("high"):
         return "สูง" if is_thai else "High"
     if s.startswith("moderate"):
         return "กลาง" if is_thai else "Moderate"
     if s.startswith("low"):
-        return _cap_low_to_moderate("Low", is_thai)
+        return "ต่ำ" if is_thai else "Low"
     return "-"
 
 

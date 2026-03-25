@@ -83,6 +83,7 @@ try:
     generate_shape_graph = _report_core.generate_shape_graph
     build_docx_report = _report_core.build_docx_report
     build_pdf_report = _report_core.build_pdf_report
+    format_people_reader_movement_top_two = _report_core.format_people_reader_movement_top_two
     first_impression_level = _report_core.first_impression_level
     mp = _report_core.mp
 except Exception as e:
@@ -649,7 +650,7 @@ def _brand_asset_data_uri(filename: str) -> str:
 
 
 def _scale_display_for_lang(scale: str, lang_code: str) -> str:
-    """Display scale; Low is capped to Moderate so report never shows Low."""
+    """Localized High / Moderate / Low for HTML reports."""
     s = str(scale or "").strip().lower()
     is_th = str(lang_code or "").strip().lower().startswith("th")
     if s.startswith("high"):
@@ -657,7 +658,7 @@ def _scale_display_for_lang(scale: str, lang_code: str) -> str:
     if s.startswith("moderate"):
         return "กลาง" if is_th else "Moderate"
     if s.startswith("low"):
-        return "กลาง" if is_th else "Moderate"
+        return "ต่ำ" if is_th else "Low"
     return "-"
 
 
@@ -755,7 +756,11 @@ def build_html_report_file(
         if isinstance(mt_html, dict) and str(mt_html.get("type_name") or "").strip():
             mt_head = "โปรไฟล์ประเภทการเคลื่อนไหว" if is_th else "Movement type profile"
             mt_closest = "การจับคู่ที่ใกล้เคียงที่สุด:" if is_th else "Closest match:"
-            mt_conf = "ความมั่นใจในการจับคู่:" if is_th else "Match confidence:"
+            mt_conf = (
+                "การตรงกันของโปรไฟล์นี้ (7 มิติ ต่ำ/กลาง/สูง):"
+                if is_th
+                else "This profile's 7-dimension match (Low/Moderate/High):"
+            )
             mt_sum = "สรุป:" if is_th else "Summary:"
             mt_traits = "ลักษณะจากประเภทนี้:" if is_th else "Traits from this type:"
             mt_obs = "ข้อสังเกต:" if is_th else "Observation:"
@@ -770,11 +775,18 @@ def build_html_report_file(
             match_line = f"{escape(mt_closest)} {match_name}"
             if mode_note:
                 match_line = f"{match_line} {mode_note}"
+            _m7h = int(mt_html.get("seven_match_chosen_matches") or 0)
+            _p7h = int(mt_html.get("confidence_pct") or 0)
+            _top_rows = "".join(
+                f'<div style="margin-top:6px;">{escape(tl)}</div>'
+                for tl in format_people_reader_movement_top_two(mt_html, is_th)
+            )
             people_reader_page2_extra += f'''
       <div style="margin-top:14px;"></div>
       <div><b>{escape(mt_head)}</b></div>
       <div style="margin-top:6px;">{match_line}</div>
-      <div style="margin-top:6px;">{escape(mt_conf)} {int(mt_html.get("confidence_pct") or 0)}%</div>
+      <div style="margin-top:6px;">{escape(mt_conf)} {_m7h}/7 ({_p7h}%)</div>
+      {_top_rows}
       <div style="margin-top:6px;">{escape(mt_sum)} {escape(str(mt_html.get("summary") or ""))}</div>
       <div style="margin-top:6px;">{escape(mt_traits)} {traits_txt}</div>
 '''
@@ -1224,8 +1236,9 @@ def apply_movement_type_classification(
     first_impression: FirstImpressionData,
 ) -> Tuple[Dict[str, Any], FirstImpressionData, Optional[Dict[str, Any]]]:
     """
-    When job['movement_type_mode'] is set ('auto' or 'type_1'..'type_6'), classify (or force type),
-    blend category scores + first impression toward template / features, return info for the report.
+    People Reader only: movement type from 6 templates using a 7-dimension Low/Moderate/High match
+    (tertiles on project `TYPE_TEMPLATES` mids vs video summary features). Auto = highest match count
+    (tie: legacy weighted template score). Manual = user type; categories use that template's scales.
     """
     mode_raw = str(job.get("movement_type_mode") or "").strip().lower()
     if not mode_raw:
@@ -1255,69 +1268,63 @@ def apply_movement_type_classification(
         logger.warning("[movement_type] feature extraction failed: %s", e)
         sf = mtc.build_summary_features_from_timeseries({})
 
+    ranked = mtc.rank_people_reader_types_by_seven_match(sf)
+    if not ranked:
+        logger.warning("[movement_type] empty seven-match ranking")
+        return result, first_impression, None
+
     if mode_raw == "auto":
-        full = mtc.analyze_movement_type(summary_features=sf)
-        classification = full["classification"]
-        narrative_en = str(full.get("narrative") or "")
+        chosen_id = str(ranked[0]["type_id"])
         mode_flag = "auto"
     elif mode_raw in mtc.TYPE_TEMPLATES:
-        tpl = mtc.TYPE_TEMPLATES[mode_raw]
-        classification = {
-            "best_match": {
-                "type_id": tpl.type_id,
-                "type_name": tpl.name,
-                "summary": tpl.summary,
-                "traits": dict(tpl.traits),
-                "score": 1.0,
-                "confidence": 1.0,
-                "confidence_pct": 100,
-                "matched_features": [],
-            },
-            "alternatives": [],
-            "scores": [],
-            "summary_features": sf,
-        }
-        narrative_en = mtc.generate_movement_type_narrative(classification)
+        chosen_id = mode_raw
         mode_flag = "selected"
     else:
         logger.warning("[movement_type] unknown movement_type_mode=%r", mode_raw)
         return result, first_impression, None
 
-    best = classification["best_match"]
-    traits = dict(best.get("traits") or {})
+    tpl_chosen = mtc.TYPE_TEMPLATES[chosen_id]
+    chosen_row = next((r for r in ranked if str(r["type_id"]) == chosen_id), ranked[0])
+    matches_chosen = int(chosen_row.get("matches") or 0)
+    match_pct_chosen = int(chosen_row.get("match_pct") or 0)
 
-    def trait_target(t: Any) -> int:
-        x = str(t or "").lower()
-        if x == "high":
-            return 6
-        if x == "low":
-            return 3
-        return 4
-
-    blend = 0.52
-    eng_feat = int(round(1 + 6 * float(sf.get("engagement_score", 0.5))))
+    cat_scales = mtc.people_reader_category_scales_from_template(tpl_chosen)
     result = dict(result)
-    result["engaging_score"] = int(
-        round((1 - blend) * int(result.get("engaging_score", 4)) + blend * eng_feat)
+    result["engaging_score"] = max(
+        1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["engaging"]))
     )
-    result["convince_score"] = int(
-        round((1 - blend) * int(result.get("convince_score", 4)) + blend * trait_target(traits.get("confidence")))
+    result["convince_score"] = max(
+        1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["confidence"]))
     )
-    result["authority_score"] = int(
-        round((1 - blend) * int(result.get("authority_score", 4)) + blend * trait_target(traits.get("authority")))
+    result["authority_score"] = max(
+        1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["authority"]))
     )
-    result["adaptability_score"] = int(
-        round(
-            (1 - blend) * int(result.get("adaptability_score", 4))
-            + blend * trait_target(traits.get("adaptability"))
-        )
+    result["adaptability_score"] = max(
+        1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["adaptability"]))
     )
-    for k in ("engaging_score", "convince_score", "authority_score", "adaptability_score"):
-        result[k] = max(1, min(7, int(result[k])))
     result["engaging_pos"] = int(result["engaging_score"] / 7 * 450)
     result["convince_pos"] = int(result["convince_score"] / 7 * 475)
     result["authority_pos"] = int(result["authority_score"] / 7 * 445)
     result["adaptability_pos"] = int(result["adaptability_score"] / 7 * 445)
+
+    v_levels = mtc.levels_from_reference_values(mtc.video_seven_reference_values(sf))
+    classification_for_narrative = {
+        "best_match": {
+            "type_id": tpl_chosen.type_id,
+            "type_name": tpl_chosen.name,
+            "summary": tpl_chosen.summary,
+            "traits": dict(tpl_chosen.traits),
+            "score": round(matches_chosen / 7.0, 4),
+            "confidence": max(0.0, min(1.0, float(match_pct_chosen) / 100.0)),
+            "confidence_pct": match_pct_chosen,
+            "matched_features": [],
+        },
+        "alternatives": [],
+        "scores": [],
+        "summary_features": sf,
+    }
+    narrative_en = str(mtc.generate_movement_type_narrative(classification_for_narrative) or "")
+    traits = dict(tpl_chosen.traits)
 
     fi2 = FirstImpressionData(
         eye_contact_pct=float(
@@ -1361,15 +1368,22 @@ def apply_movement_type_classification(
             f"ความยืดหยุ่น: {T(tr.get('adaptability'))}"
         )
 
-    conf_pct = best.get("confidence_pct")
-    if conf_pct is None:
-        conf_pct = int(round(float(best.get("confidence", 0)) * 100))
+    r1 = ranked[0]
+    r2 = ranked[1] if len(ranked) > 1 else r1
+    seven_line_en = (
+        f"1) {r1['type_name']} — {int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
+        f"2) {r2['type_name']} — {int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
+    )
+    seven_line_th = (
+        f"1) {r1['type_name']} — {int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
+        f"2) {r2['type_name']} — {int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
+    )
 
     info: Dict[str, Any] = {
-        "type_name": str(best.get("type_name") or ""),
-        "type_id": str(best.get("type_id") or ""),
-        "summary": str(best.get("summary") or ""),
-        "confidence_pct": int(conf_pct),
+        "type_name": str(tpl_chosen.name or ""),
+        "type_id": str(tpl_chosen.type_id or ""),
+        "summary": str(tpl_chosen.summary or ""),
+        "confidence_pct": int(match_pct_chosen),
         "traits_line_en": traits_line_en(traits),
         "traits_line_th": traits_line_th(traits),
         "narrative_en": narrative_en,
@@ -1385,12 +1399,32 @@ def apply_movement_type_classification(
             if mode_flag == "auto"
             else "(เลือกประเภทด้วยตนเอง — ปรับรายงานตามโปรไฟล์นี้)"
         ),
+        "seven_match_chosen_matches": matches_chosen,
+        "seven_match_chosen_out_of": 7,
+        "seven_match_rank1_type_id": str(r1.get("type_id") or ""),
+        "seven_match_rank1_type_name": str(r1.get("type_name") or ""),
+        "seven_match_rank1_matches": int(r1.get("matches") or 0),
+        "seven_match_rank1_pct": int(r1.get("match_pct") or 0),
+        "seven_match_rank2_type_id": str(r2.get("type_id") or ""),
+        "seven_match_rank2_type_name": str(r2.get("type_name") or ""),
+        "seven_match_rank2_matches": int(r2.get("matches") or 0),
+        "seven_match_rank2_pct": int(r2.get("match_pct") or 0),
+        "seven_match_line_en": seven_line_en,
+        "seven_match_line_th": seven_line_th,
+        "seven_dim_labels_en": list(mtc.PEOPLE_READER_SEVEN_DIM_LABELS_EN),
+        "seven_dim_labels_th": list(mtc.PEOPLE_READER_SEVEN_DIM_LABELS_TH),
+        "seven_video_levels": list(v_levels),
+        "seven_chosen_template_levels": list(chosen_row.get("template_levels") or []),
     }
     logger.info(
-        "[movement_type] mode=%s best=%s confidence_pct=%s",
+        "[movement_type] mode=%s chosen=%s seven_match=%s/7 rank1=%s/%s rank2=%s/%s",
         mode_flag,
         info.get("type_id"),
-        info.get("confidence_pct"),
+        matches_chosen,
+        r1.get("type_id"),
+        r1.get("matches"),
+        r2.get("type_id"),
+        r2.get("matches"),
     )
     return result, fi2, info
 
@@ -2694,10 +2728,14 @@ def _t(lang: str, en: str, th: str) -> str:
 def _build_categories_from_result(
     result: Dict[str, Any], total: int, report_style: str = ""
 ) -> List[CategoryResult]:
-    """Build categories; Low is capped to Moderate so report never shows Low."""
+    """Build categories; scale from score 1–7 → low / moderate / high."""
+
     def _scale(score: int) -> str:
-        raw = "moderate" if score in [3, 4] else ("high" if score >= 5 else "low")
-        return "moderate" if raw == "low" else raw
+        if score in (3, 4):
+            return "moderate"
+        if score >= 5:
+            return "high"
+        return "low"
 
     style = str(report_style or "").strip().lower()
 
