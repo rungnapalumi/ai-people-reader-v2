@@ -938,8 +938,10 @@ else:
 
 st.divider()
 st.caption(
-    "Movement type (when Auto is selected) uses the built-in profiles in **`movement_type_classifier.py`** "
-    "in this repo — no S3 or UI calibration."
+    "Movement type (Auto) matches video to the six built-in profiles in **`movement_type_classifier.py`** "
+    "using seven levels (Low/Moderate/High): all from pose/movement summary vs each profile’s expected ranges "
+    "(including authority, confidence, adaptability as composites aligned with those profiles). "
+    "Report category bars follow the chosen profile’s levels. No S3 calibration."
 )
 
 # -------------------------

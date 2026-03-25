@@ -646,27 +646,30 @@ def analyze_movement_type(
 
 
 # =========================================================
-# People Reader (page 8): 7-dimension Low/Moderate/High match vs templates
+# People Reader (page 8): 7-dimension Low/Moderate/High match vs all 6 TYPE_TEMPLATES
+# Video and template use the same rules: tertiles on 0–1 for eye, stance, upright, engaging,
+# and on movement-derived composites for authority, confidence, adaptability (no main analysis 1–7).
+# Report category bars use the chosen type’s seven template levels (dims 4–7 → engaging, authority, confidence, adaptability).
 # =========================================================
 
 PEOPLE_READER_SEVEN_DIM_LABELS_EN: Tuple[str, ...] = (
     "Eye contact",
+    "Stance",
     "Uprightness",
-    "Stance width",
-    "Engagement",
-    "Gesture variety",
-    "Lower-body stability",
-    "Upper-body rotation control",
+    "Engaging",
+    "Authority",
+    "Confidence",
+    "Adaptability",
 )
 
 PEOPLE_READER_SEVEN_DIM_LABELS_TH: Tuple[str, ...] = (
     "การสบตา",
+    "ท่ายืน",
     "ความตั้งตรง",
-    "ความกว้างท่ายืน",
     "การมีส่วนร่วม",
-    "ความหลากหลายของท่าทางมือ",
-    "ความมั่นคงล่าง",
-    "การควบคุมการหมุนลำตัว",
+    "ความเป็นผู้นำและอำนาจ",
+    "ความมั่นใจ",
+    "ความยืดหยุ่นในการปรับตัว",
 )
 
 
@@ -680,6 +683,27 @@ def people_reader_level_from_01(v: float) -> str:
     return "high"
 
 
+def _video_authority_signal(sf: Dict[str, float]) -> float:
+    up = clamp01(float(sf.get("uprightness", 0.0)))
+    rot = clamp01(float(sf.get("rotation_control_score", 0.0)))
+    stab = clamp01(float(sf.get("weight_shift_score", 0.0)))
+    return clamp01(0.38 * up + 0.32 * rot + 0.30 * stab)
+
+
+def _video_confidence_signal(sf: Dict[str, float]) -> float:
+    ec = clamp01(float(sf.get("eye_contact", 0.0)))
+    up = clamp01(float(sf.get("uprightness", 0.0)))
+    gv = clamp01(float(sf.get("gesture_variation_score", 0.0)))
+    return clamp01(0.40 * ec + 0.35 * up + 0.25 * gv)
+
+
+def _video_adaptability_signal(sf: Dict[str, float]) -> float:
+    gv = clamp01(float(sf.get("gesture_variation_score", 0.0)))
+    eng = clamp01(float(sf.get("engagement_score", 0.0)))
+    co = clamp01(float(sf.get("chest_open_score", 0.0)))
+    return clamp01(0.50 * gv + 0.30 * eng + 0.20 * co)
+
+
 def _mid_expected(exp: Dict[str, Tuple[float, float]], key: str, default: float = 0.5) -> float:
     pair = exp.get(key)
     if not pair or len(pair) < 2:
@@ -688,76 +712,85 @@ def _mid_expected(exp: Dict[str, Tuple[float, float]], key: str, default: float 
     return (lo + hi) / 2.0
 
 
-def _template_stability_mid(tpl: TypeTemplate) -> float:
-    exp = tpl.expected
-    if "weight_shift_score" in exp:
-        return _mid_expected(exp, "weight_shift_score")
-    if "weight_shift_raw" in exp:
-        return 1.0 - _mid_expected(exp, "weight_shift_raw")
-    return 0.5
-
-
-def _template_rotation_mid(tpl: TypeTemplate) -> float:
-    exp = tpl.expected
+def _template_rotation_control_mid(exp: Dict[str, Tuple[float, float]]) -> float:
     if "rotation_control_score" in exp:
         return _mid_expected(exp, "rotation_control_score")
     if "rotation_raw" in exp:
-        return 1.0 - _mid_expected(exp, "rotation_raw")
-    return 0.5
+        return clamp01(1.0 - _mid_expected(exp, "rotation_raw"))
+    return 0.9
 
 
-def template_seven_reference_values(tpl: TypeTemplate) -> List[float]:
-    """Seven mids aligned with video_seven_reference_values (same order)."""
-    exp = tpl.expected
-    return [
-        _mid_expected(exp, "eye_contact"),
-        _mid_expected(exp, "uprightness"),
-        _mid_expected(exp, "stance_width_score"),
-        _mid_expected(exp, "engagement_score"),
-        _mid_expected(exp, "gesture_variation_score"),
-        _template_stability_mid(tpl),
-        _template_rotation_mid(tpl),
-    ]
+def _template_weight_stability_mid(exp: Dict[str, Tuple[float, float]]) -> float:
+    if "weight_shift_score" in exp:
+        return _mid_expected(exp, "weight_shift_score")
+    if "weight_shift_raw" in exp:
+        return clamp01(1.0 - _mid_expected(exp, "weight_shift_raw"))
+    return 0.9
 
 
-def video_seven_reference_values(summary_features: Dict[str, float]) -> List[float]:
+def _template_authority_signal(exp: Dict[str, Tuple[float, float]]) -> float:
+    up = _mid_expected(exp, "uprightness")
+    rot = _template_rotation_control_mid(exp)
+    stab = _template_weight_stability_mid(exp)
+    return clamp01(0.38 * up + 0.32 * rot + 0.30 * stab)
+
+
+def _template_confidence_signal(exp: Dict[str, Tuple[float, float]]) -> float:
+    ec = _mid_expected(exp, "eye_contact")
+    up = _mid_expected(exp, "uprightness")
+    gv = _mid_expected(exp, "gesture_variation_score")
+    return clamp01(0.40 * ec + 0.35 * up + 0.25 * gv)
+
+
+def _template_adaptability_signal(exp: Dict[str, Tuple[float, float]]) -> float:
+    gv = _mid_expected(exp, "gesture_variation_score")
+    eng = _mid_expected(exp, "engagement_score")
+    co = _mid_expected(exp, "chest_open_score", 0.35)
+    return clamp01(0.50 * gv + 0.30 * eng + 0.20 * co)
+
+
+def video_seven_levels_people_reader(summary_features: Dict[str, float]) -> List[str]:
+    """All seven levels from movement `summary_features` only (same composites as templates)."""
     sf = summary_features
     return [
-        float(sf.get("eye_contact", 0.0)),
-        float(sf.get("uprightness", 0.0)),
-        float(sf.get("stance_width_score", 0.0)),
-        float(sf.get("engagement_score", 0.0)),
-        float(sf.get("gesture_variation_score", 0.0)),
-        float(sf.get("weight_shift_score", 0.0)),
-        float(sf.get("rotation_control_score", 0.0)),
+        people_reader_level_from_01(float(sf.get("eye_contact", 0.0))),
+        people_reader_level_from_01(float(sf.get("stance_width_score", 0.0))),
+        people_reader_level_from_01(float(sf.get("uprightness", 0.0))),
+        people_reader_level_from_01(float(sf.get("engagement_score", 0.0))),
+        people_reader_level_from_01(_video_authority_signal(sf)),
+        people_reader_level_from_01(_video_confidence_signal(sf)),
+        people_reader_level_from_01(_video_adaptability_signal(sf)),
     ]
 
 
-def levels_from_reference_values(vals: List[float]) -> List[str]:
-    return [people_reader_level_from_01(x) for x in vals]
+def template_seven_levels_people_reader(
+    tpl: TypeTemplate,
+    session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
+) -> List[str]:
+    """Template side: same seven semantics as `video_seven_levels_people_reader` (expected mids + composites)."""
+    exp = effective_expected_for_type(tpl.type_id, tpl, session_overrides)
+    return [
+        people_reader_level_from_01(_mid_expected(exp, "eye_contact")),
+        people_reader_level_from_01(_mid_expected(exp, "stance_width_score")),
+        people_reader_level_from_01(_mid_expected(exp, "uprightness")),
+        people_reader_level_from_01(_mid_expected(exp, "engagement_score")),
+        people_reader_level_from_01(_template_authority_signal(exp)),
+        people_reader_level_from_01(_template_confidence_signal(exp)),
+        people_reader_level_from_01(_template_adaptability_signal(exp)),
+    ]
 
 
-def people_reader_category_scales_from_template(tpl: TypeTemplate) -> Dict[str, str]:
-    """
-    People Reader category row scales (low/moderate/high) from the chosen type template.
-    Engaging uses engagement dimension tertile of template mids; traits map high/low (+ moderate if unknown).
-    """
-    mids = template_seven_reference_values(tpl)
-    engaging = people_reader_level_from_01(mids[3])
-
-    def _trait_scale(key: str) -> str:
-        s = str(tpl.traits.get(key) or "").strip().lower()
-        if s == "high":
-            return "high"
-        if s == "low":
-            return "low"
-        return "moderate"
-
+def people_reader_category_scales_from_template(
+    tpl: TypeTemplate,
+    session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
+) -> Dict[str, str]:
+    """Category scales for the report: same Low/Moderate/High as dims 4–7 of this type’s seven template levels."""
+    levels = template_seven_levels_people_reader(tpl, session_overrides=session_overrides)
     return {
-        "engaging": engaging,
-        "confidence": _trait_scale("confidence"),
-        "authority": _trait_scale("authority"),
-        "adaptability": _trait_scale("adaptability"),
+        "engaging": levels[3],
+        "authority": levels[4],
+        "confidence": levels[5],
+        "adaptability": levels[6],
     }
 
 
@@ -776,18 +809,17 @@ def rank_people_reader_types_by_seven_match(
     session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    For each of 6 types, compare video vs template on 7 dimensions (each low/moderate/high via tertiles).
+    For each of 6 types, compare video vs template on 7 dimensions (low/moderate/high), all from
+    movement summary vs each profile’s expected mids and composites (no main analysis scores).
     Match count 0–7; tie-break by legacy classify_movement_type score, then type_id.
     """
-    v_vals = video_seven_reference_values(summary_features)
-    v_levels = levels_from_reference_values(v_vals)
+    v_levels = video_seven_levels_people_reader(summary_features)
     cls = classify_movement_type(summary_features, session_overrides=session_overrides)
     legacy_by_id = {str(x["type_id"]): float(x.get("score") or 0.0) for x in cls.get("scores") or []}
 
     ranked: List[Dict[str, Any]] = []
     for tid, tpl in TYPE_TEMPLATES.items():
-        t_vals = template_seven_reference_values(tpl)
-        t_levels = levels_from_reference_values(t_vals)
+        t_levels = template_seven_levels_people_reader(tpl, session_overrides=session_overrides)
         matches = sum(1 for a, b in zip(v_levels, t_levels) if a == b)
         ranked.append(
             {

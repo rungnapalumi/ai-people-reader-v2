@@ -1237,8 +1237,9 @@ def apply_movement_type_classification(
 ) -> Tuple[Dict[str, Any], FirstImpressionData, Optional[Dict[str, Any]]]:
     """
     People Reader only: movement type from 6 templates using a 7-dimension Low/Moderate/High match
-    (tertiles on project `TYPE_TEMPLATES` mids vs video summary features). Auto = highest match count
-    (tie: legacy weighted template score). Manual = user type; categories use that template's scales.
+    (video summary vs each profile’s expected mids and movement composites — no pre-existing analysis 1–7).
+    Auto = highest match count (tie: legacy weighted template score). Manual = user type; category bars
+    use that type’s template seven levels (same as the profile definition).
     """
     mode_raw = str(job.get("movement_type_mode") or "").strip().lower()
     if not mode_raw:
@@ -1307,7 +1308,7 @@ def apply_movement_type_classification(
     result["authority_pos"] = int(result["authority_score"] / 7 * 445)
     result["adaptability_pos"] = int(result["adaptability_score"] / 7 * 445)
 
-    v_levels = mtc.levels_from_reference_values(mtc.video_seven_reference_values(sf))
+    v_levels = mtc.video_seven_levels_people_reader(sf)
     classification_for_narrative = {
         "best_match": {
             "type_id": tpl_chosen.type_id,
