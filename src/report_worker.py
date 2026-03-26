@@ -2890,14 +2890,28 @@ def generate_reports_for_lang(
     logger.info("[first_impression] Eye Contact: %.1f%%, Uprightness: %.1f%%, Stance: %.1f%%", 
                 first_impression.eye_contact_pct, first_impression.upright_pct, first_impression.stance_stability)
 
+    # MUST match process_report_job normalization — never default to "full" for People Reader jobs
+    # (full = old 3-category layout without Adaptability / movement profile).
     report_style = str(job.get("report_style") or "").strip().lower()
     enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
-    if is_people_reader_style(report_style):
+    required_rs = str(job.get("required_report_style") or "").strip().lower()
+    if (
+        is_people_reader_style(report_style)
+        or enterprise_folder == "people reader"
+        or required_rs == "people_reader"
+    ):
         report_style = "people_reader"
-    elif is_operation_test_style(report_style):
+    elif is_operation_test_style(report_style) or enterprise_folder == "operation_test":
         report_style = "operation_test"
     elif not report_style:
         report_style = "full"
+
+    if report_style != "people_reader" and job.get("movement_type_info"):
+        logger.warning(
+            "[report] job has movement_type_info but report_style=%s — forcing people_reader for layout",
+            report_style,
+        )
+        report_style = "people_reader"
 
     categories = _build_categories_from_result(result, total=total, report_style=report_style)
     report = ReportData(
