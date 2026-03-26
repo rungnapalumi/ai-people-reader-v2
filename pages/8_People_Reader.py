@@ -1037,6 +1037,15 @@ if current_group_id:
         mt = None
         st.caption(f"Could not read report job from S3: {e}")
 
+    if report_job:
+        rcv = str(report_job.get("report_core_version") or "").strip()
+        gsha = str(report_job.get("report_worker_git_sha") or "").strip()
+        if rcv or gsha:
+            st.caption(
+                f"**Report build on S3:** `report_core_version={rcv or '—'}` · "
+                f"`git={gsha or '—'}` — if this does not match after deploy, the **report worker** "
+                "may still be on old code (use Render **Clear build cache & deploy**)."
+            )
     if report_job and isinstance(report_job.get("notification"), dict):
         with st.expander("Email delivery status (from finished report job on S3)", expanded=False):
             st.json(report_job["notification"])

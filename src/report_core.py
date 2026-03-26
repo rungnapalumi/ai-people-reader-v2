@@ -1,5 +1,5 @@
 # report_core.py — shared report logic for report generation
-REPORT_CORE_VERSION = "2026-03-24-headless-mp"  # Bump when changing analysis / verify Render deploy
+REPORT_CORE_VERSION = "2026-03-27-build-verify"  # Bump when changing templates; compare to finished job JSON on S3
 
 import os
 import sys

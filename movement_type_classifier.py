@@ -4,7 +4,7 @@
 # People Reader / movement-type classification for this repo:
 #   - Templates: TYPE_TEMPLATES + people_reader_seven rubric, 7-dim match, narratives.
 #   - Production report worker: src/report_worker.py (loads src/report_core.py for pose features).
-#   - Optional bridge: people_reader_job.apply_movement_type_classification (used by root report_worker.py).
+#   - Optional: people_reader_job.apply_movement_type_classification (same logic; for scripts/tests).
 #
 from __future__ import annotations
 

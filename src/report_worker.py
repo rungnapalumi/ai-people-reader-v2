@@ -3362,6 +3362,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         job["output_prefix"] = output_prefix
         job["outputs"] = outputs
         job["analysis_engine"] = str(result.get("analysis_engine") or "unknown")
+        job["report_core_version"] = str(getattr(_report_core, "REPORT_CORE_VERSION", "") or "unknown")
+        _sha = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("APP_GIT_SHA") or "").strip()
+        job["report_worker_git_sha"] = _sha[:12] if _sha else ""
         job["duration_seconds"] = float(result.get("duration_seconds") or 0.0)
         job["analyzed_frames"] = int(result.get("analyzed_frames") or 0)
 
@@ -3668,6 +3671,8 @@ def process_job(job_json_key: str) -> None:
 def main() -> None:
     logger.info("====== AI People Reader Report Worker (TH/EN) ======")
     logger.info("report_core version: %s", getattr(_report_core, "REPORT_CORE_VERSION", "unknown"))
+    _g = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("APP_GIT_SHA") or "").strip()
+    logger.info("git sha (RENDER_GIT_COMMIT/APP_GIT_SHA): %s", _g[:12] if _g else "(not set — local or missing env)")
     mp_status = "available" if mp is not None else "UNAVAILABLE (placeholder only)"
     logger.info("MediaPipe: %s", mp_status)
     logger.info("DEFAULT_ANALYSIS_MODE: %s (env ANALYSIS_MODE=%s)", DEFAULT_ANALYSIS_MODE, os.getenv("ANALYSIS_MODE", "(not set)"))

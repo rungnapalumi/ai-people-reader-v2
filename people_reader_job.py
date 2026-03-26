@@ -1,6 +1,7 @@
 # people_reader_job.py — People Reader movement-type blending (repo root)
 #
-# Used by report_worker.py (root) so it does not duplicate src/report_worker.py.
+# Optional standalone module (same contract as src/report_worker.apply_movement_type_classification).
+# Production uses the implementation inside src/report_worker.py; this file remains for tests/scripts.
 # Loads pose features from src/report_core.py (same pipeline as production worker).
 
 from __future__ import annotations
