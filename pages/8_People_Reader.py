@@ -133,6 +133,7 @@ JOBS_FINISHED_PREFIX = "jobs/finished/"
 JOBS_FAILED_PREFIX = "jobs/failed/"
 JOBS_OUTPUT_PREFIX = "jobs/output/"
 JOBS_GROUP_PREFIX = "jobs/groups/"
+ORG_SETTINGS_PREFIX = "jobs/config/organizations/"
 
 # Values must match movement_type_classifier.TYPE_TEMPLATES keys + "auto"
 PEOPLE_READER_MOVEMENT_TYPE_CHOICES: List[tuple] = [
@@ -163,6 +164,109 @@ def new_group_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     rand = uuid.uuid4().hex[:6]
     return f"{ts}_{rand}"
+
+
+def normalize_org_name(name: str) -> str:
+    text = (name or "").strip().lower()
+    if not text:
+        return ""
+    out = []
+    for ch in text:
+        if ch.isalnum() or ch in ("_", "-"):
+            out.append(ch)
+        elif ch.isspace():
+            out.append("_")
+    return "".join(out).strip("_")
+
+
+def org_settings_key(org_name: str) -> str:
+    org_id = normalize_org_name(org_name)
+    return f"{ORG_SETTINGS_PREFIX}{org_id}.json" if org_id else ""
+
+
+def list_people_reader_organization_names() -> List[str]:
+    """Organizations whose Admin setting `report_style` is `people_reader`."""
+    if not AWS_BUCKET or AWS_BUCKET == "local":
+        return []
+    out: List[str] = []
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=ORG_SETTINGS_PREFIX):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                payload = s3_read_json(key) or {}
+                if str(payload.get("report_style") or "").strip().lower() != "people_reader":
+                    continue
+                nm = str(payload.get("organization_name") or "").strip()
+                if nm:
+                    out.append(nm)
+    except Exception:
+        return []
+    out.sort(key=lambda x: x.lower())
+    # de-dupe preserve order
+    seen = set()
+    uniq: List[str] = []
+    for n in out:
+        k = n.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(n)
+    return uniq
+
+
+def default_org_hint_name() -> str:
+    """Prefer org whose default_page is AI People Reader."""
+    for nm in list_people_reader_organization_names():
+        payload = s3_read_json(org_settings_key(nm)) or {}
+        if str(payload.get("default_page") or "").strip().lower() == "ai_people_reader":
+            return nm
+    names = list_people_reader_organization_names()
+    return names[0] if names else ""
+
+
+def validate_organization_for_people_reader(org_name: str) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Returns (ok, error_message_with_step, org_payload).
+    On success, org_payload is the S3 JSON for the organization.
+    """
+    on = (org_name or "").strip()
+    if not on or on.startswith("—"):
+        return (
+            False,
+            "ขั้นตอน 2 — เลือกองค์กร: กรุณาเลือกองค์กร (Organization) ที่ได้รับอนุญาตให้ใช้รายงาน **People Reader** เท่านั้น",
+            {},
+        )
+    key = org_settings_key(on)
+    if not key:
+        return False, "ขั้นตอน 2 — ชื่อองค์กรไม่ถูกต้อง", {}
+    payload = s3_read_json(key) or {}
+    if not payload:
+        return (
+            False,
+            "ขั้นตอน 3 — โหลดการตั้งค่า: ไม่พบไฟล์ตั้งค่าองค์กรในระบบ "
+            f"(`{key}`). สร้างและบันทึกองค์กรใน **Admin → Organization Settings** ก่อน "
+            "และตั้ง **Default Report Type = People Reader**",
+            {},
+        )
+    style = str(payload.get("report_style") or "").strip().lower()
+    if style != "people_reader":
+        return (
+            False,
+            "ขั้นตอน 4 — ประเภทรายงาน: องค์กรนี้ตั้งค่าเป็น "
+            f"**{style}** ไม่ใช่ **people_reader** — หน้านี้จะไม่ส่งงานไปทำรายงานแบบอื่นแทน "
+            "แก้ใน Admin ให้เป็น **People Reader** เท่านั้น",
+            {},
+        )
+    if not (bool(payload.get("enable_report_th", True)) or bool(payload.get("enable_report_en", True))):
+        return (
+            False,
+            "ขั้นตอน 5 — รายงาน PDF: องค์กรนี้ปิดทั้งรายงานไทยและอังกฤษในการตั้งค่า "
+            "เปิดอย่างน้อยหนึ่งภาษาใน Admin",
+            {},
+        )
+    return True, "", payload
 
 
 def safe_slug(text: str, fallback: str = "user") -> str:
@@ -692,9 +796,8 @@ render_top_banner()
 
 st.markdown(f"# {PAGE_TITLE}")
 st.caption(
-    "Upload one video and download the outputs directly from this page. "
-    "Reports match the standard layout (Engaging, Confidence, Authority, Effort/Shape graphs) "
-    "plus **Adaptability** (Flexibility & Agility) — only for jobs from this page."
+    "เลือก **Organization** ที่ Admin ตั้งค่าเป็น **People Reader** เท่านั้น — ระบบจะไม่สร้างรายงาน Full/Simple/Operational Test แทน "
+    "อัปโหลดวิดีโอแล้วดาวน์โหลดผลได้จากหน้านี้ (Engaging, Confidence, Authority, Effort/Shape + **Adaptability**)."
 )
 _git = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("APP_GIT_SHA") or "").strip()
 _build = f"`{_git[:10]}`" if len(_git) >= 7 else "`local`"
@@ -705,6 +808,33 @@ st.caption(
     "and use **Clear build cache** if reports still look old."
 )
 st.divider()
+
+selected_org_label = ""
+people_reader_orgs = list_people_reader_organization_names()
+if not people_reader_orgs:
+    st.error(
+        "**ขั้นตอน 1 — องค์กร:** ยังไม่มีองค์กรที่ตั้งค่า **Default Report Type = People Reader** ใน "
+        "**Admin → Organization Settings**. หน้านี้จะไม่ส่งงานไปทำรายงานแบบอื่น — ต้องตั้งค่าก่อน"
+    )
+    st.caption(
+        "ใน Admin: ใส่ชื่อองค์กร → เลือก **People Reader** ใน Default Report Type → เปิดรายงานไทย/อังกฤษตามต้องการ → บันทึก"
+    )
+else:
+    org_opts = ["— เลือกองค์กร —"] + people_reader_orgs
+    hint = default_org_hint_name()
+    _org_index = org_opts.index(hint) if hint and hint in org_opts else 0
+    org_select_widget = st.selectbox(
+        "Organization",
+        options=org_opts,
+        index=_org_index,
+        key="people_reader_org_select",
+        help="เฉพาะองค์กรที่ Admin ตั้งค่าเป็น **People Reader** เท่านั้น — ระบบจะไม่สลับไปรายงาน Full/Simple/Operational Test",
+    )
+    selected_org_label = (
+        ""
+        if (not org_select_widget or str(org_select_widget).startswith("—"))
+        else str(org_select_widget).strip()
+    )
 
 name_value = st.text_input(
     "Name",
@@ -764,27 +894,57 @@ run = st.button(
     "Start Analysis",
     type="primary",
     use_container_width=True,
-    disabled=(uploaded is None or not AWS_BUCKET or AWS_BUCKET == "local"),
+    disabled=(
+        uploaded is None
+        or not AWS_BUCKET
+        or AWS_BUCKET == "local"
+        or not people_reader_orgs
+        or not selected_org_label
+    ),
 )
 
 st.caption(SUPPORT_TEXT)
 
 if run:
     if not AWS_BUCKET or AWS_BUCKET == "local":
-        st.error("S3 is required. Set AWS_BUCKET in .env and restart.")
+        st.error("ขั้นตอน 1 — โครงสร้างพื้นฐาน: ต้องตั้งค่า S3 (AWS_BUCKET) ใน .env")
+        st.stop()
+    if not people_reader_orgs:
+        st.error("ขั้นตอน 1 — องค์กร: ยังไม่มีองค์กร People Reader ใน Admin")
+        st.stop()
+    ok_org, org_err, org_payload = validate_organization_for_people_reader(selected_org_label)
+    if not ok_org:
+        st.error(org_err)
         st.stop()
     if uploaded is None:
-        st.warning("Please upload a video first.")
+        st.warning("ขั้นตอน 6 — วิดีโอ: กรุณาอัปโหลดไฟล์วิดีโอก่อน")
         st.stop()
     if not name_value.strip():
-        st.warning("Please enter your name first.")
+        st.warning("ขั้นตอน 6 — ชื่อ: กรุณากรอกชื่อก่อน")
         st.stop()
     if not str(report_notify_email or "").strip():
-        st.warning("Please enter the email address where you want the PDF reports delivered.")
+        st.warning("ขั้นตอน 6 — อีเมล: กรุณากรอกอีเมลสำหรับส่งรายงาน PDF")
         st.stop()
     if not is_valid_email_format(str(report_notify_email)):
-        st.warning("Please enter a valid email address for report delivery.")
+        st.warning("ขั้นตอน 6 — อีเมล: รูปแบบอีเมลไม่ถูกต้อง")
         st.stop()
+
+    langs: List[str] = []
+    if bool(org_payload.get("enable_report_th", True)):
+        langs.append("th")
+    if bool(org_payload.get("enable_report_en", True)):
+        langs.append("en")
+    if not langs:
+        st.error("ขั้นตอน 5 — รายงาน: องค์กรนี้ปิดรายงานทั้งสองภาษา — แก้ใน Admin")
+        st.stop()
+
+    report_fmt = str(org_payload.get("report_format") or "pdf").strip().lower()
+    if report_fmt not in ("docx", "pdf"):
+        report_fmt = "pdf"
+    want_dots = bool(org_payload.get("enable_dots", True))
+    want_skeleton = bool(org_payload.get("enable_skeleton", True))
+    org_display = str(org_payload.get("organization_name") or selected_org_label).strip()
+    org_id = normalize_org_name(org_display)
 
     base_user = safe_slug(name_value, fallback="user")
     group_id = f"{new_group_id()}__{base_user}"
@@ -801,7 +961,7 @@ if run:
             st.write("✓ Upload complete.")
         except Exception as e:
             status.update(label="Upload failed", state="error")
-            st.error(f"Upload failed: {e}")
+            st.error(f"ขั้นตอน 7 — อัปโหลดวิดีโอ: ล้มเหลว — {e}")
             st.stop()
 
         # Do not block on HEAD after upload: upload_fileobj success means the object is there.
@@ -810,34 +970,49 @@ if run:
         outputs = build_output_keys(group_id)
         created_at = utc_now_iso()
 
-        job_dots = {
-            "job_id": new_job_id(),
-            "group_id": group_id,
-            "created_at": created_at,
-            "status": "pending",
-            "mode": "dots",
-            "input_key": input_key,
-            "output_key": outputs["dots_video"],
-            "user_name": name_value,
-            "employee_id": base_user,
-            "employee_email": "",
-            "notify_email": "",
+        org_meta = {
+            "organization_name": org_display,
+            "organization_id": org_id,
+            "required_report_style": "people_reader",
         }
 
-        job_skeleton = {
-            "job_id": new_job_id(),
-            "group_id": group_id,
-            "created_at": created_at,
-            "status": "pending",
-            "mode": "skeleton",
-            "input_key": input_key,
-            "output_key": outputs["skeleton_video"],
-            "user_name": name_value,
-            "employee_id": base_user,
-            "employee_email": "",
-            "notify_email": "",
-            "suppress_completion_email": True,
-        }
+        job_dots_id = ""
+        job_skeleton_id = ""
+
+        if want_dots:
+            job_dots = {
+                "job_id": new_job_id(),
+                "group_id": group_id,
+                "created_at": created_at,
+                "status": "pending",
+                "mode": "dots",
+                "input_key": input_key,
+                "output_key": outputs["dots_video"],
+                "user_name": name_value,
+                "employee_id": base_user,
+                "employee_email": "",
+                "notify_email": "",
+                **org_meta,
+            }
+            job_dots_id = job_dots["job_id"]
+
+        if want_skeleton:
+            job_skeleton = {
+                "job_id": new_job_id(),
+                "group_id": group_id,
+                "created_at": created_at,
+                "status": "pending",
+                "mode": "skeleton",
+                "input_key": input_key,
+                "output_key": outputs["skeleton_video"],
+                "user_name": name_value,
+                "employee_id": base_user,
+                "employee_email": "",
+                "notify_email": "",
+                "suppress_completion_email": True,
+                **org_meta,
+            }
+            job_skeleton_id = job_skeleton["job_id"]
 
         job_report = {
             "job_id": new_job_id(),
@@ -848,31 +1023,35 @@ if run:
             "input_key": input_key,
             "client_name": name_value,
             "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-            "languages": ["th", "en"],
+            "languages": langs,
             "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
             "analysis_mode": "real",
             "sample_fps": 3,
             "max_frames": 150,
             "report_style": "people_reader",
-            "report_format": "pdf",
-            "expect_skeleton": True,
-            "expect_dots": True,
+            "required_report_style": "people_reader",
+            "report_format": report_fmt,
+            "expect_skeleton": want_skeleton,
+            "expect_dots": want_dots,
             "notify_email": str(report_notify_email or "").strip(),
-            "enterprise_folder": PAGE_TITLE,
+            "enterprise_folder": org_display,
             "employee_id": base_user,
             "employee_email": "",
             "audience_mode": audience_mode,
             "movement_type_mode": movement_type_mode,
             "report_email_send_en_asap": bool(report_email_send_en_asap),
+            **org_meta,
         }
 
         try:
-            enqueue_legacy_job(job_dots)
-            enqueue_legacy_job(job_skeleton)
+            if want_dots:
+                enqueue_legacy_job(job_dots)
+            if want_skeleton:
+                enqueue_legacy_job(job_skeleton)
             enqueue_legacy_job(job_report)
         except Exception as e:
             status.update(label="Queue failed", state="error")
-            st.error(f"Queue submission failed: {e}")
+            st.error(f"ขั้นตอน 8 — คิวงาน: ล้มเหลว — {e}")
             st.stop()
 
         st.write("✓ Jobs queued.")
@@ -882,8 +1061,8 @@ if run:
         if "people_reader_jobs_by_group" not in st.session_state:
             st.session_state["people_reader_jobs_by_group"] = {}
         st.session_state["people_reader_jobs_by_group"][group_id] = {
-            "dots_job_id": job_dots["job_id"],
-            "skeleton_job_id": job_skeleton["job_id"],
+            "dots_job_id": job_dots_id,
+            "skeleton_job_id": job_skeleton_id,
         }
         st.success(f"Submission received. Group ID: `{group_id}`")
         st.info("Please keep this Group ID and use Refresh to check when files are ready.")
@@ -1130,10 +1309,11 @@ else:
 
 st.divider()
 st.caption(
-    "Movement type (Auto) matches video to the six built-in profiles in **`movement_type_classifier.py`** "
-    "using seven rubric levels per profile (`people_reader_seven`): eye, stance, upright, engaging, authority, "
-    "confidence, adaptability. Video side uses pose-summary tertiles (1–4) and movement composites as high/low (5–7). "
-    "Report bars follow the chosen profile’s rubric. No S3 calibration."
+    "Movement type (Auto) ranks the six profiles in **`movement_type_classifier.py`** by **weighted template score** "
+    "(pose features vs each profile’s `expected` ranges), then uses **7-dimension agreement** as a tie-break. "
+    "The seven rubric levels (`people_reader_seven`) are eye, stance, upright, engaging, authority, confidence, adaptability; "
+    "video side uses pose-summary tertiles (1–4) and composites as high/low (5–7). Report bars follow the chosen profile. "
+    "No S3 calibration."
 )
 
 # -------------------------

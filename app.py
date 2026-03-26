@@ -286,7 +286,7 @@ def _get_org_settings(org_name: str) -> Dict[str, Any]:
 
     style = str(payload.get("report_style") or "").strip().lower()
     fmt = str(payload.get("report_format") or "").strip().lower()
-    if style not in ("full", "simple"):
+    if style not in ("full", "simple", "people_reader", "operation_test"):
         style = "full"
     if fmt not in ("docx", "pdf"):
         fmt = "docx"
@@ -323,7 +323,7 @@ def _save_org_settings(
 
     style = str(report_style or "").strip().lower()
     fmt = str(report_format or "").strip().lower()
-    if style not in ("full", "simple"):
+    if style not in ("full", "simple", "people_reader", "operation_test"):
         raise ValueError("Invalid report_style")
     if fmt not in ("docx", "pdf"):
         raise ValueError("Invalid report_format")
@@ -356,7 +356,7 @@ def _list_org_settings(limit: int = 200) -> List[Dict[str, Any]]:
         return []
     s3 = _get_s3_client()
     paginator = s3.get_paginator("list_objects_v2")
-    rows: List[Dict[str, str]] = []
+    rows: List[Dict[str, Any]] = []
     for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=ORG_SETTINGS_PREFIX):
         for item in page.get("Contents", []):
             key = str(item.get("Key") or "")
@@ -1035,7 +1035,10 @@ def _render_admin_panel() -> None:
         else:
             st.warning("No settings found for this organization yet. You can create it below.")
 
-    default_style_ui = "Simple" if existing_org_cfg.get("report_style") == "simple" else "Full"
+    _rs = str(existing_org_cfg.get("report_style") or "full").strip().lower()
+    _style_labels = ["Full", "Simple", "People Reader", "Operational Test"]
+    _style_values = ["full", "simple", "people_reader", "operation_test"]
+    _style_idx = _style_values.index(_rs) if _rs in _style_values else 0
     # Default PDF when unset: matches email worker (attachments) and TTB/LPA portal defaults.
     _rf = str(existing_org_cfg.get("report_format") or "").strip().lower()
     if _rf == "pdf":
@@ -1058,7 +1061,13 @@ def _render_admin_panel() -> None:
     existing_page_label = next((k for k, v in page_options.items() if v == existing_page_value), "Any page")
 
     with st.form("org_settings_form", clear_on_submit=False):
-        report_style_ui = st.selectbox("Default Report Type", options=["Full", "Simple"], index=0 if default_style_ui == "Full" else 1)
+        report_style_ui = st.selectbox(
+            "Default Report Type",
+            options=_style_labels,
+            index=_style_idx,
+            help="People Reader = layout with Adaptability + movement-type profile (this page only). "
+            "Operational Test = remark-point layout.",
+        )
         report_format_ui = st.selectbox(
             "Default Report File",
             options=["PDF", "DOCX"],
@@ -1081,9 +1090,15 @@ def _render_admin_panel() -> None:
         try:
             if not (enable_report_th_ui or enable_report_en_ui or enable_skeleton_ui or enable_dots_ui):
                 raise ValueError("At least one output must be enabled.")
+            _style_map = {
+                "Full": "full",
+                "Simple": "simple",
+                "People Reader": "people_reader",
+                "Operational Test": "operation_test",
+            }
             saved_key = _save_org_settings(
                 org_name=org_name,
-                report_style="simple" if report_style_ui == "Simple" else "full",
+                report_style=_style_map.get(report_style_ui, "full"),
                 report_format="pdf" if report_format_ui == "PDF" else "docx",
                 default_page=page_options.get(default_page_ui, ""),
                 enable_report_th=enable_report_th_ui,

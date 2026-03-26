@@ -1236,10 +1236,9 @@ def apply_movement_type_classification(
     first_impression: FirstImpressionData,
 ) -> Tuple[Dict[str, Any], FirstImpressionData, Optional[Dict[str, Any]]]:
     """
-    People Reader only: movement type from 6 templates using a 7-dimension Low/Moderate/High match
-    (video summary vs each profile’s expected mids and movement composites — no pre-existing analysis 1–7).
-    Auto = highest match count (tie: legacy weighted template score). Manual = user type; category bars
-    use that type’s template seven levels (same as the profile definition).
+    People Reader only: movement type from 6 templates using weighted pose-summary match (`classify_movement_type`)
+    plus a 7-dimension Low/Moderate/High comparison for display. Auto = highest weighted score; tie-break =
+    7-dimension match count. Manual = user type; category bars use that type’s template seven levels.
     """
     mode_raw = str(job.get("movement_type_mode") or "").strip().lower()
     if not mode_raw:
@@ -1372,12 +1371,16 @@ def apply_movement_type_classification(
     r1 = ranked[0]
     r2 = ranked[1] if len(ranked) > 1 else r1
     seven_line_en = (
-        f"1) {r1['type_name']} — {int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
-        f"2) {r2['type_name']} — {int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
+        f"1) {r1['type_name']} — weighted {float(r1['legacy_classifier_score']):.3f}, "
+        f"{int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
+        f"2) {r2['type_name']} — weighted {float(r2['legacy_classifier_score']):.3f}, "
+        f"{int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
     )
     seven_line_th = (
-        f"1) {r1['type_name']} — {int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
-        f"2) {r2['type_name']} — {int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
+        f"1) {r1['type_name']} — คะแนนถ่วงน้ำหนัก {float(r1['legacy_classifier_score']):.3f}, "
+        f"ตรง 7 มิติ {int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
+        f"2) {r2['type_name']} — คะแนนถ่วงน้ำหนัก {float(r2['legacy_classifier_score']):.3f}, "
+        f"ตรง 7 มิติ {int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
     )
 
     info: Dict[str, Any] = {
@@ -3076,6 +3079,14 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     elif is_operation_test_style(report_style) or enterprise_folder == "operation_test":
         report_style = "operation_test"
         job["report_style"] = "operation_test"
+
+    required_rs = str(job.get("required_report_style") or "").strip().lower()
+    if required_rs and report_style != required_rs:
+        raise ValueError(
+            "[report_worker:step=report_style_lock] "
+            f"Job requires report_style={required_rs!r} but after normalization got {report_style!r}. "
+            "Refusing to generate a substitute report layout."
+        )
 
     # People Reader always runs movement-type matching; older jobs may omit this field.
     if report_style == "people_reader" and not str(job.get("movement_type_mode") or "").strip():

@@ -844,7 +844,11 @@ def rank_people_reader_types_by_seven_match(
 ) -> List[Dict[str, Any]]:
     """
     Compare video vs each profile: movement tertiles (1–4) and composite high/low (5–7) vs template rubric
-    `people_reader_seven` (no main analysis 1–7 scores). Tie-break: legacy classify_movement_type score, then type_id.
+    `people_reader_seven` (no main analysis 1–7 scores).
+
+    **Ranking (Auto mode):** primary = weighted `classify_movement_type` score (higher first);
+    tie-break = 7-dimension match count, then `type_id`. This aligns reference clips with calibrated `expected` ranges
+    while still using 7-dim agreement when scores are close.
     """
     v_levels = video_seven_levels_people_reader(summary_features)
     cls = classify_movement_type(summary_features, session_overrides=session_overrides)
@@ -864,7 +868,9 @@ def rank_people_reader_types_by_seven_match(
                 "template_levels": t_levels,
             }
         )
-    ranked.sort(key=lambda r: (-int(r["matches"]), -float(r["legacy_classifier_score"]), str(r["type_id"])))
+    ranked.sort(
+        key=lambda r: (-float(r["legacy_classifier_score"]), -int(r["matches"]), str(r["type_id"]))
+    )
     for i, row in enumerate(ranked, start=1):
         row["rank"] = i
     return ranked

@@ -192,12 +192,16 @@ def apply_movement_type_classification(
     r1 = ranked[0]
     r2 = ranked[1] if len(ranked) > 1 else r1
     seven_line_en = (
-        f"1) {r1['type_name']} — {int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
-        f"2) {r2['type_name']} — {int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
+        f"1) {r1['type_name']} — weighted {float(r1['legacy_classifier_score']):.3f}, "
+        f"{int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
+        f"2) {r2['type_name']} — weighted {float(r2['legacy_classifier_score']):.3f}, "
+        f"{int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
     )
     seven_line_th = (
-        f"1) {r1['type_name']} — {int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
-        f"2) {r2['type_name']} — {int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
+        f"1) {r1['type_name']} — คะแนนถ่วงน้ำหนัก {float(r1['legacy_classifier_score']):.3f}, "
+        f"ตรง 7 มิติ {int(r1['matches'])}/7 ({int(r1['match_pct'])}%); "
+        f"2) {r2['type_name']} — คะแนนถ่วงน้ำหนัก {float(r2['legacy_classifier_score']):.3f}, "
+        f"ตรง 7 มิติ {int(r2['matches'])}/7 ({int(r2['match_pct'])}%)"
     )
 
     info: Dict[str, Any] = {
