@@ -129,7 +129,7 @@ DOCX_FALLBACK_ON_PDF_FAIL = str(
 THAI_PDF_IMAGE_CAPTURE = str(os.getenv("THAI_PDF_IMAGE_CAPTURE", "true")).strip().lower() in ("1", "true", "yes", "on")
 THAI_PDF_IMAGE_DPI = int(os.getenv("THAI_PDF_IMAGE_DPI", "220"))
 THAI_PDF_IMAGE_CAPTURE_STRICT = str(
-    os.getenv("THAI_PDF_IMAGE_CAPTURE_STRICT", "true")
+    os.getenv("THAI_PDF_IMAGE_CAPTURE_STRICT", "false")
 ).strip().lower() in ("1", "true", "yes", "on")
 # false = rasterize PDF (all pages). true = DOCX->PNG (LibreOffice exports only page 1 for multi-page DOCX)
 THAI_CAPTURE_FROM_DOCX_DIRECT = str(
@@ -1943,8 +1943,9 @@ def choose_email_report_attachment(payload: Dict[str, Any], lang: str) -> Tuple[
 
 
 # When True, wait for skeleton.mp4 on S3 before emailing report PDFs; bundle skeleton link in same email.
+# Default false so customers get PDFs first; set true on worker env for flows that must bundle video + report.
 DEFER_REPORT_EMAIL_UNTIL_SKELETON = str(
-    os.getenv("DEFER_REPORT_EMAIL_UNTIL_SKELETON", "true")
+    os.getenv("DEFER_REPORT_EMAIL_UNTIL_SKELETON", "false")
 ).strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -1955,6 +1956,8 @@ def should_defer_report_email_until_skeleton_ready(
     payload: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Per-job override via payload['defer_report_email_until_skeleton']; else env DEFER_REPORT_EMAIL_UNTIL_SKELETON."""
+    if payload is not None and bool(payload.get("report_email_send_en_asap")):
+        return False
     if payload is not None and "defer_report_email_until_skeleton" in payload:
         if not bool(payload.get("defer_report_email_until_skeleton")):
             return False
@@ -2066,12 +2069,14 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "report_th_docx_key": th_docx_key,
         "report_th_pdf_key": th_pdf_key,
         "report_th_html_key": th_html_key,
-        "report_th_email_sent": False,
-        "report_en_email_sent": False,
-        "skeleton_email_sent": False,
-        "dots_email_sent": False,
+        "report_th_email_sent": bool(job.get("report_th_email_sent")),
+        "report_en_email_sent": bool(job.get("report_en_email_sent")),
+        "skeleton_email_sent": bool(job.get("skeleton_email_sent")),
+        "dots_email_sent": bool(job.get("dots_email_sent")),
         "attempts": 0,
         "updated_at": utc_now_iso(),
+        # People Reader: email EN PDF as soon as uploaded; do not wait for Thai PDF in the same mail batch.
+        "report_email_send_en_asap": bool(job.get("report_email_send_en_asap")),
         # None = use env; False = TTB-style (email PDF as soon as ready); True = LPA-style (wait for skeleton)
         "defer_report_email_until_skeleton": job.get("defer_report_email_until_skeleton"),
         # TTB: after first report email(s), send one follow-up with reports + skeleton together.
@@ -2358,6 +2363,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             defer_reports = should_defer_report_email_until_skeleton_ready(
                 expect_skeleton, skeleton_ready, report_links, payload
             )
+            # Do not send dots/skeleton-only mail while report PDFs are intentionally deferred (avoid "video only" mail).
+            block_video_mails_until_reports = bool(report_links and defer_reports)
             if report_links and defer_reports:
                 logger.info(
                     "[email_queue] deferring report email until skeleton.mp4 exists job_id=%s",
@@ -2388,7 +2395,12 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     sent_any = True
 
             # 2) Dots email
-            if (not dots_sent) and expect_dots and email_payload_dots_ready(payload):
+            if (
+                (not dots_sent)
+                and expect_dots
+                and email_payload_dots_ready(payload)
+                and (not block_video_mails_until_reports)
+            ):
                 email_send_attempted = True
                 d_key = str(payload.get("dots_key") or "").strip()
                 sent, status = send_result_email(job_info, {"Dots video (MP4)": d_key}, {})
@@ -2438,7 +2450,13 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     payload["skeleton_email_sent"] = True
                     payload["ttb_bundle_followup_sent"] = True
                     sent_any = True
-            elif (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload) and (not ttb_phase2):
+            elif (
+                (not skeleton_sent)
+                and expect_skeleton
+                and email_payload_skeleton_ready(payload)
+                and (not ttb_phase2)
+                and (not block_video_mails_until_reports)
+            ):
                 # TTB two-phase jobs must not send skeleton-only before the bundled follow-up.
                 email_send_attempted = True
                 sk_key = str(payload.get("skeleton_key") or "").strip()
@@ -2959,10 +2977,9 @@ def generate_reports_for_lang(
     # PDF (file -> bytes) for every report job.
     if wants_pdf:
         pdf_generation_mode = "requested"
-        strict_html_pdf = bool(
-            PDF_HTML_STRICT_FOR_OPERATION_TEST
-            and (is_operation_test_style(report_style) or is_people_reader_style(report_style))
-        )
+        # Strict = fail job if DOCX->PDF + ReportLab both fail. Operation Test needs layout guarantees.
+        # People Reader must still try HTML->Chrome PDF last so customers always get a file.
+        strict_html_pdf = bool(PDF_HTML_STRICT_FOR_OPERATION_TEST and is_operation_test_style(report_style))
 
         # Try DOCX -> PDF first (LibreOffice) as primary path.
         try:
@@ -3001,7 +3018,7 @@ def generate_reports_for_lang(
 
         if strict_html_pdf and (not pdf_bytes):
             raise RuntimeError(
-                "operation_test/people_reader strict mode: docx->pdf and reportlab both failed; "
+                "operation_test strict mode: docx->pdf and reportlab both failed; "
                 "html->pdf fallback is disabled"
             )
 
@@ -3143,9 +3160,16 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
         outputs: Dict[str, Any] = {"reports": {}, "graphs": {}}
 
-        for lang_code in languages:
-            _lc = str(lang_code or "").strip().lower()
-            lang_code = "th" if _lc.startswith("th") else "en"
+        # Optional: generate EN before TH so we can email the English PDF as soon as it is uploaded.
+        _langs_in = languages if isinstance(languages, list) else ([languages] if languages else [])
+        normalized_lang_order: List[str] = []
+        for item in _langs_in:
+            _lc = str(item or "").strip().lower()
+            normalized_lang_order.append("th" if _lc.startswith("th") else "en")
+        if bool(job.get("report_email_send_en_asap")) and "en" in normalized_lang_order and "th" in normalized_lang_order:
+            normalized_lang_order = ["en", "th"]
+
+        for lang_code in normalized_lang_order:
             docx_bytes, pdf_bytes, local_paths, first_impression_summary = generate_reports_for_lang(
                 job, result, analysis_video_path, lang_code, out_dir
             )
@@ -3271,6 +3295,69 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 "pdf_render_mode": pdf_render_mode,
             }
 
+            # Email English PDF immediately after EN upload (do not wait for Thai PDF generation).
+            if (
+                ENABLE_EMAIL_NOTIFICATIONS
+                and bool(job.get("report_email_send_en_asap"))
+                and lang_code == "en"
+                and not bool(job.get("report_en_email_sent"))
+            ):
+                try:
+                    job["outputs"] = outputs
+                    payload_en = build_email_payload(job, outputs)
+                    notify_email_value = str(payload_en.get("notify_email") or "").strip()
+                    recipients = resolve_notification_recipients(
+                        notify_email_value, str(payload_en.get("report_style") or "")
+                    )
+                    if recipients:
+                        expect_skeleton = bool(payload_en.get("expect_skeleton", False))
+                        sk_ready_immediate = (not expect_skeleton) or email_payload_skeleton_ready(payload_en)
+                        report_links_en: Dict[str, str] = {}
+                        if email_payload_report_en_ready(payload_en):
+                            en_att, en_kind = choose_email_report_attachment(payload_en, "en")
+                            if en_kind == "PDF":
+                                report_links_en["Report EN (PDF)"] = en_att
+                            elif en_kind == "DOCX":
+                                report_links_en["Report EN (DOCX)"] = en_att
+                        defer_en = should_defer_report_email_until_skeleton_ready(
+                            expect_skeleton,
+                            sk_ready_immediate,
+                            report_links_en,
+                            payload_en,
+                        )
+                        if report_links_en and (not defer_en):
+                            job_info_en = {
+                                "job_id": payload_en["job_id"],
+                                "group_id": payload_en.get("group_id", ""),
+                                "notify_email": payload_en["notify_email"],
+                                "report_style": str(payload_en.get("report_style") or "").strip().lower(),
+                            }
+                            video_keys_report: Dict[str, str] = {}
+                            if is_operation_test_style(job_info_en["report_style"]) and str(
+                                payload_en.get("input_video_key") or ""
+                            ).strip():
+                                video_keys_report["Uploaded video (MP4)"] = str(
+                                    payload_en.get("input_video_key") or ""
+                                ).strip()
+                            vk_en = merged_video_keys_for_report_email(
+                                video_keys_report,
+                                payload_en,
+                                expect_skeleton,
+                                sk_ready_immediate,
+                                bool(payload_en.get("skeleton_email_sent")),
+                            )
+                            sent_en, status_en = send_result_email(job_info_en, vk_en, report_links_en)
+                            logger.info(
+                                "[email] early EN-only report job_id=%s sent=%s status=%s",
+                                job_id,
+                                sent_en,
+                                status_en,
+                            )
+                            if sent_en:
+                                job["report_en_email_sent"] = True
+                except Exception as e:
+                    logger.warning("[email] early EN report send failed job_id=%s: %s", job_id, e)
+
         # Save structured outputs into job JSON
         job["output_prefix"] = output_prefix
         job["outputs"] = outputs
@@ -3309,6 +3396,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         # Notification flow:
         # - send TH report as soon as ready (primary milestone)
         # - EN report and dots are follow-up deliveries
+        recipients: List[str] = []
         if ENABLE_EMAIL_NOTIFICATIONS:
             payload = build_email_payload(job, outputs)
             report_style = str(payload.get("report_style") or "").strip().lower()
@@ -3317,10 +3405,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             recipients = resolve_notification_recipients(notify_email_value, report_style)
             if recipients:
                 statuses: List[str] = []
-                report_th_sent = False
-                report_en_sent = False
-                skeleton_sent = False
-                dots_sent = False
+                report_th_sent = bool(payload.get("report_th_email_sent"))
+                report_en_sent = bool(payload.get("report_en_email_sent"))
+                skeleton_sent = bool(payload.get("skeleton_email_sent"))
+                dots_sent = bool(payload.get("dots_email_sent"))
                 expect_skeleton = bool(payload.get("expect_skeleton", False))
                 expect_dots = bool(payload.get("expect_dots", True))
                 expects_report_th = bool(str(payload.get("report_th_key") or "").strip())
@@ -3358,6 +3446,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 defer_immediate = should_defer_report_email_until_skeleton_ready(
                     expect_skeleton, sk_ready_immediate, report_links, payload
                 )
+                block_video_mails_until_reports = bool(report_links and defer_immediate)
                 if report_links and defer_immediate:
                     logger.info(
                         "[email] deferring report email until skeleton.mp4 exists job_id=%s",
@@ -3385,7 +3474,12 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                             payload["skeleton_email_sent"] = True
 
                 # 2) Skeleton email แยก (only if not bundled with report email above)
-                if (not skeleton_sent) and expect_skeleton and email_payload_skeleton_ready(payload):
+                if (
+                    (not skeleton_sent)
+                    and expect_skeleton
+                    and email_payload_skeleton_ready(payload)
+                    and (not block_video_mails_until_reports)
+                ):
                     sk_key = str(payload.get("skeleton_key") or "").strip()
                     sent, status = send_result_email(
                         job_info,
@@ -3398,7 +3492,12 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                         payload["skeleton_email_sent"] = True
 
                 # 3) Dots email แยก
-                if (not dots_sent) and expect_dots and email_payload_dots_ready(payload):
+                if (
+                    (not dots_sent)
+                    and expect_dots
+                    and email_payload_dots_ready(payload)
+                    and (not block_video_mails_until_reports)
+                ):
                     d_key = str(payload.get("dots_key") or "").strip()
                     sent, status = send_result_email(
                         job_info,
@@ -3455,6 +3554,12 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             "skeleton_sent": bool(skeleton_sent),
             "dots_sent": bool(dots_sent),
         }
+        if ENABLE_EMAIL_NOTIFICATIONS and isinstance(job.get("notification"), dict):
+            n = job["notification"]
+            job["report_th_email_sent"] = bool(n.get("report_th_sent"))
+            job["report_en_email_sent"] = bool(n.get("report_en_sent"))
+            job["skeleton_email_sent"] = bool(n.get("skeleton_sent"))
+            job["dots_email_sent"] = bool(n.get("dots_sent"))
         
         # Debug: Log the outputs structure
         logger.info("[report] Saving outputs to job: %s", json.dumps(outputs, indent=2))

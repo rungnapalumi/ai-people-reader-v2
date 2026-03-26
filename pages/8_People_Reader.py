@@ -740,6 +740,14 @@ movement_type_mode = st.selectbox(
     "Or choose a type to align Engaging, Confidence, Authority, Adaptability and first-impression cues to that profile.",
 )
 
+report_email_send_en_asap = st.checkbox(
+    "Email English PDF as soon as it is ready (do not wait for Thai PDF)",
+    value=True,
+    key="people_reader_report_email_send_en_asap",
+    help="The report worker generates English first, uploads it to S3, then can email the English report "
+    "before Thai finishes. Thai PDF follows in a separate email when ready.",
+)
+
 uploaded = st.file_uploader(
     "Video (MP4 / MOV / M4V / WEBM)",
     type=["mp4", "mov", "m4v", "webm"],
@@ -855,6 +863,7 @@ if run:
             "employee_email": "",
             "audience_mode": audience_mode,
             "movement_type_mode": movement_type_mode,
+            "report_email_send_en_asap": bool(report_email_send_en_asap),
         }
 
         try:

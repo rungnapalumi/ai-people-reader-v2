@@ -58,3 +58,9 @@
       value: real
     - key: DOCX_THAI_FONT_FAMILY
       value: Garuda
+    # Never fail the whole report job if Thai PDF image-capture step errors; use vector PDF fallback.
+    - key: THAI_PDF_IMAGE_CAPTURE_STRICT
+      value: "false"
+    # Email PDFs when ready; do not wait for skeleton (LPA can override in env if needed).
+    - key: DEFER_REPORT_EMAIL_UNTIL_SKELETON
+      value: "false"
