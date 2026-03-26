@@ -413,6 +413,68 @@ def apply_finished_job_output_keys(group_id: str, outputs: Dict[str, str]) -> No
     _merge_from_job(str(entry.get("skeleton_job_id") or "").strip(), "skeleton_video")
 
 
+def find_finished_report_job_for_group(group_id: str, max_json: int = 800) -> Optional[Dict[str, Any]]:
+    """
+    Locate the latest finished `mode=report` job JSON for this group_id under jobs/finished/.
+    Used to show People Reader category levels on the page when email is delayed or missing.
+    """
+    gid = (group_id or "").strip()
+    if not gid or not AWS_BUCKET or AWS_BUCKET == "local":
+        return None
+    variants = set(get_group_id_variants(gid) or [gid])
+    date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
+    scan_prefix = f"{JOBS_FINISHED_PREFIX}{date_prefix}" if date_prefix else JOBS_FINISHED_PREFIX
+    matches: List[Dict[str, Any]] = []
+    seen = 0
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=scan_prefix):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                seen += 1
+                if seen > max_json:
+                    break
+                data = s3_read_json_key(key)
+                if not data:
+                    continue
+                gj = str(data.get("group_id") or "").strip()
+                if gj not in variants:
+                    continue
+                if str(data.get("status") or "").lower() != "finished":
+                    continue
+                if str(data.get("mode") or "").strip().lower() != "report":
+                    continue
+                matches.append(data)
+            if seen > max_json:
+                break
+    except Exception:
+        return None
+
+    if not matches:
+        return None
+
+    def _jid(d: Dict[str, Any]) -> str:
+        return str(d.get("job_id") or "")
+
+    matches.sort(key=_jid, reverse=True)
+    for d in matches:
+        if (d.get("movement_type_info") or {}):
+            return d
+    return matches[0]
+
+
+def _format_scale_en(level: Any) -> str:
+    s = str(level or "").strip().lower()
+    return {"low": "Low", "moderate": "Moderate", "high": "High"}.get(s, str(level or "—").title())
+
+
+def _format_scale_th(level: Any) -> str:
+    s = str(level or "").strip().lower()
+    return {"low": "ต่ำ", "moderate": "กลาง", "high": "สูง"}.get(s, "—")
+
+
 def discover_video_outputs_from_finished_jobs(group_id: str, outputs: Dict[str, str], max_json: int = 400) -> None:
     """If session has no job ids, scan jobs/finished/YYYYMMDD* for finished dots/skeleton with matching group_id."""
     gid = (group_id or "").strip()
@@ -768,6 +830,9 @@ if run:
             "report_format": "pdf",
             "expect_skeleton": True,
             "expect_dots": True,
+            # Do not wait for skeleton.mp4 before emailing PDFs (see src/report_worker DEFER_REPORT_EMAIL_UNTIL_SKELETON).
+            # Page 8 users still download skeleton from S3; email should arrive when reports are ready.
+            "defer_report_email_until_skeleton": False,
             "notify_email": "rungnapa@imagematters.at",
             "enterprise_folder": PAGE_TITLE,
             "employee_id": base_user,
@@ -929,6 +994,72 @@ if current_group_id:
         button_key="people_reader_dl_skeleton",
         ready=skeleton_ready,
     )
+
+    st.markdown("---")
+    st.subheader("Category levels in your report (Low / Moderate / High)")
+    st.caption(
+        "Same scales as the PDF/DOCX (Engaging, Confidence, Authority, Adaptability). "
+        "Loaded from the finished report job on S3 — useful if email is slow or missing."
+    )
+    try:
+        report_job = find_finished_report_job_for_group(current_group_id)
+        mt = (report_job or {}).get("movement_type_info") if report_job else None
+    except Exception as e:
+        report_job = None
+        mt = None
+        st.caption(f"Could not read report job from S3: {e}")
+
+    if mt and isinstance(mt, dict):
+        levels = mt.get("seven_chosen_template_levels") or []
+        if isinstance(levels, list) and len(levels) >= 7:
+            eng = levels[3]
+            auth = levels[4]
+            conf = levels[5]
+            adap = levels[6]
+            rows = [
+                ("Engaging & Connecting", "การมีส่วนร่วมและการเชื่อมโยง", eng),
+                ("Confidence", "ความมั่นใจ", conf),
+                ("Authority", "ความเป็นผู้นำและอำนาจ", auth),
+                ("Adaptability", "ความยืดหยุ่นในการปรับตัว", adap),
+            ]
+            md_lines = [
+                "| Category | หมวด (TH) | Scale | ระดับ |",
+                "|---|---|:---:|---|",
+            ]
+            for en_label, th_label, lv in rows:
+                md_lines.append(
+                    f"| {en_label} | {th_label} | {_format_scale_en(lv)} | {_format_scale_th(lv)} |"
+                )
+            st.markdown("\n".join(md_lines))
+
+            tname = str(mt.get("type_name") or "—")
+            m7 = int(mt.get("seven_match_chosen_matches") or 0)
+            p7 = int(mt.get("confidence_pct") or 0)
+            mode_note = str(mt.get("mode_en") or mt.get("mode") or "")
+            st.info(
+                f"**Closest profile:** {tname} {mode_note}  \n"
+                f"**7-dimension match:** {m7}/7 ({p7}%)"
+            )
+
+            top_en = str(mt.get("seven_match_line_en") or "").strip()
+            if top_en:
+                with st.expander("Top two profile matches (7 dimensions)", expanded=False):
+                    st.write(top_en)
+                    st.caption(str(mt.get("seven_match_line_th") or ""))
+        else:
+            st.warning(
+                "Report job found but category levels are incomplete. Try **Refresh** after the report worker finishes."
+            )
+    elif report_job:
+        st.info(
+            "Report job finished, but **movement type details** are missing "
+            "(older worker or non–People Reader report). PDF may still list categories from analysis only."
+        )
+    else:
+        st.info(
+            "No finished **report** job found for this Group ID yet (or S3 scan limit reached). "
+            "When the report worker finishes, click **Refresh** — category levels appear here even if email has not arrived."
+        )
 
     if not any([dots_ready, skeleton_ready]):
         st.caption("Files are not ready yet. Please wait a few minutes and click Refresh.")

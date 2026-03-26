@@ -24,6 +24,8 @@
 import os
 import io
 import json
+import sys
+import importlib.util
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -45,28 +47,38 @@ from botocore.config import Config
 
 # ------------------------------------------------------------
 # IMPORTANT:
-#   report_worker MUST import report generation logic from report_core.py
-#   (do NOT import app.py, because Streamlit UI runs on import)
+#   Load src/report_core.py (full People Reader template: Adaptability + movement type block).
+#   The legacy report_core.py at repo root is not used by this worker.
 # ------------------------------------------------------------
+_worker_dir = os.path.dirname(os.path.abspath(__file__))
+_report_core_path = os.path.join(_worker_dir, "src", "report_core.py")
+if not os.path.exists(_report_core_path):
+    raise RuntimeError(f"src/report_core.py not found at {_report_core_path}")
+_spec = importlib.util.spec_from_file_location("report_core", _report_core_path)
+if _spec is None:
+    raise RuntimeError(f"Failed to create spec for {_report_core_path}")
+_report_core = importlib.util.module_from_spec(_spec)
+sys.modules["report_core"] = _report_core
 try:
-    from report_core import (
-        ReportData,
-        CategoryResult,
-        FirstImpressionData,
-        format_seconds_to_mmss,
-        get_video_duration_seconds,
-        analyze_video_mediapipe,
-        analyze_video_placeholder,
-        analyze_first_impression_from_video,
-        generate_effort_graph,
-        generate_shape_graph,
-        build_docx_report,
-        build_pdf_report,
-        mp,  # mediapipe module or None
-    )
+    if _spec.loader is None:
+        raise RuntimeError("report_core spec has no loader")
+    _spec.loader.exec_module(_report_core)
+    ReportData = _report_core.ReportData
+    CategoryResult = _report_core.CategoryResult
+    FirstImpressionData = _report_core.FirstImpressionData
+    format_seconds_to_mmss = _report_core.format_seconds_to_mmss
+    get_video_duration_seconds = _report_core.get_video_duration_seconds
+    analyze_video_mediapipe = _report_core.analyze_video_mediapipe
+    analyze_video_placeholder = _report_core.analyze_video_placeholder
+    analyze_first_impression_from_video = _report_core.analyze_first_impression_from_video
+    generate_effort_graph = _report_core.generate_effort_graph
+    generate_shape_graph = _report_core.generate_shape_graph
+    build_docx_report = _report_core.build_docx_report
+    build_pdf_report = _report_core.build_pdf_report
+    mp = _report_core.mp
 except Exception as e:
     raise RuntimeError(
-        "Cannot import report_core.py. Create report_core.py and move report logic there.\n"
+        "Cannot import report_core from src/. Ensure src/report_core.py exists.\n"
         f"Import error: {e}"
     )
 
@@ -918,7 +930,9 @@ def _t(lang: str, en: str, th: str) -> str:
     return th if (lang or "").strip().lower().startswith("th") else en
 
 
-def _build_categories_from_result(result: Dict[str, Any], total: int) -> List[CategoryResult]:
+def _build_categories_from_result(
+    result: Dict[str, Any], total: int, report_style: str = ""
+) -> List[CategoryResult]:
     """Build categories; scale from score 1–7 → low / moderate / high."""
 
     def _scale(score: int) -> str:
@@ -927,6 +941,8 @@ def _build_categories_from_result(result: Dict[str, Any], total: int) -> List[Ca
         if score >= 5:
             return "high"
         return "low"
+
+    style = str(report_style or "").strip().lower()
 
     categories = [
         CategoryResult(
@@ -954,6 +970,18 @@ def _build_categories_from_result(result: Dict[str, Any], total: int) -> List[Ca
             total=int(total),
         ),
     ]
+    if style.startswith("people_reader"):
+        adapt = int(result.get("adaptability_score", 4))
+        categories.append(
+            CategoryResult(
+                name_en="Adaptability",
+                name_th="ความยืดหยุ่นในการปรับตัว",
+                score=adapt,
+                scale=_scale(adapt),
+                positives=int(result.get("adaptability_pos", int(adapt / 7 * 445))),
+                total=int(total),
+            )
+        )
     return categories
 
 
@@ -1006,19 +1034,41 @@ def generate_reports_for_lang(
     duration_str = format_seconds_to_mmss(float(result.get("duration_seconds") or get_video_duration_seconds(video_path)))
     total = int(result.get("total_indicators") or 0) or 1
 
-    # Run First Impression analysis
     audience_mode = str(job.get("audience_mode") or "one").strip().lower()
     if audience_mode not in ("one", "many"):
         audience_mode = "one"
-    first_impression = analyze_first_impression_from_video(
-        video_path, sample_every_n=5, max_frames=200, audience_mode=audience_mode
-    )
-    
-    # Log the actual detected values for debugging
-    logger.info("[first_impression] Eye Contact: %.1f%%, Uprightness: %.1f%%, Stance: %.1f%%", 
-                first_impression.eye_contact_pct, first_impression.upright_pct, first_impression.stance_stability)
+    cached_fi = job.get("_first_impression_for_report")
+    if isinstance(cached_fi, FirstImpressionData):
+        first_impression = cached_fi
+    else:
+        try:
+            first_impression = analyze_first_impression_from_video(
+                video_path, sample_every_n=5, max_frames=200, audience_mode=audience_mode
+            )
+        except Exception as e:
+            logger.warning("[first_impression] analysis failed, using fallback: %s", e)
+            first_impression = FirstImpressionData(
+                eye_contact_pct=65.0,
+                upright_pct=65.0,
+                stance_stability=50.0,
+            )
 
-    categories = _build_categories_from_result(result, total=total)
+    assert first_impression is not None
+
+    logger.info(
+        "[first_impression] Eye Contact: %.1f%%, Uprightness: %.1f%%, Stance: %.1f%%",
+        first_impression.eye_contact_pct,
+        first_impression.upright_pct,
+        first_impression.stance_stability,
+    )
+
+    report_style = str(job.get("report_style") or "full").strip().lower()
+    if report_style.startswith("people_reader"):
+        report_style = "people_reader"
+    elif not report_style:
+        report_style = "full"
+
+    categories = _build_categories_from_result(result, total=total, report_style=report_style)
     report = ReportData(
         client_name=client_name,
         analysis_date=analysis_date,
@@ -1028,9 +1078,8 @@ def generate_reports_for_lang(
         summary_comment=str(job.get("summary_comment") or "").strip(),
         generated_by=_t(lang_code, "Generated by AI People Reader™", "จัดทำโดย AI People Reader™"),
         first_impression=first_impression,
+        movement_type_info=job.get("movement_type_info"),
     )
-
-    report_style = str(job.get("report_style") or "full").strip().lower()
     is_simple = report_style.startswith("simple")
 
     # Graphs are only required for full report style.
@@ -1118,6 +1167,38 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     try:
         # Analyze once (shared for both languages)
         result = run_analysis(video_path, job)
+
+        # People Reader: blend movement-type rubric into category scores (uses src/report_core + movement_type_classifier)
+        report_style = str(job.get("report_style") or "full").strip().lower()
+        if report_style.startswith("people_reader") and str(job.get("movement_type_mode") or "").strip():
+            try:
+                from people_reader_job import apply_movement_type_classification
+
+                aud = str(job.get("audience_mode") or "one").strip().lower()
+                if aud not in ("one", "many"):
+                    aud = "one"
+                try:
+                    fi_base = analyze_first_impression_from_video(
+                        video_path, sample_every_n=3, max_frames=100, audience_mode=aud
+                    )
+                except Exception as e:
+                    logger.warning("[movement_type] baseline first impression failed: %s", e)
+                    fi_base = FirstImpressionData(
+                        eye_contact_pct=65.0,
+                        upright_pct=65.0,
+                        stance_stability=50.0,
+                    )
+                result, fi_blended, mt_info = apply_movement_type_classification(
+                    video_path, job, result, fi_base
+                )
+                if mt_info:
+                    job["movement_type_info"] = mt_info
+                    job["_first_impression_for_report"] = fi_blended
+                else:
+                    job.pop("movement_type_info", None)
+                    job.pop("_first_impression_for_report", None)
+            except Exception as e:
+                logger.warning("[movement_type] People Reader integration skipped: %s", e)
 
         outputs: Dict[str, Any] = {"reports": {}, "graphs": {}}
 

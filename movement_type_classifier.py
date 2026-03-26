@@ -1,6 +1,11 @@
 # movement_type_classifier.py
 # -*- coding: utf-8 -*-
-
+#
+# People Reader / movement-type classification for this repo:
+#   - Templates: TYPE_TEMPLATES + people_reader_seven rubric, 7-dim match, narratives.
+#   - Production report worker: src/report_worker.py (loads src/report_core.py for pose features).
+#   - Optional bridge: people_reader_job.apply_movement_type_classification (used by root report_worker.py).
+#
 from __future__ import annotations
 
 import math
@@ -863,3 +868,50 @@ def rank_people_reader_types_by_seven_match(
     for i, row in enumerate(ranked, start=1):
         row["rank"] = i
     return ranked
+
+
+# =========================================================
+# Simple result object (for job analysis dicts / external callers)
+# =========================================================
+
+
+@dataclass
+class MovementTypeResult:
+    """Compact view of `classify_movement_type` for wiring into analysis payloads."""
+
+    type_code: str
+    type_name: str
+    score: float
+    summary: str
+    matched_rules: List[str]
+    all_scores: List[Dict[str, Any]]
+
+
+def classify_movement_type_result(
+    summary_features: Dict[str, float],
+    session_overrides: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None,
+) -> MovementTypeResult:
+    """
+    Run `classify_movement_type` and return a flat result (similar to example integration snippets).
+
+    - type_code: best-match type_id (e.g. type_3)
+    - matched_rules: short strings per feature from the best match’s matched_features
+    - all_scores: full ranked list from the classifier
+    """
+    data = classify_movement_type(summary_features, session_overrides=session_overrides)
+    bm = data.get("best_match") or {}
+    rules: List[str] = []
+    for mf in bm.get("matched_features") or []:
+        fn = str(mf.get("feature", ""))
+        er = mf.get("expected_range") or [0, 0]
+        rules.append(
+            f"{fn} in [{float(er[0]):.3f},{float(er[1]):.3f}] score={mf.get('score')}"
+        )
+    return MovementTypeResult(
+        type_code=str(bm.get("type_id", "")),
+        type_name=str(bm.get("type_name", "")),
+        score=float(bm.get("score") or 0.0),
+        summary=str(bm.get("summary", "")),
+        matched_rules=rules,
+        all_scores=list(data.get("scores") or []),
+    )
