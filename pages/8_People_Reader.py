@@ -1096,12 +1096,21 @@ if current_group_id:
             "people_reader"
         ) or str(report_job.get("enterprise_folder") or "").strip().lower() == "people reader"
         if is_people_reader_job:
-            st.info(
-                "Report finished, but **movement type details** are not in this job file "
-                "(processed before the worker stored them, or classification was skipped). "
-                "Redeploy the latest **report worker** and run a **new** analysis to see category levels here; "
-                "the PDF may still show Engaging, Confidence, Authority, and Adaptability."
-            )
+            rcv = str(report_job.get("report_core_version") or "").strip()
+            if rcv:
+                st.info(
+                    "This report was built with a **current** worker (`report_core_version` is set on the job), "
+                    "but **movement type details** are still missing. That usually means the movement-classification "
+                    "step failed or was skipped (see report worker logs for `[movement_type]`). "
+                    "The PDF can still show Engaging, Confidence, Authority, and Adaptability from analysis."
+                )
+            else:
+                st.info(
+                    "Report finished, but **movement type details** are not in this job file "
+                    "(job processed by an **older** worker before this metadata was stored). "
+                    "**Redeploy** the latest **report worker**, then run a **new** upload with a new Group ID to see "
+                    "category levels here; the PDF may still list the four categories."
+                )
         else:
             st.info(
                 "Report job finished, but **movement type details** are missing "
