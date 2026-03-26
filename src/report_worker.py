@@ -3060,6 +3060,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         report_style = "operation_test"
         job["report_style"] = "operation_test"
 
+    # People Reader always runs movement-type matching; older jobs may omit this field.
+    if report_style == "people_reader" and not str(job.get("movement_type_mode") or "").strip():
+        job["movement_type_mode"] = "auto"
+
     # languages: default TH only for fastest first delivery.
     languages = job.get("languages") or ["th"]
     if isinstance(languages, str):
@@ -3112,7 +3116,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
         engine = str(result.get("analysis_engine") or "unknown")
         logger.info("[analysis] job_id=%s analysis_engine=%s (real=mediapipe, placeholder=fallback)", job_id, engine)
 
-        if report_style == "people_reader" and str(job.get("movement_type_mode") or "").strip():
+        if report_style == "people_reader":
             aud = str(job.get("audience_mode") or "one").strip().lower()
             if aud not in ("one", "many"):
                 aud = "one"

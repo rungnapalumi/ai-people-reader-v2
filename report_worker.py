@@ -1151,6 +1151,13 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if report_format not in ("docx", "pdf"):
         report_format = "docx"
 
+    report_style = str(job.get("report_style") or "full").strip().lower()
+    if report_style.startswith("people_reader") or str(job.get("enterprise_folder") or "").strip().lower() == "people reader":
+        report_style = "people_reader"
+        job["report_style"] = "people_reader"
+        if not str(job.get("movement_type_mode") or "").strip():
+            job["movement_type_mode"] = "auto"
+
     # output prefix
     output_prefix = str(job.get("output_prefix") or f"{OUTPUT_PREFIX}/{job_id}").strip().rstrip("/")
     group_id_for_outputs = str(job.get("group_id") or "").strip()
@@ -1170,7 +1177,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # People Reader: blend movement-type rubric into category scores (uses src/report_core + movement_type_classifier)
         report_style = str(job.get("report_style") or "full").strip().lower()
-        if report_style.startswith("people_reader") and str(job.get("movement_type_mode") or "").strip():
+        if report_style.startswith("people_reader"):
             try:
                 from people_reader_job import apply_movement_type_classification
 

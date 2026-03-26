@@ -5,6 +5,7 @@
 
 import os
 import json
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -600,6 +601,10 @@ def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> D
     return out
 
 
+def is_valid_email_format(value: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(value or "").strip()))
+
+
 def ensure_session_defaults() -> None:
     defaults = {
         "people_reader_last_group_id": "",
@@ -607,6 +612,7 @@ def ensure_session_defaults() -> None:
         "people_reader_last_name": "",
         "people_reader_audience_mode": "one",
         "people_reader_jobs_by_group": {},
+        "people_reader_notify_email": (os.getenv("PEOPLE_READER_DEFAULT_NOTIFY_EMAIL") or "").strip(),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -709,6 +715,13 @@ name_value = st.text_input(
 if name_value:
     st.session_state["people_reader_last_name"] = name_value
 
+report_notify_email = st.text_input(
+    "Email for report PDFs (Thai & English)",
+    key="people_reader_notify_email",
+    placeholder="you@company.com",
+    help="The report worker sends both PDFs to this address (AWS SES/SMTP). Also check spam.",
+)
+
 audience_mode = st.radio(
     "Audience Type",
     options=["one", "many"],
@@ -757,6 +770,12 @@ if run:
         st.stop()
     if not name_value.strip():
         st.warning("Please enter your name first.")
+        st.stop()
+    if not str(report_notify_email or "").strip():
+        st.warning("Please enter the email address where you want the PDF reports delivered.")
+        st.stop()
+    if not is_valid_email_format(str(report_notify_email)):
+        st.warning("Please enter a valid email address for report delivery.")
         st.stop()
 
     base_user = safe_slug(name_value, fallback="user")
@@ -830,10 +849,7 @@ if run:
             "report_format": "pdf",
             "expect_skeleton": True,
             "expect_dots": True,
-            # Do not wait for skeleton.mp4 before emailing PDFs (see src/report_worker DEFER_REPORT_EMAIL_UNTIL_SKELETON).
-            # Page 8 users still download skeleton from S3; email should arrive when reports are ready.
-            "defer_report_email_until_skeleton": False,
-            "notify_email": "rungnapa@imagematters.at",
+            "notify_email": str(report_notify_email or "").strip(),
             "enterprise_folder": PAGE_TITLE,
             "employee_id": base_user,
             "employee_email": "",
@@ -976,7 +992,10 @@ if current_group_id:
 
     st.markdown("---")
     st.subheader("Available Downloads")
-    st.caption("Reports (TH/EN PDF) are sent to aipeoplereader.com")
+    st.caption(
+        "Reports (TH/EN PDF) are emailed by the **report worker** to the address you entered at upload. "
+        "You can also download PDFs here when they appear."
+    )
 
     render_download_button(
         label="Dots Video",
@@ -1008,6 +1027,10 @@ if current_group_id:
         report_job = None
         mt = None
         st.caption(f"Could not read report job from S3: {e}")
+
+    if report_job and isinstance(report_job.get("notification"), dict):
+        with st.expander("Email delivery status (from finished report job on S3)", expanded=False):
+            st.json(report_job["notification"])
 
     if mt and isinstance(mt, dict):
         levels = mt.get("seven_chosen_template_levels") or []
@@ -1051,10 +1074,21 @@ if current_group_id:
                 "Report job found but category levels are incomplete. Try **Refresh** after the report worker finishes."
             )
     elif report_job:
-        st.info(
-            "Report job finished, but **movement type details** are missing "
-            "(older worker or non–People Reader report). PDF may still list categories from analysis only."
-        )
+        is_people_reader_job = str(report_job.get("report_style") or "").strip().lower().startswith(
+            "people_reader"
+        ) or str(report_job.get("enterprise_folder") or "").strip().lower() == "people reader"
+        if is_people_reader_job:
+            st.info(
+                "Report finished, but **movement type details** are not in this job file "
+                "(processed before the worker stored them, or classification was skipped). "
+                "Redeploy the latest **report worker** and run a **new** analysis to see category levels here; "
+                "the PDF may still show Engaging, Confidence, Authority, and Adaptability."
+            )
+        else:
+            st.info(
+                "Report job finished, but **movement type details** are missing "
+                "(non–People Reader report). PDF may still list categories from analysis only."
+            )
     else:
         st.info(
             "No finished **report** job found for this Group ID yet (or S3 scan limit reached). "
