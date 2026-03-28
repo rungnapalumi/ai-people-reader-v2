@@ -1,5 +1,5 @@
 # report_core.py — shared report logic for report generation
-REPORT_CORE_VERSION = "2026-03-27-people-reader-render-lock"  # render path: PR layout if movement_type_info or required_report_style
+REPORT_CORE_VERSION = "2026-03-28-pr-layout-movement-mode"  # PR layout if movement_type_mode (not only movement_type_info)
 
 import os
 import sys

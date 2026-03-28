@@ -2895,14 +2895,17 @@ def generate_reports_for_lang(
     report_style = str(job.get("report_style") or "").strip().lower()
     enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
     required_rs = str(job.get("required_report_style") or "").strip().lower()
-    if (
-        is_people_reader_style(report_style)
-        or enterprise_folder == "people reader"
+    has_movement_type_mode = bool(str(job.get("movement_type_mode") or "").strip())
+
+    if is_operation_test_style(report_style) or enterprise_folder == "operation_test":
+        report_style = "operation_test"
+    elif (
+        has_movement_type_mode
         or required_rs == "people_reader"
+        or is_people_reader_style(report_style)
+        or enterprise_folder == "people reader"
     ):
         report_style = "people_reader"
-    elif is_operation_test_style(report_style) or enterprise_folder == "operation_test":
-        report_style = "operation_test"
     elif not report_style:
         report_style = "full"
 
@@ -2912,6 +2915,8 @@ def generate_reports_for_lang(
             report_style,
         )
         report_style = "people_reader"
+
+    job["report_style"] = report_style
 
     categories = _build_categories_from_result(result, total=total, report_style=report_style)
     report = ReportData(
@@ -3087,14 +3092,24 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
     report_style = str(job.get("report_style") or "").strip().lower()
     enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
-    if is_people_reader_style(report_style) or enterprise_folder == "people reader":
-        report_style = "people_reader"
-        job["report_style"] = "people_reader"
-    elif is_operation_test_style(report_style) or enterprise_folder == "operation_test":
+    required_rs = str(job.get("required_report_style") or "").strip().lower()
+    has_movement_type_mode = bool(str(job.get("movement_type_mode") or "").strip())
+
+    # Operation Test wins if explicitly set (do not treat as People Reader).
+    if is_operation_test_style(report_style) or enterprise_folder == "operation_test":
         report_style = "operation_test"
         job["report_style"] = "operation_test"
+    elif (
+        has_movement_type_mode
+        or required_rs == "people_reader"
+        or is_people_reader_style(report_style)
+        or enterprise_folder == "people reader"
+    ):
+        # People Reader page always sends movement_type_mode; layout must stay PR even if
+        # movement_type_info is missing (classifier/import failed).
+        report_style = "people_reader"
+        job["report_style"] = "people_reader"
 
-    required_rs = str(job.get("required_report_style") or "").strip().lower()
     if required_rs and report_style != required_rs:
         raise ValueError(
             "[report_worker:step=report_style_lock] "
