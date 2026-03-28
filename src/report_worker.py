@@ -144,6 +144,11 @@ IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
 # Set MAX_EMAIL_RETRY_ATTEMPTS=0 on env to disable suspend-by-attempts.
 MAX_EMAIL_RETRY_ATTEMPTS = int(os.getenv("MAX_EMAIL_RETRY_ATTEMPTS", "10") or "10")
 JOB_MAX_RETRIES = int(os.getenv("JOB_MAX_RETRIES", "3"))
+# When true: only jobs with people_reader_job=true (queued from pages/8_People_Reader.py) are processed.
+# Any other report job is moved to jobs/failed immediately so the queue drains for PR-only testing.
+REPORT_WORKER_PEOPLE_READER_ONLY = str(
+    os.getenv("REPORT_WORKER_PEOPLE_READER_ONLY", "false")
+).strip().lower() in ("1", "true", "yes", "on")
 EMAIL_SUSPEND_PREFIX = str(os.getenv("EMAIL_SUSPEND_PREFIX", "Backup/suspend")).strip().strip("/")
 MAX_EMAIL_PENDING_JOB_AGE_HOURS = int(os.getenv("MAX_EMAIL_PENDING_JOB_AGE_HOURS", "24"))
 PENDING_STALE_HOURS = float(os.getenv("PENDING_STALE_HOURS", "2"))  # Move to failed if input missing for this long
@@ -1216,6 +1221,53 @@ def is_operation_test_style(report_style: str) -> bool:
 
 def is_people_reader_style(report_style: str) -> bool:
     return str(report_style or "").strip().lower().startswith("people_reader")
+
+
+def normalize_report_style_from_job(job: Dict[str, Any]) -> str:
+    """
+    Single source of truth for DOCX/PDF layout (must match between process_report_job and generate_reports_for_lang).
+
+    Priority:
+      1) people_reader_job=True (set only by pages/8_People_Reader.py)
+      2) required_report_style=people_reader
+      3) explicit operation_test
+      4) movement_type_mode / report_style / enterprise_folder → people_reader
+      5) empty → full (legacy training reports)
+    """
+    if job.get("people_reader_job") is True:
+        return "people_reader"
+    req = str(job.get("required_report_style") or "").strip().lower()
+    if req == "people_reader":
+        return "people_reader"
+    if req == "operation_test":
+        return "operation_test"
+
+    report_style = str(job.get("report_style") or "").strip().lower()
+    enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
+    has_movement_type_mode = bool(str(job.get("movement_type_mode") or "").strip())
+
+    if is_operation_test_style(report_style) or enterprise_folder == "operation_test":
+        return "operation_test"
+    if (
+        has_movement_type_mode
+        or is_people_reader_style(report_style)
+        or enterprise_folder == "people reader"
+    ):
+        return "people_reader"
+    if not report_style:
+        return "full"
+    return report_style
+
+
+def finalize_report_style_for_build(job: Dict[str, Any]) -> str:
+    """Single path for DOCX/PDF layout after job fields are set (mirrors process_report_job + generate_reports_for_lang)."""
+    report_style = normalize_report_style_from_job(job)
+    if job.get("movement_type_info") and report_style == "full":
+        logger.warning(
+            "[report] movement_type_info present but report_style resolved to full — forcing people_reader"
+        )
+        report_style = "people_reader"
+    return report_style
 
 
 _REPO_ROOT = os.path.dirname(_worker_dir)
@@ -2890,32 +2942,8 @@ def generate_reports_for_lang(
     logger.info("[first_impression] Eye Contact: %.1f%%, Uprightness: %.1f%%, Stance: %.1f%%", 
                 first_impression.eye_contact_pct, first_impression.upright_pct, first_impression.stance_stability)
 
-    # MUST match process_report_job normalization — never default to "full" for People Reader jobs
-    # (full = old 3-category layout without Adaptability / movement profile).
-    report_style = str(job.get("report_style") or "").strip().lower()
-    enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
-    required_rs = str(job.get("required_report_style") or "").strip().lower()
-    has_movement_type_mode = bool(str(job.get("movement_type_mode") or "").strip())
-
-    if is_operation_test_style(report_style) or enterprise_folder == "operation_test":
-        report_style = "operation_test"
-    elif (
-        has_movement_type_mode
-        or required_rs == "people_reader"
-        or is_people_reader_style(report_style)
-        or enterprise_folder == "people reader"
-    ):
-        report_style = "people_reader"
-    elif not report_style:
-        report_style = "full"
-
-    if report_style != "people_reader" and job.get("movement_type_info"):
-        logger.warning(
-            "[report] job has movement_type_info but report_style=%s — forcing people_reader for layout",
-            report_style,
-        )
-        report_style = "people_reader"
-
+    # MUST match process_report_job — use finalize_report_style_for_build only (no duplicate rules).
+    report_style = finalize_report_style_for_build(job)
     job["report_style"] = report_style
 
     categories = _build_categories_from_result(result, total=total, report_style=report_style)
@@ -2931,6 +2959,7 @@ def generate_reports_for_lang(
         movement_type_info=job.get("movement_type_info"),
     )
     report_format = str(job.get("report_format") or "docx").strip().lower()
+    enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
     # Generate PDF for every report job (DOCX -> PDF via LibreOffice path is supported).
     wants_pdf = True
     logger.info(
@@ -3090,25 +3119,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if not input_key:
         raise ValueError("Job JSON missing 'input_key'")
 
-    report_style = str(job.get("report_style") or "").strip().lower()
-    enterprise_folder = str(job.get("enterprise_folder") or "").strip().lower()
+    report_style = finalize_report_style_for_build(job)
+    job["report_style"] = report_style
     required_rs = str(job.get("required_report_style") or "").strip().lower()
-    has_movement_type_mode = bool(str(job.get("movement_type_mode") or "").strip())
-
-    # Operation Test wins if explicitly set (do not treat as People Reader).
-    if is_operation_test_style(report_style) or enterprise_folder == "operation_test":
-        report_style = "operation_test"
-        job["report_style"] = "operation_test"
-    elif (
-        has_movement_type_mode
-        or required_rs == "people_reader"
-        or is_people_reader_style(report_style)
-        or enterprise_folder == "people reader"
-    ):
-        # People Reader page always sends movement_type_mode; layout must stay PR even if
-        # movement_type_info is missing (classifier/import failed).
-        report_style = "people_reader"
-        job["report_style"] = "people_reader"
 
     if required_rs and report_style != required_rs:
         raise ValueError(
@@ -3650,6 +3663,19 @@ def process_job(job_json_key: str) -> None:
         logger.info("[process_job] Skipping job_id=%s group_id=%s mode=%s (not a report job)", job_id, group_id, mode)
         return  # Leave job in pending for other workers
 
+    # Ops/testing: reject every report path except People Reader (new classifier layout job flag).
+    if REPORT_WORKER_PEOPLE_READER_ONLY and raw_job.get("people_reader_job") is not True:
+        msg = (
+            "Report processing disabled: REPORT_WORKER_PEOPLE_READER_ONLY=1 — "
+            "only jobs with people_reader_job=true (People Reader page) are accepted. "
+            "Unset this env on the report worker to restore Training / Operational Test / other reports."
+        )
+        job = update_status(dict(raw_job), "failed", error=msg)
+        failed_key = f"{FAILED_PREFIX}/{job_id}.json"
+        move_json(job_json_key, failed_key, job)
+        logger.warning("[process_job] job_id=%s group_id=%s rejected people_reader_only: %s", job_id, group_id, msg)
+        return
+
     # Verify input video exists before taking the job (avoids processing when upload not ready)
     input_key = str(raw_job.get("input_key") or "").strip()
     if not input_key:
@@ -3750,6 +3776,11 @@ def main() -> None:
         PENDING_STALE_HOURS,
         PROCESSING_RECOVERY_MAX_ITEMS,
     )
+    if REPORT_WORKER_PEOPLE_READER_ONLY:
+        logger.warning(
+            "REPORT_WORKER_PEOPLE_READER_ONLY=1 — only people_reader_job=true report jobs will run; "
+            "all other report jobs are failed immediately (unset env to restore normal behavior)."
+        )
     logger.info(
         "Loop cfg     : recovery_interval_seconds=%s idle_heartbeat_seconds=%s",
         PROCESSING_RECOVERY_INTERVAL_SECONDS,

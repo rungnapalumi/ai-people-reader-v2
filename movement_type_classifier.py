@@ -31,12 +31,15 @@ class TypeTemplate:
 
 
 # =========================================================
-# 6 movement type templates
+# 10 movement type templates
 # Values are normalized to 0.0 - 1.0
-# Expected ranges calibrated from project reference clips "Type 1.mov" … "Type 6.mov"
+# Types 1–6: expected ranges calibrated from reference clips "Type 1.mov" … "Type 6.mov"
 # (MediaPipe pose + report_core.extract_movement_type_frame_features_from_video, sample_every_n=3, max_frames=300).
-# Note: weight_shift_raw is uniformly low across these six files in the current feature pipeline;
-# discrimination leans on engagement_score, gesture_variation_score, stance_width_score, uprightness.
+# Types 7–10: `people_reader_seven` matches product table `Combination 10 types.png` (repo root / assets);
+#   `expected` ranges calibrated from reference clips `K.Type 7.mov`, `Type 8.mov` … `Type 10.mov`
+#   (same pipeline as types 1–6: MediaPipe + `extract_movement_type_frame_features_from_video`, sample_every_n=3, max_frames=300).
+#   Re-run `scripts/measure_movement_reference_clips.py` after replacing reference files.
+# Note: weight_shift_raw is often low in the pipeline; discrimination leans on engagement, gesture variation, stance, uprightness.
 # People Reader matching/report uses `people_reader_seven` (product rubric); `expected` stays for weighted distance.
 # =========================================================
 
@@ -48,7 +51,8 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         expected={
             "eye_contact": (0.90, 1.00),
             "uprightness": (0.86, 1.00),
-            "stance_width_score": (0.35, 0.55),
+            # Narrow vs type_10 reference (0.374): keep Type 1 self-match at 1.0
+            "stance_width_score": (0.42, 0.48),
             "weight_shift_score": (0.89, 1.00),   # high score = low weight shift (stable)
             "engagement_score": (0.00, 0.17),
             "gesture_variation_score": (0.00, 0.14),
@@ -87,7 +91,8 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         expected={
             "eye_contact": (0.90, 1.00),
             "uprightness": (0.78, 0.90),
-            "stance_width_score": (0.40, 0.54),
+            # Narrow vs type_8 reference (0.448)
+            "stance_width_score": (0.48, 0.54),
             "weight_shift_score": (0.89, 1.00),
             "engagement_score": (0.10, 0.24),
             "gesture_variation_score": (0.01, 0.16),
@@ -126,7 +131,8 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         expected={
             "eye_contact": (0.90, 1.00),
             "uprightness": (0.82, 1.00),
-            "stance_width_score": (0.20, 0.40),
+            # Narrow vs type_7 reference (0.332)
+            "stance_width_score": (0.28, 0.32),
             "weight_shift_score": (0.89, 1.00),
             "engagement_score": (0.00, 0.19),
             "gesture_variation_score": (0.00, 0.16),
@@ -266,6 +272,159 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
             "high",
             "high",
             "high",
+        ),
+    ),
+    "type_7": TypeTemplate(
+        type_id="type_7",
+        name="Type 7 (Anne)",
+        summary="Strong eye contact and upright posture with moderate stance and engagement; high confidence and authority with moderate adaptability.",
+        # expected: calibrated from K.Type 7.mov (see calibration_measured_summaries.json)
+        expected={
+            "eye_contact": (0.90, 1.00),
+            "uprightness": (0.86, 0.98),
+            # Tight vs type_3 (0.303) and type_10 (0.374): measured 0.332
+            "stance_width_score": (0.325, 0.339),
+            "weight_shift_raw": (0.00, 0.11),
+            "engagement_score": (0.00, 0.16),
+            "gesture_variation_score": (0.00, 0.11),
+            "rotation_control_score": (0.90, 1.00),
+        },
+        weights={
+            "eye_contact": 1.2,
+            "uprightness": 1.2,
+            "stance_width_score": 1.2,
+            "weight_shift_raw": 1.0,
+            "engagement_score": 1.1,
+            "gesture_variation_score": 1.0,
+            "rotation_control_score": 1.0,
+        },
+        traits={
+            "confidence": "high",
+            "authority": "high",
+            "adaptability": "moderate",
+        },
+        people_reader_seven=(
+            "high",
+            "moderate",
+            "high",
+            "moderate",
+            "high",
+            "high",
+            "moderate",
+        ),
+    ),
+    "type_8": TypeTemplate(
+        type_id="type_8",
+        name="Type 8 (Panu)",
+        summary="Strong eye contact with moderate stance width and solid posture; mid-range engagement in the reference clip. Product rubric: low confidence, authority, and adaptability.",
+        # expected: calibrated from Type 8.mov
+        expected={
+            "eye_contact": (0.90, 1.00),
+            "uprightness": (0.82, 0.94),
+            "stance_width_score": (0.38, 0.52),
+            "weight_shift_score": (0.89, 1.00),
+            "engagement_score": (0.12, 0.24),
+            "gesture_variation_score": (0.06, 0.14),
+            "rotation_control_score": (0.90, 1.00),
+        },
+        weights={
+            "eye_contact": 1.15,
+            "uprightness": 1.2,
+            "stance_width_score": 1.35,
+            "weight_shift_score": 1.0,
+            "engagement_score": 1.2,
+            "gesture_variation_score": 1.1,
+            "rotation_control_score": 1.0,
+        },
+        traits={
+            "confidence": "low",
+            "authority": "low",
+            "adaptability": "low",
+        },
+        people_reader_seven=(
+            "high",
+            "low",
+            "low",
+            "low",
+            "low",
+            "low",
+            "low",
+        ),
+    ),
+    "type_9": TypeTemplate(
+        type_id="type_9",
+        name="Type 9 (Punlop)",
+        summary="Strong eye contact with moderate stance, posture, and engagement; lower confidence and authority with moderate adaptability.",
+        # expected: calibrated from Type 9.mov
+        expected={
+            "eye_contact": (0.88, 1.00),
+            "uprightness": (0.86, 0.96),
+            "stance_width_score": (0.50, 0.62),
+            "weight_shift_raw": (0.00, 0.11),
+            "engagement_score": (0.07, 0.16),
+            "gesture_variation_score": (0.05, 0.12),
+            "rotation_raw": (0.00, 0.09),
+        },
+        weights={
+            "eye_contact": 1.15,
+            "uprightness": 1.1,
+            "stance_width_score": 1.2,
+            "weight_shift_raw": 1.0,
+            "engagement_score": 1.2,
+            "gesture_variation_score": 1.15,
+            "rotation_raw": 1.0,
+        },
+        traits={
+            "confidence": "low",
+            "authority": "low",
+            "adaptability": "moderate",
+        },
+        people_reader_seven=(
+            "high",
+            "moderate",
+            "moderate",
+            "moderate",
+            "low",
+            "low",
+            "moderate",
+        ),
+    ),
+    "type_10": TypeTemplate(
+        type_id="type_10",
+        name="Type 10 (R.)",
+        summary="Reference clip shows strong eye contact with moderate stance and low gesture energy; product rubric: moderate eye and low movement dimensions elsewhere.",
+        # expected: calibrated from Type 10.mov (weighted match follows measured motion)
+        expected={
+            "eye_contact": (0.90, 1.00),
+            "uprightness": (0.82, 0.96),
+            "stance_width_score": (0.30, 0.44),
+            "weight_shift_score": (0.89, 1.00),
+            "engagement_score": (0.00, 0.13),
+            "gesture_variation_score": (0.00, 0.08),
+            "rotation_control_score": (0.90, 1.00),
+        },
+        weights={
+            "eye_contact": 1.35,
+            "uprightness": 1.2,
+            "stance_width_score": 1.2,
+            "weight_shift_score": 1.0,
+            "engagement_score": 1.1,
+            "gesture_variation_score": 1.0,
+            "rotation_control_score": 1.0,
+        },
+        traits={
+            "confidence": "low",
+            "authority": "low",
+            "adaptability": "low",
+        },
+        people_reader_seven=(
+            "moderate",
+            "low",
+            "low",
+            "low",
+            "low",
+            "low",
+            "low",
         ),
     ),
 }
@@ -708,7 +867,7 @@ def analyze_movement_type(
 
 
 # =========================================================
-# People Reader (page 8): 7-dimension match vs all 6 TYPE_TEMPLATES
+# People Reader (page 8): 7-dimension match vs all TYPE_TEMPLATES
 # Template side: each type’s `people_reader_seven` (product spreadsheet: low / moderate / high per dim).
 # Video side: dims 1–4 = movement tertiles; dims 5–7 = high/low from movement composites (≥0.5 → high).
 # Report category bars use the chosen type’s `people_reader_seven`. Weighted `classify_movement_type` still uses `expected`.

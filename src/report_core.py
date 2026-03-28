@@ -1,5 +1,5 @@
 # report_core.py — shared report logic for report generation
-REPORT_CORE_VERSION = "2026-03-28-pr-layout-movement-mode"  # PR layout if movement_type_mode (not only movement_type_info)
+REPORT_CORE_VERSION = "2026-03-28-calibrated-type-7-10"  # expected ranges from K.Type 7.mov + Type 8–10.mov
 
 import os
 import sys

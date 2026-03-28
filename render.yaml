@@ -64,3 +64,6 @@
     # Email PDFs when ready; do not wait for skeleton (LPA can override in env if needed).
     - key: DEFER_REPORT_EMAIL_UNTIL_SKELETON
       value: "false"
+    # Testing: set to "true" so only People Reader jobs (people_reader_job=true) run; other reports fail fast.
+    # - key: REPORT_WORKER_PEOPLE_READER_ONLY
+    #   value: "true"

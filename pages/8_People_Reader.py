@@ -143,7 +143,24 @@ PEOPLE_READER_MOVEMENT_TYPE_CHOICES: List[tuple] = [
     ("Type 4 (Boon)", "type_4"),
     ("Type 5 (Elisha)", "type_5"),
     ("Type 6 (Alisa)", "type_6"),
+    ("Type 7 (Anne)", "type_7"),
+    ("Type 8 (Panu)", "type_8"),
+    ("Type 9 (Punlop)", "type_9"),
+    ("Type 10 (R.)", "type_10"),
 ]
+
+
+def combination_10_types_image_path() -> str:
+    """Product rubric table (`Combination 10 types.png`); prefer assets copy without spaces."""
+    root = os.path.dirname(os.path.dirname(__file__))
+    for rel in (
+        os.path.join("assets", "combination_10_types.png"),
+        "Combination 10 types.png",
+    ):
+        p = os.path.join(root, rel)
+        if os.path.isfile(p):
+            return p
+    return ""
 
 
 # -------------------------
@@ -757,13 +774,22 @@ audience_mode = st.radio(
     key="people_reader_audience_mode",
 )
 
+_combo_img = combination_10_types_image_path()
+if _combo_img:
+    with st.expander("Movement type reference — 10 types (product table)", expanded=True):
+        st.image(_combo_img, use_container_width=True)
+        st.caption(
+            "Columns: Eye contact · Stance · Uprightness · Engaging · Authority · Confidence · Adaptability "
+            "(low / moderate / high). Types 7–10 use the same rubric; weighted Auto match uses `movement_type_classifier.py`."
+        )
+
 movement_type_mode = st.selectbox(
     "Movement type (report profile)",
     options=[c[1] for c in PEOPLE_READER_MOVEMENT_TYPE_CHOICES],
     format_func=lambda v: next(label for label, key in PEOPLE_READER_MOVEMENT_TYPE_CHOICES if key == v),
     index=0,
     key="people_reader_movement_type_mode",
-    help="Auto: classify the video to the nearest type and blend scores into the report. "
+    help="Auto: classify the video to the nearest of **10** profiles (7-dim match + legacy score) and blend scores into the report. "
     "Or choose a type to align Engaging, Confidence, Authority, Adaptability and first-impression cues to that profile.",
 )
 
@@ -900,6 +926,8 @@ if run:
             "analysis_mode": "real",
             "sample_fps": 3,
             "max_frames": 150,
+            # Worker resolves layout via people_reader_job=True first (never drift to legacy "full").
+            "people_reader_job": True,
             "report_style": "people_reader",
             "required_report_style": "people_reader",
             "report_format": report_fmt,
@@ -1181,7 +1209,7 @@ else:
 
 st.divider()
 st.caption(
-    "Movement type (Auto) ranks the six profiles in **`movement_type_classifier.py`** by **weighted template score** "
+    "Movement type (Auto) ranks **10** profiles in **`movement_type_classifier.py`** by **weighted template score** "
     "(pose features vs each profile’s `expected` ranges), then uses **7-dimension agreement** as a tie-break. "
     "The seven rubric levels (`people_reader_seven`) are eye, stance, upright, engaging, authority, confidence, adaptability; "
     "video side uses pose-summary tertiles (1–4) and composites as high/low (5–7). Report bars follow the chosen profile. "
