@@ -35,6 +35,9 @@
 
 # Report worker: after code changes to src/report_core.py, use "Clear build cache & deploy"
 # in Render Dashboard to ensure new code is used. Check logs for REPORT_CORE_VERSION in report_core.py
+#
+# Prefer **one** running instance (scale = 1): multiple replicas race on jobs/pending/*.json and you will
+# see logs like "pending key gone" while jobs still complete on the instance that claimed first.
 - type: worker
   name: ai-people-reader-v2-report-worker
   runtime: python

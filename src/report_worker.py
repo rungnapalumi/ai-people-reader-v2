@@ -3890,13 +3890,22 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 def process_job(job_json_key: str) -> None:
     try:
         raw_job = s3_get_json(job_json_key)
-    except Exception as e:
-        # Job might have been taken by another worker (race condition)
-        if "NoSuchKey" in str(e) or "does not exist" in str(e):
-            logger.info("[process_job] Job %s already taken by another worker, skipping", job_json_key)
+    except ClientError as e:
+        code = (e.response.get("Error") or {}).get("Code") or ""
+        if code in ("NoSuchKey", "404"):
+            # Another report worker instance claimed first, or pending→processing moved between list and get.
+            logger.info(
+                "[process_job] pending key gone code=%s key=%s (normal with multiple replicas — set report worker to 1 instance if this spams)",
+                code,
+                job_json_key,
+            )
             return
-        else:
-            raise  # Re-raise if it's a different error
+        raise
+    except Exception as e:
+        if "NoSuchKey" in str(e) or "does not exist" in str(e):
+            logger.info("[process_job] pending key missing (race) key=%s err=%s", job_json_key, e)
+            return
+        raise
     
     job_id = raw_job.get("job_id")
     mode = str(raw_job.get("mode") or "").strip().lower()

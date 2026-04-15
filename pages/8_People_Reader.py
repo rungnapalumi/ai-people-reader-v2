@@ -675,12 +675,43 @@ def report_failure_user_hint(report_line: str) -> str:
     return ""
 
 
-def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> Dict[str, str]:
+def _pick_report_status_line(
+    entries: List[Dict[str, Any]],
+    preferred_report_job_id: Optional[str],
+) -> str:
+    """
+    Multiple report JSONs can exist for the same group_id (retries / duplicate enqueue).
+    Prefer the browser's report_job_id; otherwise pick the newest by created_at then job_id.
+    (Old logic: scanning jobs/failed/ first made any old failure mask a newer pending job.)
+    """
+    if not entries:
+        return ""
+    pref = str(preferred_report_job_id or "").strip()
+    if pref:
+        for e in entries:
+            if str(e.get("job_id") or "").strip() == pref:
+                return str(e.get("text") or "")
+    # Newest submission wins when we cannot match session (or session cleared).
+    def _sort_key(e: Dict[str, Any]) -> Tuple[str, str]:
+        return (str(e.get("created_at") or ""), str(e.get("job_id") or ""))
+
+    chosen = max(entries, key=_sort_key)
+    return str(chosen.get("text") or "")
+
+
+def scan_dots_skeleton_job_status(
+    group_id: str,
+    max_per_folder: int = 300,
+    preferred_report_job_id: Optional[str] = None,
+) -> Dict[str, str]:
     """
     Read dots / skeleton / **report** job JSONs from S3 (same YYYYMMDD prefix as group_id).
 
     Video worker handles dots|skeleton; **report worker** (`src/report_worker.py`) handles mode=report.
     Without a Live report worker, report jobs stay in `jobs/pending/` and you will not get PDF or email.
+
+    ``preferred_report_job_id`` should be the report job id from this browser session when available
+    so the status line matches the job the user just queued (not an older failed attempt).
     """
     gid = (group_id or "").strip()
     out: Dict[str, str] = {}
@@ -691,8 +722,9 @@ def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> D
     if not date_prefix:
         return out
 
-    # Higher rank wins (user-facing severity)
+    # Higher rank wins for dots/skeleton (single job per mode expected).
     best: Dict[str, Tuple[int, str]] = {}
+    report_entries: List[Dict[str, Any]] = []
 
     def note(mode: str, rank: int, text: str) -> None:
         cur = best.get(mode)
@@ -733,13 +765,21 @@ def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> D
                         msg = msg[:497] + "..."
                     res_ok = (data.get("result") or {}).get("ok")
                     is_report = mode == "report"
+                    job_id_row = str(data.get("job_id") or "").strip()
+                    created_at_row = str(data.get("created_at") or "").strip()
 
                     if fname == "failed" or st == "failed":
                         if is_report:
-                            note(
-                                mode,
-                                4,
-                                (f"Failed: {msg}" if msg else "Failed — open this job JSON in jobs/failed/ or check report worker logs"),
+                            report_entries.append(
+                                {
+                                    "job_id": job_id_row,
+                                    "created_at": created_at_row,
+                                    "text": (
+                                        f"Failed: {msg}"
+                                        if msg
+                                        else "Failed — open this job JSON in jobs/failed/ or check report worker logs"
+                                    ),
+                                }
                             )
                         else:
                             note(
@@ -748,19 +788,38 @@ def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> D
                                 (f"Failed: {msg}" if msg else "Failed — check video worker logs on the server"),
                             )
                     elif res_ok is False:
-                        note(mode, 4, (f"Failed: {msg}" if msg else "Worker reported result ok=false"))
+                        if is_report:
+                            report_entries.append(
+                                {
+                                    "job_id": job_id_row,
+                                    "created_at": created_at_row,
+                                    "text": (f"Failed: {msg}" if msg else "Worker reported result ok=false"),
+                                }
+                            )
+                        else:
+                            note(mode, 4, (f"Failed: {msg}" if msg else "Worker reported result ok=false"))
                     elif fname == "processing" or st == "processing":
                         if is_report:
-                            note(mode, 3, "Processing on **report worker** (PDF generation — can take several minutes)…")
+                            report_entries.append(
+                                {
+                                    "job_id": job_id_row,
+                                    "created_at": created_at_row,
+                                    "text": "Processing on **report worker** (PDF generation — can take several minutes)…",
+                                }
+                            )
                         else:
                             note(mode, 3, "Processing on video worker…")
                     elif fname == "pending" or st == "pending":
                         if is_report:
-                            note(
-                                mode,
-                                2,
-                                "Queued — waiting for **report worker**. Ensure the **ai-people-reader-v2-report-worker** "
-                                "service is **Live** on Render (separate from the video worker).",
+                            report_entries.append(
+                                {
+                                    "job_id": job_id_row,
+                                    "created_at": created_at_row,
+                                    "text": (
+                                        "Queued — waiting for **report worker**. Ensure the **ai-people-reader-v2-report-worker** "
+                                        "service is **Live** on Render (separate from the video worker)."
+                                    ),
+                                }
                             )
                         else:
                             note(
@@ -770,13 +829,23 @@ def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> D
                             )
                     elif fname == "finished" or st == "finished":
                         if is_report:
-                            note(mode, 1, "Finished — report worker saved outputs; PDF should be on S3 / emailed.")
+                            report_entries.append(
+                                {
+                                    "job_id": job_id_row,
+                                    "created_at": created_at_row,
+                                    "text": "Finished — report worker saved outputs; PDF should be on S3 / emailed.",
+                                }
+                            )
                         else:
                             note(mode, 1, "Worker finished — verifying file on S3…")
                 if scanned > max_per_folder:
                     break
         except Exception:
             pass
+
+    rline = _pick_report_status_line(report_entries, preferred_report_job_id)
+    if rline:
+        out["report"] = rline
 
     for mode, (_, text) in best.items():
         out[mode] = text
@@ -1213,7 +1282,12 @@ if current_group_id:
     overall_pct = int(round((sum(1 for _, ready in status_items if ready) / max(n_items, 1)) * 100))
     st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
 
-    job_hints = scan_dots_skeleton_job_status(current_group_id)
+    _jobs_by_group = st.session_state.get("people_reader_jobs_by_group") or {}
+    _session_report_job_id = str((_jobs_by_group.get(current_group_id) or {}).get("report_job_id") or "").strip() or None
+    job_hints = scan_dots_skeleton_job_status(
+        current_group_id,
+        preferred_report_job_id=_session_report_job_id,
+    )
     if overall_pct < 100:
         st.caption(
             "**Video worker** (`worker.py`) สร้าง dots + skeleton แยกงาน — แต่ละรายการจะขึ้น **Ready** เมื่อไฟล์ขึ้น S3 แล้ว "
@@ -1230,8 +1304,7 @@ if current_group_id:
             st.write(
                 f"**Report (PDF):** {job_hints.get('report', '— no report job JSON found — If you just submitted, wait; otherwise the report job may use a different date prefix or bucket.')}"
             )
-            _m = st.session_state.get("people_reader_jobs_by_group") or {}
-            _rid = (_m.get(current_group_id) or {}).get("report_job_id")
+            _rid = _session_report_job_id
             if _rid:
                 st.caption(
                     f"Report **job_id** (stored when you submitted in this browser): `{_rid}` "
