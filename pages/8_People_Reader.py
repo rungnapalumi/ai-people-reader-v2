@@ -459,6 +459,28 @@ def apply_finished_job_output_keys(group_id: str, outputs: Dict[str, str]) -> No
     _merge_from_job(str(entry.get("skeleton_job_id") or "").strip(), "skeleton_video")
 
 
+def merge_report_en_pdf_from_finished_job(group_id: str, outputs: Dict[str, str]) -> None:
+    """If S3 list did not find report_en.pdf, take EN pdf_key from finished report job (same source as email)."""
+    if str(outputs.get("report_en_pdf") or "").strip():
+        return
+    job = find_finished_report_job_for_group(group_id)
+    if not job:
+        return
+    outs = job.get("outputs")
+    if isinstance(outs, dict):
+        en = (outs.get("reports") or {}).get("EN") or {}
+        if isinstance(en, dict):
+            pdf_key = str(en.get("pdf_key") or "").strip()
+            if pdf_key:
+                outputs["report_en_pdf"] = pdf_key
+                return
+    for k in ("report_en_pdf_key", "report_en_key"):
+        alt = str(job.get(k) or "").strip()
+        if alt.lower().endswith(".pdf"):
+            outputs["report_en_pdf"] = alt
+            return
+
+
 def find_finished_report_job_for_group(group_id: str, max_json: int = 800) -> Optional[Dict[str, Any]]:
     """
     Locate the latest finished `mode=report` job JSON for this group_id under jobs/finished/.
@@ -1023,20 +1045,28 @@ if current_group_id:
     st.info(f"Current Group ID: `{current_group_id}`")
     resolved = resolve_outputs(current_group_id)
     apply_finished_job_output_keys(current_group_id, resolved)
+    merge_report_en_pdf_from_finished_job(current_group_id, resolved)
     dots_key = str(resolved.get("dots_video") or "").strip()
     skel_key = str(resolved.get("skeleton_video") or "").strip()
+    report_en_pdf_key = str(resolved.get("report_en_pdf") or "").strip()
     dots_ready = bool(dots_key) and s3_output_ready(dots_key)
     skeleton_ready = bool(skel_key) and s3_output_ready(skel_key)
+    report_pdf_ready = bool(report_en_pdf_key) and s3_output_ready(report_en_pdf_key)
     if not dots_ready or not skeleton_ready:
         discover_video_outputs_from_finished_jobs(current_group_id, resolved)
         dots_key = str(resolved.get("dots_video") or "").strip()
         skel_key = str(resolved.get("skeleton_video") or "").strip()
         dots_ready = bool(dots_key) and s3_output_ready(dots_key)
         skeleton_ready = bool(skel_key) and s3_output_ready(skel_key)
+    if not report_pdf_ready:
+        merge_report_en_pdf_from_finished_job(current_group_id, resolved)
+        report_en_pdf_key = str(resolved.get("report_en_pdf") or "").strip()
+        report_pdf_ready = bool(report_en_pdf_key) and s3_output_ready(report_en_pdf_key)
 
     status_items = [
         ("Dots Video", dots_ready),
         ("Skeleton Video", skeleton_ready),
+        ("English Report (PDF)", report_pdf_ready),
     ]
 
     overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
@@ -1082,7 +1112,7 @@ if current_group_id:
     st.subheader("Available Downloads")
     st.caption(
         "English People Reader PDF is emailed by the **report worker** to the address you entered. "
-        "You can also download from S3 when the file appears."
+        "When the PDF is uploaded to S3, a download button appears below (same file as in the email)."
     )
 
     render_download_button(
@@ -1101,6 +1131,16 @@ if current_group_id:
         button_key="people_reader_dl_skeleton",
         ready=skeleton_ready,
     )
+    render_download_button(
+        label="English Report (PDF)",
+        key=report_en_pdf_key,
+        filename="People_Reader_report_EN.pdf",
+        mime="application/pdf",
+        button_key="people_reader_dl_report_en_pdf",
+        ready=report_pdf_ready,
+    )
+    if not report_pdf_ready and report_en_pdf_key:
+        st.caption("Report PDF key found but the file is not visible yet — click **Refresh**.")
 
     st.markdown("---")
     st.subheader("Category levels in your report (Low / Moderate / High)")
@@ -1201,7 +1241,7 @@ if current_group_id:
             "When the report worker finishes, click **Refresh** — category levels appear here even if email has not arrived."
         )
 
-    if not any([dots_ready, skeleton_ready]):
+    if not any([dots_ready, skeleton_ready, report_pdf_ready]):
         st.caption("Files are not ready yet. Please wait a few minutes and click Refresh.")
 
 else:
