@@ -591,7 +591,10 @@ def discover_video_outputs_from_finished_jobs(group_id: str, outputs: Dict[str, 
 
 def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> Dict[str, str]:
     """
-    Read dots/skeleton job JSONs from S3 (same YYYYMMDD prefix as group_id) to show queue/processing/failed.
+    Read dots / skeleton / **report** job JSONs from S3 (same YYYYMMDD prefix as group_id).
+
+    Video worker handles dots|skeleton; **report worker** (`src/report_worker.py`) handles mode=report.
+    Without a Live report worker, report jobs stay in `jobs/pending/` and you will not get PDF or email.
     """
     gid = (group_id or "").strip()
     out: Dict[str, str] = {}
@@ -636,28 +639,54 @@ def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> D
                     if gj not in variants:
                         continue
                     mode = str(data.get("mode") or "").strip().lower()
-                    if mode not in ("dots", "skeleton"):
+                    if mode not in ("dots", "skeleton", "report"):
                         continue
                     st = str(data.get("status") or "").strip().lower()
-                    msg = str(data.get("message") or "").strip()
+                    msg = str(data.get("message") or data.get("error") or "").strip()
                     if len(msg) > 500:
                         msg = msg[:497] + "..."
                     res_ok = (data.get("result") or {}).get("ok")
+                    is_report = mode == "report"
 
                     if fname == "failed" or st == "failed":
-                        note(mode, 4, (f"Failed: {msg}" if msg else "Failed — check video worker logs on the server"))
+                        if is_report:
+                            note(
+                                mode,
+                                4,
+                                (f"Failed: {msg}" if msg else "Failed — open this job JSON in jobs/failed/ or check report worker logs"),
+                            )
+                        else:
+                            note(
+                                mode,
+                                4,
+                                (f"Failed: {msg}" if msg else "Failed — check video worker logs on the server"),
+                            )
                     elif res_ok is False:
                         note(mode, 4, (f"Failed: {msg}" if msg else "Worker reported result ok=false"))
                     elif fname == "processing" or st == "processing":
-                        note(mode, 3, "Processing on video worker…")
+                        if is_report:
+                            note(mode, 3, "Processing on **report worker** (PDF generation — can take several minutes)…")
+                        else:
+                            note(mode, 3, "Processing on video worker…")
                     elif fname == "pending" or st == "pending":
-                        note(
-                            mode,
-                            2,
-                            "Queued — waiting for a free worker. If the queue is large this can take many minutes.",
-                        )
+                        if is_report:
+                            note(
+                                mode,
+                                2,
+                                "Queued — waiting for **report worker**. Ensure the **ai-people-reader-v2-report-worker** "
+                                "service is **Live** on Render (separate from the video worker).",
+                            )
+                        else:
+                            note(
+                                mode,
+                                2,
+                                "Queued — waiting for a free worker. If the queue is large this can take many minutes.",
+                            )
                     elif fname == "finished" or st == "finished":
-                        note(mode, 1, "Worker finished — verifying file on S3…")
+                        if is_report:
+                            note(mode, 1, "Finished — report worker saved outputs; PDF should be on S3 / emailed.")
+                        else:
+                            note(mode, 1, "Worker finished — verifying file on S3…")
                 if scanned > max_per_folder:
                     break
         except Exception:
@@ -898,6 +927,7 @@ if run:
 
         job_dots_id = ""
         job_skeleton_id = ""
+        job_report_id = ""
 
         if want_dots:
             job_dots = {
@@ -964,6 +994,7 @@ if run:
             "report_email_send_en_asap": True,
             **org_meta,
         }
+        job_report_id = job_report["job_id"]
 
         try:
             if want_dots:
@@ -985,8 +1016,11 @@ if run:
         st.session_state["people_reader_jobs_by_group"][group_id] = {
             "dots_job_id": job_dots_id,
             "skeleton_job_id": job_skeleton_id,
+            "report_job_id": job_report_id,
         }
         st.success(f"Submission received. Group ID: `{group_id}`")
+        if job_report_id:
+            st.caption(f"Report job queued: `{job_report_id}` (needs **report worker** running on Render).")
         st.info("Please keep this Group ID and use Refresh to check when files are ready.")
 
     st.rerun()
@@ -1073,22 +1107,41 @@ if current_group_id:
     st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
 
     job_hints = scan_dots_skeleton_job_status(current_group_id)
-    if overall_pct < 100:
+    if overall_pct < 100 or not report_pdf_ready:
         st.caption(
-            "Dots and skeleton videos are produced by the **video worker** (`worker.py` on Render or your server), "
-            "not by the report worker. If this stays at 0% for a long time, check that the worker is running and "
-            "that the queue is not overloaded."
+            "**Video worker** (`worker.py`) builds dots + skeleton. **Report worker** (`src/report_worker.py`) builds the "
+            "English PDF and sends email — it is a **separate Render service** and must be **Live**. "
+            "If the report line below says *Queued* forever, the report worker is not running or the queue is huge."
         )
         with st.expander("Job status from S3 (same day as Group ID)", expanded=True):
-            st.write(f"**Dots:** {job_hints.get('dots', '— no matching job JSON found under jobs/pending|processing|finished|failed for this group —')}")
-            st.write(f"**Skeleton:** {job_hints.get('skeleton', '— same —')}")
+            st.write(
+                f"**Dots:** {job_hints.get('dots', '— no matching job JSON found under jobs/pending|processing|finished|failed for this group —')}"
+            )
+            st.write(
+                f"**Skeleton:** {job_hints.get('skeleton', '— same —')}"
+            )
+            st.write(
+                f"**Report (PDF):** {job_hints.get('report', '— no report job JSON found — If you just submitted, wait; otherwise the report job may use a different date prefix or bucket.')}"
+            )
+            _m = st.session_state.get("people_reader_jobs_by_group") or {}
+            _rid = (_m.get(current_group_id) or {}).get("report_job_id")
+            if _rid:
+                st.caption(
+                    f"Report **job_id** (stored when you submitted in this browser): `{_rid}` "
+                    f"→ look on S3 for `jobs/pending/{_rid}.json` (or processing/finished/failed)."
+                )
         if job_hints.get("dots", "").startswith("Failed") or job_hints.get("skeleton", "").startswith("Failed"):
             st.error(
                 "At least one video job failed. Fix the error (often ffmpeg/MediaPipe on the worker), then upload again."
             )
+        if job_hints.get("report", "").startswith("Failed"):
+            st.error(
+                "Report job failed — no PDF and no email. Read the error above, check **jobs/failed/** for this job_id, "
+                "and report worker logs on Render."
+            )
         # Full reruns while waiting break st.file_uploader (HTTP 400 on /_stcore/upload_file) — keep polling opt-in.
         st.checkbox(
-            "Auto-refresh every 15s while waiting for dots/skeleton (turn **off** before uploading videos)",
+            "Auto-refresh every 15s while waiting for dots/skeleton/report (turn **off** before uploading videos)",
             value=False,
             key="people_reader_enable_s3_poll",
         )
