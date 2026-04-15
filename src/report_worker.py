@@ -2203,9 +2203,11 @@ def email_payload_expects_report_en(payload: Dict[str, Any]) -> bool:
 
 
 def enrich_email_payload_from_finished_job(payload: Dict[str, Any]) -> None:
-    """Backfill wants_* / languages from finished job for legacy email_pending JSON (no duplicate spam)."""
-    if "wants_th_report" in payload and "wants_en_report" in payload:
-        return
+    """Backfill from finished report job JSON: notify_email, bundle flag, wants_*, languages.
+
+    Important: must not return early before notify_email — empty notify used to suspend email_pending
+    even when the finished job has the customer email.
+    """
     job_id = str(payload.get("job_id") or "").strip()
     if not job_id:
         return
@@ -2216,6 +2218,18 @@ def enrich_email_payload_from_finished_job(payload: Dict[str, Any]) -> None:
         job = s3_get_json(fk, log_key=False)
     except Exception:
         return
+
+    if not str(payload.get("notify_email") or "").strip():
+        ne = str(job.get("notify_email") or "").strip()
+        if ne:
+            payload["notify_email"] = ne
+
+    if "bundle_completion_email" not in payload and job.get("bundle_completion_email") is not None:
+        payload["bundle_completion_email"] = bool(job.get("bundle_completion_email"))
+
+    if "wants_th_report" in payload and "wants_en_report" in payload:
+        return
+
     raw_languages = job.get("languages") or ["th", "en"]
     if isinstance(raw_languages, str):
         raw_languages = [raw_languages]
@@ -2480,30 +2494,20 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     logger.warning("[email_queue] operation_test has no valid recipients yet; keep pending key=%s", key)
                     continue
             else:
-                if not notify_email:
+                # Use resolved recipients (customer + INTERNAL_ANALYSIS_NOTIFY_EMAILS), not raw notify_email alone.
+                # Old logic suspended when notify_email was empty even though internal CC could still receive mail.
+                recipients_gate = resolve_notification_recipients(notify_email, report_style)
+                if not recipients_gate:
                     update_finished_job_notification(
                         job_id,
                         False,
-                        "skipped_no_notify_email",
+                        "skipped_no_notification_recipients",
                         report_th_sent=report_th_sent,
                         report_en_sent=report_en_sent,
                         skeleton_sent=skeleton_sent,
                         dots_sent=dots_sent,
                     )
-                    suspended_key = move_email_pending_to_suspend(key, payload, reason="missing_notify_email")
-                    logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
-                    continue
-                if not is_valid_email(notify_email):
-                    update_finished_job_notification(
-                        job_id,
-                        False,
-                        "skipped_invalid_notify_email",
-                        report_th_sent=report_th_sent,
-                        report_en_sent=report_en_sent,
-                        skeleton_sent=skeleton_sent,
-                        dots_sent=dots_sent,
-                    )
-                    suspended_key = move_email_pending_to_suspend(key, payload, reason="invalid_notify_email")
+                    suspended_key = move_email_pending_to_suspend(key, payload, reason="no_notification_recipients")
                     logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
                     continue
 

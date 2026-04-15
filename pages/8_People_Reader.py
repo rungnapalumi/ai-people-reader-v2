@@ -520,6 +520,21 @@ def find_finished_report_job_for_group(group_id: str, max_json: int = 800) -> Op
     if not gid or not AWS_BUCKET or AWS_BUCKET == "local":
         return None
     variants = set(get_group_id_variants(gid) or [gid])
+    # Fast path: exact report job id from this browser session (avoids S3 scan cap when queue is busy).
+    try:
+        m = st.session_state.get("people_reader_jobs_by_group") or {}
+        rid = str((m.get(gid) or {}).get("report_job_id") or "").strip()
+        if rid:
+            fk = f"{JOBS_FINISHED_PREFIX}{rid}.json"
+            data = s3_read_json_key(fk)
+            if isinstance(data, dict):
+                gj = str(data.get("group_id") or "").strip()
+                if gj in variants and str(data.get("status") or "").lower() == "finished":
+                    if str(data.get("mode") or "").strip().lower() == "report":
+                        return data
+    except Exception:
+        pass
+
     date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
     scan_prefix = f"{JOBS_FINISHED_PREFIX}{date_prefix}" if date_prefix else JOBS_FINISHED_PREFIX
     matches: List[Dict[str, Any]] = []
