@@ -652,6 +652,29 @@ def discover_video_outputs_from_finished_jobs(group_id: str, outputs: Dict[str, 
         pass
 
 
+def report_failure_user_hint(report_line: str) -> str:
+    """Extra context when report worker failed (MediaPipe / OpenGL / headless)."""
+    low = (report_line or "").lower()
+    if any(
+        x in low
+        for x in (
+            "nsopengl",
+            "kgpuservice",
+            "pixel format",
+            "imagetotensorcalculator",
+            "could not create",
+        )
+    ):
+        return (
+            "**MediaPipe / OpenGL:** ข้อความแบบ `NSOpenGLPixelFormat` หรือ `kGpuService` มักเกิดเมื่อรัน report worker "
+            "บน **Mac แบบไม่มีจอ** หรือ SSH โดยไม่มี GL context — บน **Render** worker ใช้ `xvfb-run` อยู่แล้ว (ดู `render.yaml`) "
+            "จึงไม่ควรเจอบน production ถ้า deploy ถูกต้อง\n\n"
+            "**งานที่ fail แล้ว:** ไฟล์จะอยู่ใน `jobs/failed/` — ระบบไม่ retry อัตโนมัติ ให้กด **Clear and Start New Upload** "
+            "แล้วอัปโหลดชุดใหม่ (ได้ `group_id` ใหม่) หรือแก้ worker แล้วส่งคิวใหม่"
+        )
+    return ""
+
+
 def scan_dots_skeleton_job_status(group_id: str, max_per_folder: int = 300) -> Dict[str, str]:
     """
     Read dots / skeleton / **report** job JSONs from S3 (same YYYYMMDD prefix as group_id).
@@ -1223,6 +1246,9 @@ if current_group_id:
                 "Report job failed — no PDF and no email. Read the error above, check **jobs/failed/** for this job_id, "
                 "and report worker logs on Render."
             )
+            _rh = report_failure_user_hint(job_hints.get("report", ""))
+            if _rh:
+                st.info(_rh)
         # Full reruns while waiting break st.file_uploader (HTTP 400 on /_stcore/upload_file) — keep polling opt-in.
         st.checkbox(
             "Auto-refresh every 15s while waiting for dots/skeleton/report (turn **off** before uploading videos)",

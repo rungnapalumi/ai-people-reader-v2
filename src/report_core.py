@@ -12,11 +12,16 @@ def _configure_mediapipe_headless_env() -> None:
     MediaPipe pose graphs can request GpuService / GL (ImageToTensor). On headless Linux (e.g. Render)
     there is no display unless you use xvfb-run; on macOS SSH/CI you may see NSOpenGLPixelFormat errors.
     Call before importing mediapipe. Override with MEDIAPIPE_USE_GPU=1 on a real desktop with GPU.
+
+    Production (Render): use `xvfb-run -a` in startCommand — see `render.yaml`.
+    Local macOS without a display: install/run `xvfb-run` (e.g. `brew install xvfb`) or run the report
+    worker on Linux/Render instead of raw `python` over SSH.
     """
     if str(os.getenv("MEDIAPIPE_USE_GPU", "")).strip().lower() in ("1", "true", "yes", "on"):
         return
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    os.environ.setdefault("GLOG_minloglevel", "2")
 
 
 _configure_mediapipe_headless_env()
