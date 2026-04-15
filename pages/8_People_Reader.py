@@ -14,6 +14,7 @@ import boto3
 import streamlit as st
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 # -------------------------
 # Page setup
@@ -270,11 +271,28 @@ def s3_put_json(key: str, payload: Dict[str, Any]) -> None:
 
 
 def s3_key_exists(key: str) -> bool:
-    try:
-        s3.head_object(Bucket=AWS_BUCKET, Key=key)
-        return True
-    except Exception:
+    """Same idea as report_worker: some IAM policies allow GetObject but not HeadObject."""
+    k = str(key or "").strip()
+    if not k:
         return False
+    try:
+        s3.head_object(Bucket=AWS_BUCKET, Key=k)
+        return True
+    except ClientError as e:
+        code = (e.response.get("Error") or {}).get("Code") or ""
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        if code in ("403", "AccessDenied"):
+            try:
+                s3.get_object(Bucket=AWS_BUCKET, Key=k, Range="bytes=0-0")
+                return True
+            except ClientError as e2:
+                c2 = (e2.response.get("Error") or {}).get("Code") or ""
+                if c2 in ("404", "NoSuchKey", "NotFound"):
+                    return False
+    except Exception:
+        pass
+    return False
 
 
 def s3_read_json_key(key: str) -> Optional[Dict[str, Any]]:
