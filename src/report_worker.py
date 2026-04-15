@@ -60,6 +60,7 @@ from html import escape
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 # ------------------------------------------------------------
 # IMPORTANT:
@@ -1154,16 +1155,33 @@ def convert_docx_bytes_to_image_pdf_bytes(docx_bytes: bytes, filename_stem: str 
         return result
 
 def s3_key_exists(key: str, retries: int = 3) -> bool:
-    """Check if S3 key exists. Retries on transient errors (eventual consistency, network)."""
-    last_err = None
+    """Check if S3 key exists. Retries on transient errors (eventual consistency, network).
+
+    Some IAM policies allow GetObject but not HeadObject on the same object; try a minimal ranged GET.
+    """
+    k = str(key or "").strip()
+    if not k:
+        return False
     for attempt in range(retries):
         try:
-            s3.head_object(Bucket=AWS_BUCKET, Key=key)
+            s3.head_object(Bucket=AWS_BUCKET, Key=k)
             return True
-        except Exception as e:
-            last_err = e
-            if attempt < retries - 1:
-                time.sleep(0.3 * (attempt + 1))
+        except ClientError as e:
+            code = (e.response.get("Error") or {}).get("Code") or ""
+            if code in ("404", "NoSuchKey", "NotFound"):
+                return False
+            if code in ("403", "AccessDenied"):
+                try:
+                    s3.get_object(Bucket=AWS_BUCKET, Key=k, Range="bytes=0-0")
+                    return True
+                except ClientError as e2:
+                    c2 = (e2.response.get("Error") or {}).get("Code") or ""
+                    if c2 in ("404", "NoSuchKey", "NotFound"):
+                        return False
+        except Exception:
+            pass
+        if attempt < retries - 1:
+            time.sleep(0.3 * (attempt + 1))
     return False
 
 def guess_content_type(filename: str) -> str:
@@ -2203,10 +2221,10 @@ def email_payload_expects_report_en(payload: Dict[str, Any]) -> bool:
 
 
 def enrich_email_payload_from_finished_job(payload: Dict[str, Any]) -> None:
-    """Backfill from finished report job JSON: notify_email, bundle flag, wants_*, languages.
+    """Backfill from finished report job JSON: notify_email, bundle flag, report S3 keys from outputs, wants_*, languages.
 
-    Important: must not return early before notify_email — empty notify used to suspend email_pending
-    even when the finished job has the customer email.
+    Must merge job.outputs report keys on every run: email_pending JSON is written when the report
+    finishes (often before dots/skeleton exist); stale report_* keys break readiness checks.
     """
     job_id = str(payload.get("job_id") or "").strip()
     if not job_id:
@@ -2226,6 +2244,42 @@ def enrich_email_payload_from_finished_job(payload: Dict[str, Any]) -> None:
 
     if "bundle_completion_email" not in payload and job.get("bundle_completion_email") is not None:
         payload["bundle_completion_email"] = bool(job.get("bundle_completion_email"))
+
+    gid = str(job.get("group_id") or payload.get("group_id") or "").strip()
+    if gid:
+        payload["group_id"] = gid
+        payload["dots_key"] = f"jobs/output/groups/{gid}/dots.mp4"
+        payload["skeleton_key"] = f"jobs/output/groups/{gid}/skeleton.mp4"
+
+    outs = job.get("outputs")
+    if isinstance(outs, dict):
+        er = (outs.get("reports") or {}).get("EN") or {}
+        if isinstance(er, dict):
+            pdf_k = str(er.get("pdf_key") or "").strip()
+            docx_k = str(er.get("docx_key") or "").strip()
+            if pdf_k:
+                payload["report_en_pdf_key"] = pdf_k
+            if docx_k:
+                payload["report_en_docx_key"] = docx_k
+            primary_en = pdf_k or docx_k
+            if primary_en:
+                payload["report_en_key"] = primary_en
+        tr = (outs.get("reports") or {}).get("TH") or {}
+        if isinstance(tr, dict):
+            pdf_k = str(tr.get("pdf_key") or "").strip()
+            docx_k = str(tr.get("docx_key") or "").strip()
+            if pdf_k:
+                payload["report_th_pdf_key"] = pdf_k
+            if docx_k:
+                payload["report_th_docx_key"] = docx_k
+            primary_th = pdf_k or docx_k
+            if primary_th:
+                payload["report_th_key"] = primary_th
+
+    if job.get("expect_skeleton") is not None:
+        payload["expect_skeleton"] = bool(job.get("expect_skeleton"))
+    if job.get("expect_dots") is not None:
+        payload["expect_dots"] = bool(job.get("expect_dots"))
 
     if "wants_th_report" in payload and "wants_en_report" in payload:
         return
