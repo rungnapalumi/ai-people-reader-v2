@@ -103,17 +103,13 @@ p, label, span, div {
   border: 1px dashed var(--border) !important;
 }
 
-[data-testid="stFileUploader"] section button {
-  font-size: 0 !important;
+[data-testid="stFileUploader"] section button,
+[data-testid="stFileUploader"] section [data-testid="stBaseButton-secondary"] {
   color: #ffffff !important;
   background: #4a4038 !important;
   border: 1px solid var(--border) !important;
-}
-
-[data-testid="stFileUploader"] section button::after {
-  content: "Browse File";
-  font-size: 1.1rem;
-  color: #ffffff !important;
+  font-weight: 600 !important;
+  font-size: 0.95rem !important;
 }
 
 [data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"],

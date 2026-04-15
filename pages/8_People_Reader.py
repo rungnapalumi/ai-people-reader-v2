@@ -55,18 +55,14 @@ p, label, span, div { color: var(--text-main); }
   border: 1px dashed var(--border) !important;
 }
 
-[data-testid="stFileUploader"] section button {
-  font-size: 0 !important;
-  background: #22c55e !important;
-  color: #2563eb !important;
+/* One clear browse control: do not hide native label + ::after (that duplicated "Browse file"). */
+[data-testid="stFileUploader"] section button,
+[data-testid="stFileUploader"] section [data-testid="stBaseButton-secondary"] {
+  background: linear-gradient(180deg, #4ade80, #22c55e) !important;
+  color: #14532d !important;
   border: 0 !important;
   font-weight: 600 !important;
-}
-
-[data-testid="stFileUploader"] section button::after {
-  content: "Browse file";
-  font-size: 1.1rem;
-  color: #2563eb !important;
+  font-size: 0.95rem !important;
 }
 
 .stButton > button,
