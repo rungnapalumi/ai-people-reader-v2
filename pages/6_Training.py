@@ -56,11 +56,23 @@ p, label, span, div { color: var(--text-main); }
 
 [data-testid="stFileUploader"] section button,
 [data-testid="stFileUploader"] section [data-testid="stBaseButton-secondary"] {
-  background: linear-gradient(180deg, #4ade80, #22c55e) !important;
-  color: #14532d !important;
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong)) !important;
+  color: #231d17 !important;
   border: 0 !important;
   font-weight: 600 !important;
   font-size: 0.95rem !important;
+}
+[data-testid="stFileUploader"] section button *,
+[data-testid="stFileUploader"] section [data-testid="stBaseButton-secondary"] *,
+[data-testid="stFileUploader"] section button a,
+[data-testid="stFileUploader"] section [data-testid="stBaseButton-secondary"] a {
+  color: #231d17 !important;
+}
+[data-testid="stFileUploader"] section button svg,
+[data-testid="stFileUploader"] section [data-testid="stBaseButton-secondary"] svg {
+  fill: #231d17 !important;
+  stroke: #231d17 !important;
+  color: #231d17 !important;
 }
 
 .stButton > button,
