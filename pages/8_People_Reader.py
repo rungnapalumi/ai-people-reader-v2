@@ -754,47 +754,35 @@ def render_download_button(
         return
 
     is_video = (mime or "").startswith("video/")
-    if is_video:
-        try:
-            url = presigned_get_url(key, expires=3600, filename=filename)
-            if ready:
-                btn_html = (
-                    '<a href="' + url + '" target="_blank" rel="noopener" '
-                    'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
-                    'color: white !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
-                    "✓ Download " + label + "</a>"
-                )
-                st.markdown(btn_html, unsafe_allow_html=True)
-            else:
-                st.link_button(f"Download {label}", url)
-        except Exception:
-            st.caption(f"Waiting for {label}")
+    try:
+        url = presigned_get_url(key, expires=3600, filename=filename)
+    except Exception:
+        st.caption(f"Waiting for {label}")
         return
 
-    data = s3_get_bytes(key)
-    if data and len(data) < 50 * 1024 * 1024:
-        st.download_button(
-            label=f"✓ Download {label}" if ready else f"Download {label}",
-            data=data,
-            file_name=filename,
-            mime=mime,
-            key=button_key,
+    # When ready: same green pill for video + PDF (avoid st.download_button theme = mismatched brown).
+    if ready:
+        btn_html = (
+            '<a href="' + url + '" target="_blank" rel="noopener" '
+            'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
+            'color: #ffffff !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
+            "✓ Download " + label + "</a>"
         )
-    else:
-        try:
-            url = presigned_get_url(key, expires=3600, filename=filename)
-            if ready:
-                btn_html = (
-                    '<a href="' + url + '" target="_blank" rel="noopener" '
-                    'style="display: inline-block; padding: 0.5rem 1.25rem; background: #22c55e; '
-                    'color: white !important; border-radius: 6px; text-decoration: none; font-weight: 600;">'
-                    "✓ Download " + label + "</a>"
-                )
-                st.markdown(btn_html, unsafe_allow_html=True)
-            else:
-                st.link_button(f"Download {label}", url)
-        except Exception:
-            st.caption(f"Waiting for {label}")
+        st.markdown(btn_html, unsafe_allow_html=True)
+        return
+
+    if not is_video:
+        data = s3_get_bytes(key)
+        if data and len(data) < 50 * 1024 * 1024:
+            st.download_button(
+                label=f"Download {label}",
+                data=data,
+                file_name=filename,
+                mime=mime,
+                key=button_key,
+            )
+            return
+    st.link_button(f"Download {label}", url)
 
 
 # -------------------------
