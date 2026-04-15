@@ -964,6 +964,8 @@ if run:
                 "employee_id": base_user,
                 "employee_email": "",
                 "notify_email": "",
+                # Report worker sends one bundle email (reports + dots + skeleton); skip worker.py per-mode mail.
+                "suppress_completion_email": True,
                 **org_meta,
             }
             job_dots_id = job_dots["job_id"]
