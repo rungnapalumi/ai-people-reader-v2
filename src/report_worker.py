@@ -1712,8 +1712,7 @@ def send_result_email(
     _all_pdf = all(str(k or "").lower().endswith(".pdf") for k in report_pdf_keys.values() if k)
     _any_docx = any(str(k or "").lower().endswith(".docx") for k in report_pdf_keys.values() if k)
     _report_word = "Report PDFs" if _all_pdf and not _any_docx else "Report files (PDF/DOCX)"
-    # Separate subjects per delivery: same group triggers up to 3 emails (reports, skeleton, dots).
-    # One generic "Results Ready" subject looked like duplicate spam in the inbox.
+    # Subjects vary by attachment mix; bundle_completion_email jobs send once with reports + videos.
     if has_report_links and has_video_links:
         subject = f"AI People Reader — {_report_word} + video links ({gid})"
     elif has_report_links:
@@ -2105,6 +2104,7 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
     if output_prefix and wants_en and not en_key:
         ext = "pdf" if report_format == "pdf" else "docx"
         en_key = f"{output_prefix}/Presentation_Analysis_Report_{analysis_date}_EN.{ext}"
+    languages_for_payload = langs if langs else ["th", "en"]
     return {
         "job_id": job_id,
         "group_id": group_id,
@@ -2112,6 +2112,10 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         "notify_email": str(job.get("notify_email") or "").strip(),
         "report_style": report_style,
         "input_video_key": str(job.get("input_key") or "").strip(),
+        # Used for completion: do not treat guessed report_th_key as required when job is EN-only.
+        "wants_th_report": wants_th,
+        "wants_en_report": wants_en,
+        "languages": languages_for_payload,
         "expect_skeleton": expect_skeleton,
         "expect_dots": bool(job.get("expect_dots", True)),
         "dots_key": f"jobs/output/groups/{group_id}/dots.mp4" if group_id else "",
@@ -2137,6 +2141,9 @@ def build_email_payload(job: Dict[str, Any], outputs: Dict[str, Any]) -> Dict[st
         # TTB: after first report email(s), send one follow-up with reports + skeleton together.
         "ttb_phase2_bundle_email": bool(job.get("ttb_phase2_bundle_email")),
         "ttb_bundle_followup_sent": bool(job.get("ttb_bundle_followup_sent") or False),
+        # When True: wait until reports + dots + skeleton (per job flags) are all on S3, then one email only.
+        "bundle_completion_email": bool(job.get("bundle_completion_email")),
+        "bundle_completion_email_sent": bool(job.get("bundle_completion_email_sent")),
     }
 
 def email_payload_all_ready(payload: Dict[str, Any]) -> bool:
@@ -2166,6 +2173,65 @@ def email_payload_report_en_ready(payload: Dict[str, Any]) -> bool:
     k, _ = choose_email_report_attachment(payload, "en")
     return bool(k)
 
+
+def email_payload_expects_report_th(payload: Dict[str, Any]) -> bool:
+    if "wants_th_report" in payload:
+        return bool(payload.get("wants_th_report"))
+    raw = payload.get("languages")
+    if raw is not None:
+        if isinstance(raw, str):
+            raw = [raw]
+        langs = [str(x).strip().lower() for x in raw if str(x).strip()]
+        if not langs:
+            return True
+        return any(l.startswith("th") for l in langs)
+    return bool(str(payload.get("report_th_key") or "").strip())
+
+
+def email_payload_expects_report_en(payload: Dict[str, Any]) -> bool:
+    if "wants_en_report" in payload:
+        return bool(payload.get("wants_en_report"))
+    raw = payload.get("languages")
+    if raw is not None:
+        if isinstance(raw, str):
+            raw = [raw]
+        langs = [str(x).strip().lower() for x in raw if str(x).strip()]
+        if not langs:
+            return True
+        return any(l.startswith("en") for l in langs)
+    return bool(str(payload.get("report_en_key") or "").strip())
+
+
+def enrich_email_payload_from_finished_job(payload: Dict[str, Any]) -> None:
+    """Backfill wants_* / languages from finished job for legacy email_pending JSON (no duplicate spam)."""
+    if "wants_th_report" in payload and "wants_en_report" in payload:
+        return
+    job_id = str(payload.get("job_id") or "").strip()
+    if not job_id:
+        return
+    fk = f"{FINISHED_PREFIX}/{job_id}.json"
+    if not s3_key_exists(fk):
+        return
+    try:
+        job = s3_get_json(fk, log_key=False)
+    except Exception:
+        return
+    raw_languages = job.get("languages") or ["th", "en"]
+    if isinstance(raw_languages, str):
+        raw_languages = [raw_languages]
+    langs = [str(x).strip().lower() for x in raw_languages if str(x).strip()]
+    wants_th = any(l.startswith("th") for l in langs)
+    wants_en = any(l.startswith("en") for l in langs)
+    if not langs:
+        wants_th, wants_en = True, True
+        langs = ["th", "en"]
+    if "wants_th_report" not in payload:
+        payload["wants_th_report"] = wants_th
+    if "wants_en_report" not in payload:
+        payload["wants_en_report"] = wants_en
+    if "languages" not in payload:
+        payload["languages"] = langs
+
 def email_payload_skeleton_ready(payload: Dict[str, Any]) -> bool:
     sk_key = str(payload.get("skeleton_key") or "").strip()
     return bool(sk_key) and s3_key_exists(sk_key)
@@ -2175,6 +2241,64 @@ def email_payload_dots_ready(payload: Dict[str, Any]) -> bool:
     if not bool(payload.get("expect_dots", True)):
         return True
     return bool(dots_key) and s3_key_exists(dots_key)
+
+
+def email_payload_all_outputs_ready_for_bundle(payload: Dict[str, Any]) -> bool:
+    """True when every expected report language + optional dots/skeleton exist on S3 (single completion email)."""
+    if email_payload_expects_report_th(payload) and not email_payload_report_th_ready(payload):
+        return False
+    if email_payload_expects_report_en(payload) and not email_payload_report_en_ready(payload):
+        return False
+    if bool(payload.get("expect_skeleton", False)) and not email_payload_skeleton_ready(payload):
+        return False
+    if bool(payload.get("expect_dots", True)) and not email_payload_dots_ready(payload):
+        return False
+    return True
+
+
+def bundle_email_waiting_parts(payload: Dict[str, Any]) -> List[str]:
+    parts: List[str] = []
+    if email_payload_expects_report_th(payload) and not email_payload_report_th_ready(payload):
+        parts.append("report_th")
+    if email_payload_expects_report_en(payload) and not email_payload_report_en_ready(payload):
+        parts.append("report_en")
+    if bool(payload.get("expect_skeleton", False)) and not email_payload_skeleton_ready(payload):
+        parts.append("skeleton")
+    if bool(payload.get("expect_dots", True)) and not email_payload_dots_ready(payload):
+        parts.append("dots")
+    return parts
+
+
+def build_bundle_result_email_links(payload: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Build video_keys + report_links for one bundled completion email."""
+    report_style = str(payload.get("report_style") or "").strip().lower()
+    is_operation_test = is_operation_test_style(report_style)
+    report_links: Dict[str, str] = {}
+    if email_payload_expects_report_th(payload) and email_payload_report_th_ready(payload):
+        th_att, th_kind = choose_email_report_attachment(payload, "th")
+        if th_kind == "PDF":
+            report_links["Report TH (PDF)"] = th_att
+        elif th_kind == "DOCX":
+            report_links["Report TH (DOCX)"] = th_att
+    if email_payload_expects_report_en(payload) and email_payload_report_en_ready(payload):
+        en_att, en_kind = choose_email_report_attachment(payload, "en")
+        if en_kind == "PDF":
+            report_links["Report EN (PDF)"] = en_att
+        elif en_kind == "DOCX":
+            report_links["Report EN (DOCX)"] = en_att
+    video_keys: Dict[str, str] = {}
+    if is_operation_test and str(payload.get("input_video_key") or "").strip():
+        video_keys["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
+    if bool(payload.get("expect_dots", True)) and email_payload_dots_ready(payload):
+        dk = str(payload.get("dots_key") or "").strip()
+        if dk:
+            video_keys["Dots video (MP4)"] = dk
+    if bool(payload.get("expect_skeleton", False)) and email_payload_skeleton_ready(payload):
+        sk = str(payload.get("skeleton_key") or "").strip()
+        if sk:
+            video_keys["Skeleton video (MP4)"] = sk
+    return video_keys, report_links
+
 
 def queue_email_pending(payload: Dict[str, Any]) -> str:
     job_id = str(payload.get("job_id") or "").strip()
@@ -2251,6 +2375,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             except Exception:
                 continue
 
+            enrich_email_payload_from_finished_job(payload)
+
             job_id = str(payload.get("job_id") or "").strip()
             notify_email = str(payload.get("notify_email") or "").strip()
             report_style = str(payload.get("report_style") or "").strip().lower()
@@ -2261,8 +2387,8 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             dots_sent = bool(payload.get("dots_email_sent"))
             expect_skeleton = bool(payload.get("expect_skeleton", False))
             expect_dots = bool(payload.get("expect_dots", True))
-            expects_report_th = bool(str(payload.get("report_th_key") or "").strip())
-            expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
+            expects_report_th = email_payload_expects_report_th(payload)
+            expect_report_en = email_payload_expects_report_en(payload)
             attempts = int(payload.get("attempts") or 0)
             # Keep early retries responsive; apply backoff only after repeated failures.
             if EMAIL_RETRY_BACKOFF_SECONDS > 0 and attempts >= 2:
@@ -2397,143 +2523,172 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             if is_operation_test and str(payload.get("input_video_key") or "").strip():
                 video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
 
-            # 1) Report email (TH + EN); only set *_email_sent for PDFs actually attached this send
-            # Use choose_email_report_attachment so we never attach EN bytes under the TH label
-            # (e.g. wrong report_th_pdf_key) and we can fall back to jobs/output/groups/.../report_th.pdf.
-            report_links: Dict[str, str] = {}
-            if (not report_th_sent) and email_payload_report_th_ready(payload):
-                th_att, th_kind = choose_email_report_attachment(payload, "th")
-                if th_kind == "PDF":
-                    report_links["Report TH (PDF)"] = th_att
-                elif th_kind == "DOCX":
-                    report_links["Report TH (DOCX)"] = th_att
-            if (not report_en_sent) and email_payload_report_en_ready(payload):
-                en_att, en_kind = choose_email_report_attachment(payload, "en")
-                if en_kind == "PDF":
-                    report_links["Report EN (PDF)"] = en_att
-                elif en_kind == "DOCX":
-                    report_links["Report EN (DOCX)"] = en_att
-
-            skeleton_ready = (not expect_skeleton) or email_payload_skeleton_ready(payload)
-            defer_reports = should_defer_report_email_until_skeleton_ready(
-                expect_skeleton, skeleton_ready, report_links, payload
-            )
-            # Do not send dots/skeleton-only mail while report PDFs are intentionally deferred (avoid "video only" mail).
-            block_video_mails_until_reports = bool(report_links and defer_reports)
-            if report_links and defer_reports:
-                logger.info(
-                    "[email_queue] deferring report email until skeleton.mp4 exists job_id=%s",
-                    job_id,
-                )
-            elif report_links:
-                email_send_attempted = True
-                vk = merged_video_keys_for_report_email(
-                    video_keys_report,
-                    payload,
-                    expect_skeleton,
-                    skeleton_ready,
-                    skeleton_sent,
-                )
-                sent, status = send_result_email(job_info, vk, report_links)
-                statuses.append(f"reports:{status}")
-                if sent:
-                    email_send_any_ok = True
-                    if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
-                        report_th_sent = True
-                        payload["report_th_email_sent"] = True
-                    if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
-                        report_en_sent = True
-                        payload["report_en_email_sent"] = True
-                    if "Skeleton video (MP4)" in vk:
-                        skeleton_sent = True
-                        payload["skeleton_email_sent"] = True
-                    sent_any = True
-
-            # 2) Dots email
-            if (
-                (not dots_sent)
-                and expect_dots
-                and email_payload_dots_ready(payload)
-                and (not block_video_mails_until_reports)
-            ):
-                email_send_attempted = True
-                d_key = str(payload.get("dots_key") or "").strip()
-                sent, status = send_result_email(job_info, {"Dots video (MP4)": d_key}, {})
-                statuses.append(f"dots:{status}")
-                if sent:
-                    email_send_any_ok = True
-                    dots_sent = True
-                    payload["dots_email_sent"] = True
-                    sent_any = True
-
-            # 3) Skeleton email — or TTB phase-2: one bundled mail (reports + skeleton) after phase 1 finished
-            ttb_phase2 = bool(payload.get("ttb_phase2_bundle_email"))
-            reports_fully_sent = True
-            if expects_report_th:
-                reports_fully_sent = reports_fully_sent and report_th_sent
-            if expect_report_en:
-                reports_fully_sent = reports_fully_sent and report_en_sent
-            if (
-                ttb_phase2
-                and reports_fully_sent
-                and (not payload.get("ttb_bundle_followup_sent"))
-                and expect_skeleton
-                and email_payload_skeleton_ready(payload)
-                and (not skeleton_sent)
-            ):
-                email_send_attempted = True
-                sk_key = str(payload.get("skeleton_key") or "").strip()
-                bundle_reports: Dict[str, str] = {}
-                if email_payload_report_th_ready(payload):
+            if bool(payload.get("bundle_completion_email")):
+                bundle_sent = bool(payload.get("bundle_completion_email_sent"))
+                if bundle_sent:
+                    statuses.append("bundle:done")
+                elif email_payload_all_outputs_ready_for_bundle(payload):
+                    vk_bundle, report_links_bundle = build_bundle_result_email_links(payload)
+                    email_send_attempted = True
+                    sent_b, status_b = send_result_email(job_info, vk_bundle, report_links_bundle)
+                    statuses.append(f"bundle:{status_b}")
+                    if sent_b:
+                        email_send_any_ok = True
+                        sent_any = True
+                        if expects_report_th:
+                            report_th_sent = True
+                            payload["report_th_email_sent"] = True
+                        if expect_report_en:
+                            report_en_sent = True
+                            payload["report_en_email_sent"] = True
+                        if expect_skeleton:
+                            skeleton_sent = True
+                            payload["skeleton_email_sent"] = True
+                        if expect_dots:
+                            dots_sent = True
+                            payload["dots_email_sent"] = True
+                        payload["bundle_completion_email_sent"] = True
+                else:
+                    parts = bundle_email_waiting_parts(payload)
+                    statuses.append("waiting_for_" + "_and_".join(parts) if parts else "waiting_bundle")
+            else:
+                # 1) Report email (TH + EN); only set *_email_sent for PDFs actually attached this send
+                # Use choose_email_report_attachment so we never attach EN bytes under the TH label
+                # (e.g. wrong report_th_pdf_key) and we can fall back to jobs/output/groups/.../report_th.pdf.
+                report_links: Dict[str, str] = {}
+                if (not report_th_sent) and email_payload_report_th_ready(payload):
                     th_att, th_kind = choose_email_report_attachment(payload, "th")
                     if th_kind == "PDF":
-                        bundle_reports["Report TH (PDF)"] = th_att
+                        report_links["Report TH (PDF)"] = th_att
                     elif th_kind == "DOCX":
-                        bundle_reports["Report TH (DOCX)"] = th_att
-                if email_payload_report_en_ready(payload):
+                        report_links["Report TH (DOCX)"] = th_att
+                if (not report_en_sent) and email_payload_report_en_ready(payload):
                     en_att, en_kind = choose_email_report_attachment(payload, "en")
                     if en_kind == "PDF":
-                        bundle_reports["Report EN (PDF)"] = en_att
+                        report_links["Report EN (PDF)"] = en_att
                     elif en_kind == "DOCX":
-                        bundle_reports["Report EN (DOCX)"] = en_att
-                vk_bundle = {"Skeleton video (MP4)": sk_key}
-                sent, status = send_result_email(job_info, vk_bundle, bundle_reports)
-                statuses.append(f"ttb_phase2_bundle:{status}")
-                if sent:
-                    email_send_any_ok = True
-                    skeleton_sent = True
-                    payload["skeleton_email_sent"] = True
-                    payload["ttb_bundle_followup_sent"] = True
-                    sent_any = True
-            elif (
-                (not skeleton_sent)
-                and expect_skeleton
-                and email_payload_skeleton_ready(payload)
-                and (not ttb_phase2)
-                and (not block_video_mails_until_reports)
-            ):
-                # TTB two-phase jobs must not send skeleton-only before the bundled follow-up.
-                email_send_attempted = True
-                sk_key = str(payload.get("skeleton_key") or "").strip()
-                sent, status = send_result_email(job_info, {"Skeleton video (MP4)": sk_key}, {})
-                statuses.append(f"skeleton:{status}")
-                if sent:
-                    email_send_any_ok = True
-                    skeleton_sent = True
-                    payload["skeleton_email_sent"] = True
-                    sent_any = True
+                        report_links["Report EN (DOCX)"] = en_att
 
-            if not statuses:
-                waiting = []
-                if expects_report_th and not report_th_sent:
-                    waiting.append("report_th")
-                if expect_report_en and not report_en_sent:
-                    waiting.append("report_en")
-                if expect_skeleton and not skeleton_sent:
-                    waiting.append("skeleton")
-                if expect_dots and not dots_sent:
-                    waiting.append("dots")
-                statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
+                skeleton_ready = (not expect_skeleton) or email_payload_skeleton_ready(payload)
+                defer_reports = should_defer_report_email_until_skeleton_ready(
+                    expect_skeleton, skeleton_ready, report_links, payload
+                )
+                # Do not send dots/skeleton-only mail while report PDFs are intentionally deferred (avoid "video only" mail).
+                block_video_mails_until_reports = bool(report_links and defer_reports)
+                if report_links and defer_reports:
+                    logger.info(
+                        "[email_queue] deferring report email until skeleton.mp4 exists job_id=%s",
+                        job_id,
+                    )
+                elif report_links:
+                    email_send_attempted = True
+                    vk = merged_video_keys_for_report_email(
+                        video_keys_report,
+                        payload,
+                        expect_skeleton,
+                        skeleton_ready,
+                        skeleton_sent,
+                    )
+                    sent, status = send_result_email(job_info, vk, report_links)
+                    statuses.append(f"reports:{status}")
+                    if sent:
+                        email_send_any_ok = True
+                        if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
+                            report_th_sent = True
+                            payload["report_th_email_sent"] = True
+                        if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
+                            report_en_sent = True
+                            payload["report_en_email_sent"] = True
+                        if "Skeleton video (MP4)" in vk:
+                            skeleton_sent = True
+                            payload["skeleton_email_sent"] = True
+                        sent_any = True
+
+                # 2) Dots email
+                if (
+                    (not dots_sent)
+                    and expect_dots
+                    and email_payload_dots_ready(payload)
+                    and (not block_video_mails_until_reports)
+                ):
+                    email_send_attempted = True
+                    d_key = str(payload.get("dots_key") or "").strip()
+                    sent, status = send_result_email(job_info, {"Dots video (MP4)": d_key}, {})
+                    statuses.append(f"dots:{status}")
+                    if sent:
+                        email_send_any_ok = True
+                        dots_sent = True
+                        payload["dots_email_sent"] = True
+                        sent_any = True
+
+                # 3) Skeleton email — or TTB phase-2: one bundled mail (reports + skeleton) after phase 1 finished
+                ttb_phase2 = bool(payload.get("ttb_phase2_bundle_email"))
+                reports_fully_sent = True
+                if expects_report_th:
+                    reports_fully_sent = reports_fully_sent and report_th_sent
+                if expect_report_en:
+                    reports_fully_sent = reports_fully_sent and report_en_sent
+                if (
+                    ttb_phase2
+                    and reports_fully_sent
+                    and (not payload.get("ttb_bundle_followup_sent"))
+                    and expect_skeleton
+                    and email_payload_skeleton_ready(payload)
+                    and (not skeleton_sent)
+                ):
+                    email_send_attempted = True
+                    sk_key = str(payload.get("skeleton_key") or "").strip()
+                    bundle_reports: Dict[str, str] = {}
+                    if email_payload_report_th_ready(payload):
+                        th_att, th_kind = choose_email_report_attachment(payload, "th")
+                        if th_kind == "PDF":
+                            bundle_reports["Report TH (PDF)"] = th_att
+                        elif th_kind == "DOCX":
+                            bundle_reports["Report TH (DOCX)"] = th_att
+                    if email_payload_report_en_ready(payload):
+                        en_att, en_kind = choose_email_report_attachment(payload, "en")
+                        if en_kind == "PDF":
+                            bundle_reports["Report EN (PDF)"] = en_att
+                        elif en_kind == "DOCX":
+                            bundle_reports["Report EN (DOCX)"] = en_att
+                    vk_bundle = {"Skeleton video (MP4)": sk_key}
+                    sent, status = send_result_email(job_info, vk_bundle, bundle_reports)
+                    statuses.append(f"ttb_phase2_bundle:{status}")
+                    if sent:
+                        email_send_any_ok = True
+                        skeleton_sent = True
+                        payload["skeleton_email_sent"] = True
+                        payload["ttb_bundle_followup_sent"] = True
+                        sent_any = True
+                elif (
+                    (not skeleton_sent)
+                    and expect_skeleton
+                    and email_payload_skeleton_ready(payload)
+                    and (not ttb_phase2)
+                    and (not block_video_mails_until_reports)
+                ):
+                    # TTB two-phase jobs must not send skeleton-only before the bundled follow-up.
+                    email_send_attempted = True
+                    sk_key = str(payload.get("skeleton_key") or "").strip()
+                    sent, status = send_result_email(job_info, {"Skeleton video (MP4)": sk_key}, {})
+                    statuses.append(f"skeleton:{status}")
+                    if sent:
+                        email_send_any_ok = True
+                        skeleton_sent = True
+                        payload["skeleton_email_sent"] = True
+                        sent_any = True
+
+                if not statuses:
+                    waiting = []
+                    if expects_report_th and not report_th_sent:
+                        waiting.append("report_th")
+                    if expect_report_en and not report_en_sent:
+                        waiting.append("report_en")
+                    if expect_skeleton and not skeleton_sent:
+                        waiting.append("skeleton")
+                    if expect_dots and not dots_sent:
+                        waiting.append("dots")
+                    statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
 
             # Keep the enterprise handoff folder in sync once all outputs are ready.
             try:
@@ -3352,6 +3507,7 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
             if (
                 ENABLE_EMAIL_NOTIFICATIONS
                 and bool(job.get("report_email_send_en_asap"))
+                and not bool(job.get("bundle_completion_email"))
                 and lang_code == "en"
                 and not bool(job.get("report_en_email_sent"))
             ):
@@ -3450,8 +3606,8 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning("[enterprise_package] initial sync failed for group_id=%s: %s", group_id, e)
 
         # Notification flow:
-        # - send TH report as soon as ready (primary milestone)
-        # - EN report and dots are follow-up deliveries
+        # - Default: separate emails per milestone (reports / dots / skeleton) unless bundle_completion_email.
+        # - bundle_completion_email: one email when reports + dots + skeleton (per job flags) are all on S3.
         recipients: List[str] = []
         if ENABLE_EMAIL_NOTIFICATIONS:
             payload = build_email_payload(job, outputs)
@@ -3467,10 +3623,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 dots_sent = bool(payload.get("dots_email_sent"))
                 expect_skeleton = bool(payload.get("expect_skeleton", False))
                 expect_dots = bool(payload.get("expect_dots", True))
-                expects_report_th = bool(str(payload.get("report_th_key") or "").strip())
-                expect_report_en = bool(str(payload.get("report_en_key") or "").strip())
+                expects_report_th = email_payload_expects_report_th(payload)
+                expect_report_en = email_payload_expects_report_en(payload)
 
-                # ส่งแยกกัน: Report 1 เมล์, Skeleton 1 เมล์, Dots 1 เมล์
                 job_info = {
                     "job_id": payload["job_id"],
                     "group_id": payload.get("group_id", ""),
@@ -3481,89 +3636,121 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 if is_operation_test and str(payload.get("input_video_key") or "").strip():
                     video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
 
-                # 1) Report email (TH + EN in one message when both ready; only mark each language sent if included)
-                th_ready = email_payload_report_th_ready(payload)
-                en_ready = email_payload_report_en_ready(payload)
-                report_links: Dict[str, str] = {}
-                if (not report_th_sent) and th_ready:
-                    th_att, th_kind = choose_email_report_attachment(payload, "th")
-                    if th_kind == "PDF":
-                        report_links["Report TH (PDF)"] = th_att
-                    elif th_kind == "DOCX":
-                        report_links["Report TH (DOCX)"] = th_att
-                if (not report_en_sent) and en_ready:
-                    en_att, en_kind = choose_email_report_attachment(payload, "en")
-                    if en_kind == "PDF":
-                        report_links["Report EN (PDF)"] = en_att
-                    elif en_kind == "DOCX":
-                        report_links["Report EN (DOCX)"] = en_att
+                bundle_email = bool(payload.get("bundle_completion_email"))
+                if bundle_email:
+                    if bool(payload.get("bundle_completion_email_sent")):
+                        statuses.append("bundle:done")
+                    elif email_payload_all_outputs_ready_for_bundle(payload):
+                        vk_bundle, report_links_bundle = build_bundle_result_email_links(payload)
+                        sent, status = send_result_email(job_info, vk_bundle, report_links_bundle)
+                        statuses.append(f"bundle:{status}")
+                        if sent:
+                            if expects_report_th:
+                                report_th_sent = True
+                                payload["report_th_email_sent"] = True
+                                job["report_th_email_sent"] = True
+                            if expect_report_en:
+                                report_en_sent = True
+                                payload["report_en_email_sent"] = True
+                                job["report_en_email_sent"] = True
+                            if expect_skeleton:
+                                skeleton_sent = True
+                                payload["skeleton_email_sent"] = True
+                                job["skeleton_email_sent"] = True
+                            if expect_dots:
+                                dots_sent = True
+                                payload["dots_email_sent"] = True
+                                job["dots_email_sent"] = True
+                            payload["bundle_completion_email_sent"] = True
+                            job["bundle_completion_email_sent"] = True
+                    else:
+                        parts = bundle_email_waiting_parts(payload)
+                        statuses.append("waiting_for_" + "_and_".join(parts) if parts else "waiting_bundle")
 
-                sk_ready_immediate = (not expect_skeleton) or email_payload_skeleton_ready(payload)
-                defer_immediate = should_defer_report_email_until_skeleton_ready(
-                    expect_skeleton, sk_ready_immediate, report_links, payload
-                )
-                block_video_mails_until_reports = bool(report_links and defer_immediate)
-                if report_links and defer_immediate:
-                    logger.info(
-                        "[email] deferring report email until skeleton.mp4 exists job_id=%s",
-                        payload.get("job_id"),
+                else:
+                    # 1) Report email (TH + EN in one message when both ready; only mark each language sent if included)
+                    th_ready = email_payload_report_th_ready(payload)
+                    en_ready = email_payload_report_en_ready(payload)
+                    report_links: Dict[str, str] = {}
+                    if (not report_th_sent) and th_ready:
+                        th_att, th_kind = choose_email_report_attachment(payload, "th")
+                        if th_kind == "PDF":
+                            report_links["Report TH (PDF)"] = th_att
+                        elif th_kind == "DOCX":
+                            report_links["Report TH (DOCX)"] = th_att
+                    if (not report_en_sent) and en_ready:
+                        en_att, en_kind = choose_email_report_attachment(payload, "en")
+                        if en_kind == "PDF":
+                            report_links["Report EN (PDF)"] = en_att
+                        elif en_kind == "DOCX":
+                            report_links["Report EN (DOCX)"] = en_att
+
+                    sk_ready_immediate = (not expect_skeleton) or email_payload_skeleton_ready(payload)
+                    defer_immediate = should_defer_report_email_until_skeleton_ready(
+                        expect_skeleton, sk_ready_immediate, report_links, payload
                     )
-                elif report_links:
-                    vk_immediate = merged_video_keys_for_report_email(
-                        video_keys_report,
-                        payload,
-                        expect_skeleton,
-                        sk_ready_immediate,
-                        skeleton_sent,
-                    )
-                    sent, status = send_result_email(job_info, vk_immediate, report_links)
-                    statuses.append(f"reports:{status}")
-                    if sent:
-                        if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
-                            report_th_sent = True
-                            payload["report_th_email_sent"] = True
-                        if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
-                            report_en_sent = True
-                            payload["report_en_email_sent"] = True
-                        if "Skeleton video (MP4)" in vk_immediate:
+                    block_video_mails_until_reports = bool(report_links and defer_immediate)
+                    if report_links and defer_immediate:
+                        logger.info(
+                            "[email] deferring report email until skeleton.mp4 exists job_id=%s",
+                            payload.get("job_id"),
+                        )
+                    elif report_links:
+                        vk_immediate = merged_video_keys_for_report_email(
+                            video_keys_report,
+                            payload,
+                            expect_skeleton,
+                            sk_ready_immediate,
+                            skeleton_sent,
+                        )
+                        sent, status = send_result_email(job_info, vk_immediate, report_links)
+                        statuses.append(f"reports:{status}")
+                        if sent:
+                            if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
+                                report_th_sent = True
+                                payload["report_th_email_sent"] = True
+                            if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
+                                report_en_sent = True
+                                payload["report_en_email_sent"] = True
+                            if "Skeleton video (MP4)" in vk_immediate:
+                                skeleton_sent = True
+                                payload["skeleton_email_sent"] = True
+
+                    # 2) Skeleton email แยก (only if not bundled with report email above)
+                    if (
+                        (not skeleton_sent)
+                        and expect_skeleton
+                        and email_payload_skeleton_ready(payload)
+                        and (not block_video_mails_until_reports)
+                    ):
+                        sk_key = str(payload.get("skeleton_key") or "").strip()
+                        sent, status = send_result_email(
+                            job_info,
+                            {"Skeleton video (MP4)": sk_key},
+                            {},
+                        )
+                        statuses.append(f"skeleton:{status}")
+                        if sent:
                             skeleton_sent = True
                             payload["skeleton_email_sent"] = True
 
-                # 2) Skeleton email แยก (only if not bundled with report email above)
-                if (
-                    (not skeleton_sent)
-                    and expect_skeleton
-                    and email_payload_skeleton_ready(payload)
-                    and (not block_video_mails_until_reports)
-                ):
-                    sk_key = str(payload.get("skeleton_key") or "").strip()
-                    sent, status = send_result_email(
-                        job_info,
-                        {"Skeleton video (MP4)": sk_key},
-                        {},
-                    )
-                    statuses.append(f"skeleton:{status}")
-                    if sent:
-                        skeleton_sent = True
-                        payload["skeleton_email_sent"] = True
-
-                # 3) Dots email แยก
-                if (
-                    (not dots_sent)
-                    and expect_dots
-                    and email_payload_dots_ready(payload)
-                    and (not block_video_mails_until_reports)
-                ):
-                    d_key = str(payload.get("dots_key") or "").strip()
-                    sent, status = send_result_email(
-                        job_info,
-                        {"Dots video (MP4)": d_key},
-                        {},
-                    )
-                    statuses.append(f"dots:{status}")
-                    if sent:
-                        dots_sent = True
-                        payload["dots_email_sent"] = True
+                    # 3) Dots email แยก
+                    if (
+                        (not dots_sent)
+                        and expect_dots
+                        and email_payload_dots_ready(payload)
+                        and (not block_video_mails_until_reports)
+                    ):
+                        d_key = str(payload.get("dots_key") or "").strip()
+                        sent, status = send_result_email(
+                            job_info,
+                            {"Dots video (MP4)": d_key},
+                            {},
+                        )
+                        statuses.append(f"dots:{status}")
+                        if sent:
+                            dots_sent = True
+                            payload["dots_email_sent"] = True
 
                 report_th_done = report_th_sent or (not expects_report_th)
                 report_en_done = report_en_sent or (not expect_report_en)
@@ -3572,16 +3759,20 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 primary_done = report_th_done and report_en_done and skeleton_done and dots_done
                 if not primary_done:
                     queue_email_pending(payload)
-                    waiting = []
-                    if expects_report_th and not report_th_sent:
-                        waiting.append("report_th")
-                    if expect_report_en and not report_en_sent:
-                        waiting.append("report_en")
-                    if expect_skeleton and not skeleton_sent:
-                        waiting.append("skeleton")
-                    if expect_dots and not dots_sent:
-                        waiting.append("dots")
-                    statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
+                    if not bundle_email:
+                        waiting = []
+                        if expects_report_th and not report_th_sent:
+                            waiting.append("report_th")
+                        if expect_report_en and not report_en_sent:
+                            waiting.append("report_en")
+                        if expect_skeleton and not skeleton_sent:
+                            waiting.append("skeleton")
+                        if expect_dots and not dots_sent:
+                            waiting.append("dots")
+                        statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
+                    elif not statuses:
+                        parts = bundle_email_waiting_parts(payload)
+                        statuses.append("waiting_for_" + "_and_".join(parts) if parts else "waiting_bundle")
 
                 email_sent = bool(primary_done or report_th_sent or report_en_sent or skeleton_sent or dots_sent)
                 email_status = " | ".join(statuses) if statuses else "queued"

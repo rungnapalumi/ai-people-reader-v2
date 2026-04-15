@@ -481,6 +481,28 @@ def merge_report_en_pdf_from_finished_job(group_id: str, outputs: Dict[str, str]
             return
 
 
+def merge_report_th_pdf_from_finished_job(group_id: str, outputs: Dict[str, str]) -> None:
+    """If S3 list did not find report_th.pdf, take TH pdf_key from finished report job."""
+    if str(outputs.get("report_th_pdf") or "").strip():
+        return
+    job = find_finished_report_job_for_group(group_id)
+    if not job:
+        return
+    outs = job.get("outputs")
+    if isinstance(outs, dict):
+        th = (outs.get("reports") or {}).get("TH") or {}
+        if isinstance(th, dict):
+            pdf_key = str(th.get("pdf_key") or "").strip()
+            if pdf_key:
+                outputs["report_th_pdf"] = pdf_key
+                return
+    for k in ("report_th_pdf_key", "report_th_key"):
+        alt = str(job.get(k) or "").strip()
+        if alt.lower().endswith(".pdf"):
+            outputs["report_th_pdf"] = alt
+            return
+
+
 def find_finished_report_job_for_group(group_id: str, max_json: int = 800) -> Optional[Dict[str, Any]]:
     """
     Locate the latest finished `mode=report` job JSON for this group_id under jobs/finished/.
@@ -991,7 +1013,8 @@ if run:
             "employee_email": "",
             "audience_mode": audience_mode,
             "movement_type_mode": movement_type_mode,
-            "report_email_send_en_asap": True,
+            "report_email_send_en_asap": False,
+            "bundle_completion_email": True,
             **org_meta,
         }
         job_report_id = job_report["job_id"]
@@ -1018,6 +1041,9 @@ if run:
             "skeleton_job_id": job_skeleton_id,
             "report_job_id": job_report_id,
         }
+        if "people_reader_langs_by_group" not in st.session_state:
+            st.session_state["people_reader_langs_by_group"] = {}
+        st.session_state["people_reader_langs_by_group"][group_id] = list(langs)
         st.success(f"Submission received. Group ID: `{group_id}`")
         if job_report_id:
             st.caption(f"Report job queued: `{job_report_id}` (needs **report worker** running on Render).")
@@ -1080,38 +1106,65 @@ if current_group_id:
     resolved = resolve_outputs(current_group_id)
     apply_finished_job_output_keys(current_group_id, resolved)
     merge_report_en_pdf_from_finished_job(current_group_id, resolved)
+    merge_report_th_pdf_from_finished_job(current_group_id, resolved)
     dots_key = str(resolved.get("dots_video") or "").strip()
     skel_key = str(resolved.get("skeleton_video") or "").strip()
     report_en_pdf_key = str(resolved.get("report_en_pdf") or "").strip()
+    report_th_pdf_key = str(resolved.get("report_th_pdf") or "").strip()
     dots_ready = bool(dots_key) and s3_output_ready(dots_key)
     skeleton_ready = bool(skel_key) and s3_output_ready(skel_key)
-    report_pdf_ready = bool(report_en_pdf_key) and s3_output_ready(report_en_pdf_key)
+    en_report_ready = bool(report_en_pdf_key) and s3_output_ready(report_en_pdf_key)
+    th_report_ready = bool(report_th_pdf_key) and s3_output_ready(report_th_pdf_key)
     if not dots_ready or not skeleton_ready:
         discover_video_outputs_from_finished_jobs(current_group_id, resolved)
         dots_key = str(resolved.get("dots_video") or "").strip()
         skel_key = str(resolved.get("skeleton_video") or "").strip()
         dots_ready = bool(dots_key) and s3_output_ready(dots_key)
         skeleton_ready = bool(skel_key) and s3_output_ready(skel_key)
-    if not report_pdf_ready:
+    if not en_report_ready or not th_report_ready:
         merge_report_en_pdf_from_finished_job(current_group_id, resolved)
+        merge_report_th_pdf_from_finished_job(current_group_id, resolved)
         report_en_pdf_key = str(resolved.get("report_en_pdf") or "").strip()
-        report_pdf_ready = bool(report_en_pdf_key) and s3_output_ready(report_en_pdf_key)
+        report_th_pdf_key = str(resolved.get("report_th_pdf") or "").strip()
+        en_report_ready = bool(report_en_pdf_key) and s3_output_ready(report_en_pdf_key)
+        th_report_ready = bool(report_th_pdf_key) and s3_output_ready(report_th_pdf_key)
 
-    status_items = [
-        ("Dots Video", dots_ready),
-        ("Skeleton Video", skeleton_ready),
-        ("English Report (PDF)", report_pdf_ready),
-    ]
+    report_job_for_langs = find_finished_report_job_for_group(current_group_id)
+    _langs_sel = (st.session_state.get("people_reader_langs_by_group") or {}).get(current_group_id)
+    if not _langs_sel and report_job_for_langs and report_job_for_langs.get("languages"):
+        _raw = report_job_for_langs["languages"]
+        if isinstance(_raw, str):
+            _raw = [_raw]
+        _langs_sel = [str(x).strip().lower() for x in _raw if str(x).strip()]
+    if not _langs_sel:
+        _langs_sel = ["en"]
+    wants_th = any(x.startswith("th") for x in _langs_sel)
+    wants_en = any(x.startswith("en") for x in _langs_sel)
+    expect_dots = bool(report_job_for_langs.get("expect_dots", True)) if report_job_for_langs else True
+    expect_skeleton = bool(report_job_for_langs.get("expect_skeleton", True)) if report_job_for_langs else True
 
-    overall_pct = int(round((sum(1 for _, ready in status_items if ready) / len(status_items)) * 100))
+    status_items: List[Tuple[str, bool]] = []
+    if expect_dots:
+        status_items.append(("Dots Video", dots_ready))
+    if expect_skeleton:
+        status_items.append(("Skeleton Video", skeleton_ready))
+    if wants_th:
+        status_items.append(("Thai Report (PDF)", th_report_ready))
+    if wants_en:
+        status_items.append(("English Report (PDF)", en_report_ready))
+    if not status_items:
+        status_items = [("Outputs", False)]
+
+    n_items = len(status_items)
+    overall_pct = int(round((sum(1 for _, ready in status_items if ready) / max(n_items, 1)) * 100))
     st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
 
     job_hints = scan_dots_skeleton_job_status(current_group_id)
-    if overall_pct < 100 or not report_pdf_ready:
+    if overall_pct < 100:
         st.caption(
-            "**Video worker** (`worker.py`) builds dots + skeleton. **Report worker** (`src/report_worker.py`) builds the "
-            "English PDF and sends email — it is a **separate Render service** and must be **Live**. "
-            "If the report line below says *Queued* forever, the report worker is not running or the queue is huge."
+            "**Video worker** (`worker.py`) สร้าง dots + skeleton แยกงาน — แต่ละรายการจะขึ้น **Ready** เมื่อไฟล์ขึ้น S3 แล้ว "
+            "**Report worker** (`src/report_worker.py`) สร้างรายงานตามภาษาที่เลือก — เป็น **บริการ Render แยก** ต้อง **Live**. "
+            "เมื่อครบ **100%** ระบบจะส่ง **อีเมลเดียว** (รายงาน + dots + skeleton) ไปที่อีเมลที่กรอกไว้"
         )
         with st.expander("Job status from S3 (same day as Group ID)", expanded=True):
             st.write(
@@ -1159,41 +1212,55 @@ if current_group_id:
             st.caption("Tip: click **Refresh** to poll S3, or enable auto-refresh above (disable it before file upload).")
 
     for label, ready in status_items:
-        st.progress(100 if ready else 0, text=f"{label}: {'Ready' if ready else 'Processing'}")
+        st.progress(100 if ready else 0, text=f"{label}: {'Ready to download' if ready else 'Processing'}")
 
     st.markdown("---")
     st.subheader("Available Downloads")
     st.caption(
-        "English People Reader PDF is emailed by the **report worker** to the address you entered. "
-        "When the PDF is uploaded to S3, a download button appears below (same file as in the email)."
+        "แต่ละไฟล์จะกดดาวน์โหลดได้เมื่อขึ้น **Ready to download** ด้านบน — "
+        "เมื่อครบ **100%** ระบบจะส่ง **อีเมลเดียว** (รายงาน + วิดีโอ) ไปที่อีเมลที่คุณกรอก"
     )
 
-    render_download_button(
-        label="Dots Video",
-        key=resolved.get("dots_video", ""),
-        filename="dots.mp4",
-        mime="video/mp4",
-        button_key="people_reader_dl_dots",
-        ready=dots_ready,
-    )
-    render_download_button(
-        label="Skeleton Video",
-        key=resolved.get("skeleton_video", ""),
-        filename="skeleton.mp4",
-        mime="video/mp4",
-        button_key="people_reader_dl_skeleton",
-        ready=skeleton_ready,
-    )
-    render_download_button(
-        label="English Report (PDF)",
-        key=report_en_pdf_key,
-        filename="People_Reader_report_EN.pdf",
-        mime="application/pdf",
-        button_key="people_reader_dl_report_en_pdf",
-        ready=report_pdf_ready,
-    )
-    if not report_pdf_ready and report_en_pdf_key:
-        st.caption("Report PDF key found but the file is not visible yet — click **Refresh**.")
+    if expect_dots:
+        render_download_button(
+            label="Dots Video",
+            key=resolved.get("dots_video", ""),
+            filename="dots.mp4",
+            mime="video/mp4",
+            button_key="people_reader_dl_dots",
+            ready=dots_ready,
+        )
+    if expect_skeleton:
+        render_download_button(
+            label="Skeleton Video",
+            key=resolved.get("skeleton_video", ""),
+            filename="skeleton.mp4",
+            mime="video/mp4",
+            button_key="people_reader_dl_skeleton",
+            ready=skeleton_ready,
+        )
+    if wants_th:
+        render_download_button(
+            label="Thai Report (PDF)",
+            key=report_th_pdf_key,
+            filename="People_Reader_report_TH.pdf",
+            mime="application/pdf",
+            button_key="people_reader_dl_report_th_pdf",
+            ready=th_report_ready,
+        )
+    if wants_en:
+        render_download_button(
+            label="English Report (PDF)",
+            key=report_en_pdf_key,
+            filename="People_Reader_report_EN.pdf",
+            mime="application/pdf",
+            button_key="people_reader_dl_report_en_pdf",
+            ready=en_report_ready,
+        )
+    if wants_en and (not en_report_ready) and report_en_pdf_key:
+        st.caption("English report key found but the file is not visible yet — click **Refresh**.")
+    if wants_th and (not th_report_ready) and report_th_pdf_key:
+        st.caption("Thai report key found but the file is not visible yet — click **Refresh**.")
 
     st.markdown("---")
     st.subheader("Category levels in your report (Low / Moderate / High)")
