@@ -1361,7 +1361,8 @@ if current_group_id:
             "When the report worker finishes, click **Refresh** — category levels appear here even if email has not arrived."
         )
 
-    if not any([dots_ready, skeleton_ready, report_pdf_ready]):
+    _any_report_ready = (wants_en and en_report_ready) or (wants_th and th_report_ready)
+    if not any([dots_ready, skeleton_ready, _any_report_ready]):
         st.caption("Files are not ready yet. Please wait a few minutes and click Refresh.")
 
 else:
