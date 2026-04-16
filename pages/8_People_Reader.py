@@ -760,9 +760,10 @@ def scan_dots_skeleton_job_status(
                     if mode not in ("dots", "skeleton", "report"):
                         continue
                     st = str(data.get("status") or "").strip().lower()
-                    msg = str(data.get("message") or data.get("error") or "").strip()
-                    if len(msg) > 500:
-                        msg = msg[:497] + "..."
+                    # Prefer "error" (worker exception) over stale "message" from older clients.
+                    msg = str(data.get("error") or data.get("message") or "").strip()
+                    if len(msg) > 2500:
+                        msg = msg[:2497] + "..."
                     res_ok = (data.get("result") or {}).get("ok")
                     is_report = mode == "report"
                     job_id_row = str(data.get("job_id") or "").strip()

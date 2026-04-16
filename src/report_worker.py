@@ -4003,6 +4003,7 @@ def process_job(job_json_key: str, raw_job: Optional[Dict[str, Any]] = None) -> 
         if retry_count < JOB_MAX_RETRIES:
             job["retry_count"] = retry_count + 1
             job["last_error"] = str(exc)
+            job.pop("message", None)
             # Backoff: wait before retry (30s, 60s, 90s) so transient issues can resolve
             backoff_sec = 30 * (retry_count + 1)
             job["retry_after"] = (datetime.now(timezone.utc).timestamp() + backoff_sec)
@@ -4011,6 +4012,8 @@ def process_job(job_json_key: str, raw_job: Optional[Dict[str, Any]] = None) -> 
             move_json(processing_key, pending_key, job)
             logger.info("[process_job] job_id=%s retry %d/%d, moved to pending (retry_after +%ds)", job_id, retry_count + 1, JOB_MAX_RETRIES, backoff_sec)
         else:
+            # Drop stale client "message" so S3 JSON shows the real exception in "error" (UI uses message|error).
+            job.pop("message", None)
             job = update_status(job, "failed", error=str(exc))
             failed_key = f"{FAILED_PREFIX}/{job_id}.json"
             move_json(processing_key, failed_key, job)
