@@ -196,6 +196,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger("report_worker")
 
+# Email queue polls every few seconds; avoid INFO spam while waiting for dots/skeleton on S3.
+BUNDLE_WAIT_LOG_INTERVAL_SEC = float(os.getenv("BUNDLE_WAIT_LOG_INTERVAL_SEC", "90"))
+_bundle_not_ready_last_info_ts: Dict[str, float] = {}
+
+
+def _log_email_queue_bundle_waiting(job_id: str, group_id: str, parts: List[str]) -> None:
+    """Log bundle-wait at INFO at most once per interval per job; DEBUG on other polls."""
+    now = time.time()
+    jid = str(job_id or "").strip() or "unknown"
+    last = _bundle_not_ready_last_info_ts.get(jid, 0.0)
+    if now - last >= BUNDLE_WAIT_LOG_INTERVAL_SEC:
+        _bundle_not_ready_last_info_ts[jid] = now
+        logger.info(
+            "[email_queue] bundle not ready yet job_id=%s group_id=%s waiting=%s",
+            jid,
+            group_id,
+            parts,
+        )
+    else:
+        logger.debug(
+            "[email_queue] bundle not ready yet job_id=%s waiting=%s",
+            jid,
+            parts,
+        )
+
+
 s3 = boto3.client(
     "s3",
     region_name=AWS_REGION,
@@ -2653,8 +2679,7 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     else:
                         parts = bundle_email_waiting_parts(payload)
                         if parts:
-                            logger.info(
-                                "[email_queue] bundle not ready yet job_id=%s group_id=%s waiting=%s",
+                            _log_email_queue_bundle_waiting(
                                 job_id,
                                 str(payload.get("group_id") or "").strip(),
                                 parts,

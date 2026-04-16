@@ -327,7 +327,10 @@ def send_mode_ready_email(job: Dict[str, Any], result: Dict[str, Any]) -> Tuple[
 
 def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
     """
-    List pending keys; dots jobs first, then skeleton/other. Report jobs are skipped (report_worker).
+    List pending keys; dots first, then skeleton, then any other non-report video modes.
+
+    Report jobs are skipped (report_worker). Skeleton is ordered before other video modes so
+    People Reader bundle email is not blocked behind unrelated legacy jobs in the same batch.
 
     Important: S3 lists keys lexicographically. Many mode=report JSONs may appear *before*
     dots/skeleton for the same submission. We must keep reading past those reports until we
@@ -335,6 +338,7 @@ def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
     """
     hard_cap = max(max_scan if max_scan is not None else WORKER_PENDING_MAX_JSON_READS, 1)
     dots_keys: List[str] = []
+    skeleton_keys: List[str] = []
     other_keys: List[str] = []
     total_reads = 0
     report_skips = 0
@@ -355,16 +359,19 @@ def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
                     continue
                 if mode == "dots":
                     dots_keys.append(key)
+                elif mode == "skeleton":
+                    skeleton_keys.append(key)
                 else:
                     other_keys.append(key)
             except Exception:
                 other_keys.append(key)
-            if len(dots_keys) + len(other_keys) >= limit:
-                return (dots_keys + other_keys)[:limit]
+            picked = len(dots_keys) + len(skeleton_keys) + len(other_keys)
+            if picked >= limit:
+                return (dots_keys + skeleton_keys + other_keys)[:limit]
         if total_reads > hard_cap:
             break
 
-    merged = (dots_keys + other_keys)[:limit]
+    merged = (dots_keys + skeleton_keys + other_keys)[:limit]
     if not merged and total_reads >= hard_cap:
         logging.warning(
             "list_pending: read %s pending JSON keys (hard_cap=%s, report_skips=%s), found no dots/skeleton. "
@@ -373,9 +380,10 @@ def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
             hard_cap,
             report_skips,
         )
-    elif not dots_keys and other_keys:
+    elif not dots_keys and (skeleton_keys or other_keys):
         logging.info(
-            "list_pending: no dots in this batch (%s other video keys of %s JSON reads, report_skips=%s)",
+            "list_pending: no dots in this batch (skeleton=%s other=%s of %s JSON reads, report_skips=%s)",
+            len(skeleton_keys),
             len(other_keys),
             total_reads,
             report_skips,
