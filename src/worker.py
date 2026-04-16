@@ -78,9 +78,14 @@ IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
 MAX_VIDEO_JOB_RETRIES = int(os.getenv("MAX_VIDEO_JOB_RETRIES", "2"))
 # S3 lists pending in lexicographic order; many report jobs can fill the first N keys and hide dots/skeleton.
 REPORT_JOB_MODES = frozenset({"report", "report_th_en", "report_generator"})
-# Max *.json keys to *read* under jobs/pending/ per poll while searching for dots/skeleton
-# (report jobs are skipped but still count toward this cap).
-WORKER_PENDING_MAX_SCAN = max(800, int(os.getenv("WORKER_PENDING_MAX_SCAN", "25000") or "25000"))
+# Max *.json keys to *read* under jobs/pending/ per list_pending() call while searching for
+# dots/skeleton. Report jobs are skipped for *selection* but each still requires one S3 read.
+# Older bug: a too-small cap stopped the scan after N reads even when all N were mode=report,
+# so dots/skeleton keys that sorted later were never seen (skeleton "never runs").
+_PENDING_READS_ENV = os.getenv("WORKER_PENDING_MAX_JSON_READS") or os.getenv("WORKER_PENDING_MAX_SCAN") or "200000"
+WORKER_PENDING_MAX_JSON_READS = max(2000, int(_PENDING_READS_ENV or "200000"))
+# Back-compat alias for logs / env docs
+WORKER_PENDING_MAX_SCAN = WORKER_PENDING_MAX_JSON_READS
 
 # Skeleton/dots ready emails: also notify these addresses (not shown in Streamlit). Set to "" to disable.
 _DEFAULT_INTERNAL_ANALYSIS_NOTIFY_EMAILS = "rungnapa@imagematters.at,petchpat@gmail.com"
@@ -261,25 +266,29 @@ def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
     """
     List pending keys; dots jobs first, then skeleton/other. Report jobs are skipped (report_worker).
 
-    Important: S3 lists keys lexicographically. If the first N pending files are all mode=report,
-    we must keep scanning past them until we find dots/skeleton or hit max_scan JSON reads.
-    The old "collect N keys then filter" approach starved video jobs when N was all reports.
+    Important: S3 lists keys lexicographically. Many mode=report JSONs may appear *before*
+    dots/skeleton for the same submission. We must keep reading past those reports until we
+    find video jobs or hit WORKER_PENDING_MAX_JSON_READS (each key still costs one S3 GET).
     """
-    cap = max(max_scan if max_scan is not None else WORKER_PENDING_MAX_SCAN, 1)
+    hard_cap = max(max_scan if max_scan is not None else WORKER_PENDING_MAX_JSON_READS, 1)
     dots_keys: List[str] = []
     other_keys: List[str] = []
-    scanned = 0
+    total_reads = 0
+    report_skips = 0
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PENDING):
         for item in page.get("Contents", []):
             key = str(item.get("Key") or "")
             if not key.endswith(".json"):
                 continue
-            scanned += 1
+            total_reads += 1
+            if total_reads > hard_cap:
+                break
             try:
                 job = s3_read_json(key)
                 mode = str(job.get("mode") or "").strip().lower()
                 if mode in REPORT_JOB_MODES:
+                    report_skips += 1
                     continue
                 if mode == "dots":
                     dots_keys.append(key)
@@ -289,24 +298,24 @@ def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
                 other_keys.append(key)
             if len(dots_keys) + len(other_keys) >= limit:
                 return (dots_keys + other_keys)[:limit]
-            if scanned >= cap:
-                break
-        if scanned >= cap:
+        if total_reads > hard_cap:
             break
 
     merged = (dots_keys + other_keys)[:limit]
-    if not merged and scanned >= cap:
+    if not merged and total_reads >= hard_cap:
         logging.warning(
-            "list_pending: read %s pending JSON keys (cap=%s), found no dots/skeleton. "
-            "Video jobs may sit behind more report jobs — increase WORKER_PENDING_MAX_SCAN.",
-            scanned,
-            cap,
+            "list_pending: read %s pending JSON keys (hard_cap=%s, report_skips=%s), found no dots/skeleton. "
+            "Increase WORKER_PENDING_MAX_JSON_READS (or legacy WORKER_PENDING_MAX_SCAN) if jobs exist deeper in the queue.",
+            total_reads,
+            hard_cap,
+            report_skips,
         )
     elif not dots_keys and other_keys:
         logging.info(
-            "list_pending: no dots in this batch (%s other video keys of %s JSON scanned)",
+            "list_pending: no dots in this batch (%s other video keys of %s JSON reads, report_skips=%s)",
             len(other_keys),
-            scanned,
+            total_reads,
+            report_skips,
         )
     return merged
 
@@ -779,10 +788,14 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
         model_complexity=model_cx,
         enable_segmentation=False,
     ) as pose:
+        frame_n = 0
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
+            frame_n += 1
+            if frame_n % 450 == 0:
+                logging.info("[skeleton] encoding progress frames=%s (model_complexity=%s)", frame_n, model_cx)
 
             fh, fw = frame.shape[:2]
             if fw != w or fh != h:
@@ -1137,7 +1150,10 @@ def main_loop(poll_seconds: int = 3) -> None:
         poll_seconds,
     )
     logging.info("Retry cfg: max_video_job_retries=%s", MAX_VIDEO_JOB_RETRIES)
-    logging.info("Pending scan : WORKER_PENDING_MAX_SCAN=%s (report jobs skipped when picking video work)", WORKER_PENDING_MAX_SCAN)
+    logging.info(
+        "Pending scan: WORKER_PENDING_MAX_JSON_READS=%s (legacy WORKER_PENDING_MAX_SCAN; each pending JSON = one S3 read, reports skipped for selection)",
+        WORKER_PENDING_MAX_JSON_READS,
+    )
     logging.info(
         "Scope: only modes dots|skeleton. mode=report stays in %s for the REPORT worker — both should run in parallel.",
         PENDING,
@@ -1245,6 +1261,7 @@ def main_loop(poll_seconds: int = 3) -> None:
             if not processing_key:
                 continue
 
+            job: Optional[Dict[str, Any]] = None
             try:
                 job = s3_read_json(processing_key)
                 mode = (job.get("mode") or "").strip()
@@ -1289,12 +1306,9 @@ def main_loop(poll_seconds: int = 3) -> None:
                 break
 
             except Exception as e:
-                logging.exception(
-                    "Job failed job_id=%s group_id=%s: %s",
-                    (job.get("job_id") if isinstance(job, dict) else ""),
-                    (job.get("group_id") if isinstance(job, dict) else ""),
-                    e,
-                )
+                _jid = (job.get("job_id") if isinstance(job, dict) else "") or ""
+                _gid = (job.get("group_id") if isinstance(job, dict) else "") or ""
+                logging.exception("Job failed job_id=%s group_id=%s: %s", _jid, _gid, e)
                 try:
                     job = s3_read_json(processing_key)
                     current_mode = str(job.get("mode") or "").strip().lower()
