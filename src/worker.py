@@ -1329,6 +1329,21 @@ def main_loop(poll_seconds: int = 3) -> None:
                 )
                 continue
 
+            if pending_mode == "skeleton" and pending_job.get("require_dots_output") is True:
+                gid = str(pending_job.get("group_id") or "").strip()
+                dots_key = str(pending_job.get("dots_output_wait_key") or "").strip() or (
+                    f"jobs/output/groups/{gid}/dots.mp4" if gid else ""
+                )
+                if dots_key and not s3_head_exists(dots_key):
+                    logging.info(
+                        "[skeleton-defer] dots.mp4 not ready yet — leaving skeleton in pending "
+                        "job_id=%s group_id=%s dots_key=%s",
+                        pending_job.get("job_id"),
+                        gid,
+                        dots_key,
+                    )
+                    continue
+
             processing_key = claim_job(pending_key)
             if not processing_key:
                 continue

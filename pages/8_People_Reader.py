@@ -92,6 +92,30 @@ p, label, span, div { color: var(--text-main); }
   color: var(--text-main) !important;
   border: 1px solid var(--border) !important;
 }
+
+/* File uploader: keep the remove (X) button clickable even when error text overflows */
+[data-testid="stFileUploaderFile"] {
+  position: relative !important;
+  overflow: visible !important;
+}
+[data-testid="stFileUploaderFile"] button[aria-label],
+[data-testid="stFileUploaderFile"] button:last-of-type {
+  z-index: 10 !important;
+  position: relative !important;
+  pointer-events: auto !important;
+  min-width: 24px !important;
+  min-height: 24px !important;
+  flex-shrink: 0 !important;
+}
+[data-testid="stFileUploaderFile"] [data-testid="stFileUploaderFileErrorMessage"],
+[data-testid="stFileUploaderFile"] small,
+[data-testid="stFileUploaderFile"] .uploadedFileName + div {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  max-width: 60% !important;
+  pointer-events: none !important;
+}
 </style>
 """
 
