@@ -61,6 +61,9 @@
   envVars:
     - key: PYTHON_VERSION
       value: 3.11.9
+    # Matplotlib must never pick a GUI backend on headless workers (graphs / PDF pipeline).
+    - key: MPLBACKEND
+      value: Agg
     # Optional: absolute path to directory containing Header.png / Footer.png if not at repo root on disk.
     # - key: AI_PEOPLE_READER_ASSET_DIR
     #   value: /opt/render/project

@@ -1,5 +1,5 @@
 # report_core.py — shared report logic for report generation
-REPORT_CORE_VERSION = "2026-03-28-mp-never-raise"  # Pose failures always fall back — never fail whole report job
+REPORT_CORE_VERSION = "2026-03-28-mp-agg-recover"  # Agg backend + Pose no-seg + report_worker GL recovery
 
 import os
 import sys
@@ -42,6 +42,11 @@ from typing import Dict, Any, Optional, List, Tuple
 
 import cv2
 import numpy as np
+
+# Headless servers: never let Matplotlib pick a GUI backend (can break PDF/graph steps).
+import matplotlib
+
+matplotlib.use(os.environ.get("MPLBACKEND", "Agg"))
 import matplotlib.pyplot as plt
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
@@ -299,7 +304,11 @@ def analyze_first_impression_from_video(
         return deg
 
     try:
-        with Pose(static_image_mode=False, model_complexity=1) as pose:
+        with Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            enable_segmentation=False,
+        ) as pose:
             i = 0
             while True:
                 ret, frame = cap.read()
@@ -511,7 +520,11 @@ def extract_movement_type_frame_features_from_video(
         return math.degrees(math.atan2(rsh[1] - lsh[1], rsh[0] - lsh[0]))
 
     try:
-        with Pose(static_image_mode=False, model_complexity=1) as pose:
+        with Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            enable_segmentation=False,
+        ) as pose:
             i = 0
             while True:
                 ret, frame = cap.read()
@@ -1032,7 +1045,11 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     mc = max(0, min(2, int(kwargs.get("pose_model_complexity") or 1)))
 
     try:
-        with Pose(static_image_mode=False, model_complexity=mc) as pose:
+        with Pose(
+            static_image_mode=False,
+            model_complexity=mc,
+            enable_segmentation=False,
+        ) as pose:
             frame_idx = 0
             while analyzed < max_frames and sampled < max_frames:
                 ret, frame = cap.read()

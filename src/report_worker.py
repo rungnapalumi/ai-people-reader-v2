@@ -4043,6 +4043,30 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 # -----------------------------------------
 # Job processor
 # -----------------------------------------
+def _looks_like_mediapipe_gpu_gl_failure(exc: BaseException) -> bool:
+    """
+    True when the exception text indicates MediaPipe tried to use GPU/OpenGL where none exists
+    (headless Mac/SSH, bad EGL, etc.). Used to retry the whole report once with placeholder analysis
+    so customers still get PDF/email instead of jobs/failed.
+    """
+    s = f"{type(exc).__name__} {exc}".lower()
+    needles = (
+        "nsopengl",
+        "nsopenglpixelformat",
+        "kgpuservice",
+        "gpuservice",
+        "imageotensor",
+        "posedetectioncpu",
+        "cannot create an nsopenglpixelformat",
+        "glx",
+        "libegl",
+        "eglinitialize",
+        "vk_error",
+        "vulkan",
+    )
+    return any(n in s for n in needles)
+
+
 def process_job(job_json_key: str, raw_job: Optional[Dict[str, Any]] = None) -> None:
     """
     Process one pending report job. Pass ``raw_job`` from find_one_pending_report_job() so we do not
@@ -4136,8 +4160,24 @@ def process_job(job_json_key: str, raw_job: Optional[Dict[str, Any]] = None) -> 
     move_json(job_json_key, processing_key, job)
 
     try:
-        # Process report job
-        job = process_report_job(job)
+        try:
+            job = process_report_job(job)
+        except Exception as exc:
+            if _looks_like_mediapipe_gpu_gl_failure(exc):
+                logger.warning(
+                    "[process_job] MediaPipe/GPU/GL environment error — retrying once with placeholder analysis "
+                    "job_id=%s group_id=%s err=%s",
+                    job_id,
+                    group_id,
+                    exc,
+                )
+                job = dict(raw_job)
+                job["analysis_mode"] = "fallback"
+                job["mediapipe_env_recovery"] = str(exc)[:800]
+                job = update_status(job, "processing", error=None)
+                job = process_report_job(job)
+            else:
+                raise
 
         job = update_status(job, "finished", error=None)
         finished_key = f"{FINISHED_PREFIX}/{job_id}.json"
