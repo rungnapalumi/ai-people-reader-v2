@@ -3083,8 +3083,17 @@ def find_one_pending_report_job() -> Optional[Tuple[str, Dict[str, Any]]]:
         try:
             job = s3_get_json(k)
         except Exception as e:
-            # Key may be consumed by another worker between list/get.
-            logger.info("[find_one_pending_report_job] skip key=%s reason=%s", k, e)
+            # Another report-worker replica often claims pending→processing between ListObjects and GetObject.
+            code = ""
+            if isinstance(e, ClientError):
+                code = (e.response.get("Error") or {}).get("Code") or ""
+            if code in ("NoSuchKey", "404", "NotFound") or "NoSuchKey" in str(e):
+                logger.debug(
+                    "[find_one_pending_report_job] race OK — key already moved/claimed key=%s",
+                    k,
+                )
+            else:
+                logger.warning("[find_one_pending_report_job] skip key=%s reason=%s", k, e)
             continue
 
         mode = str(job.get("mode") or "").strip().lower()
@@ -4211,6 +4220,13 @@ def process_job(job_json_key: str, raw_job: Optional[Dict[str, Any]] = None) -> 
 # -----------------------------------------
 def main() -> None:
     logger.info("====== AI People Reader Report Worker (TH/EN) ======")
+    # Proves which OS/display the *report* process actually has (Linux+Render: expect DISPLAY from xvfb-run; GpuService/ImageToTensor fails if missing).
+    logger.info(
+        "[boot] sys.platform=%r DISPLAY=%r MPLBACKEND=%r",
+        sys.platform,
+        os.environ.get("DISPLAY"),
+        os.environ.get("MPLBACKEND"),
+    )
     logger.info("report_core version: %s", getattr(_report_core, "REPORT_CORE_VERSION", "unknown"))
     _g = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("APP_GIT_SHA") or "").strip()
     logger.info("git sha (RENDER_GIT_COMMIT/APP_GIT_SHA): %s", _g[:12] if _g else "(not set — local or missing env)")

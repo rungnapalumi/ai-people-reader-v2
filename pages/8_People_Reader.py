@@ -683,10 +683,16 @@ def report_failure_user_hint(report_line: str) -> str:
         )
     ):
         return (
-            "**MediaPipe / OpenGL:** `NSOpenGLPixelFormat` / `kGpuService` มักเกิดเมื่อรัน worker บน **Mac ไม่มีจอ** หรือ SSH ไม่มี GL — "
-            "บน **Render** ให้ใช้ `xvfb-run` (ดู `render.yaml`) และ deploy **Linux** เท่านั้นสำหรับรายงานจริง\n\n"
-            "โค้ดล่าสุดพยายาม **fallback** ถ้า Pose ล้ม (placeholder analysis) เพื่อไม่ให้ PDF หลุดทั้งก้อน — "
-            "ถ้ายังเห็น fail ให้ดู `jobs/failed/` แล้ว deploy worker เวอร์ชันล่าสุดจาก `main` แล้วลอง **Clear and Start New Upload**"
+            "**สรุปปัญหา (อ่านทีละข้อ)**\n\n"
+            "**1) Error นี้คืออะไร** — ข้อความ `kGpuService` / `NSOpenGLPixelFormat` / `ImageToTensorCalculator` แปลว่า "
+            "**MediaPipe ต้องการกราฟิก (OpenGL)** แต่เครื่องที่รัน **report worker** ไม่มีจอหรือไม่มี GL ให้ใช้ "
+            "(เช่น Mac ไม่มีจอ, SSH ไม่มี session กราฟิก, หรือบน Linux แต่ไม่ได้ห่อด้วย `xvfb-run`)\n\n"
+            "**2) ทำอย่างไรให้ได้ PDF** — บน **Render** ให้รัน **Linux worker** และ `startCommand` ใช้ **`xvfb-run`** ตาม `render.yaml` "
+            "อย่าใช้ macOS เป็นเครื่องประมวลผลรายงานจริง\n\n"
+            "**3) ทำไมยัง Failed ใน UI** — โค้ดบน `main` พยายาม **fallback วิเคราะห์** และ retry ถ้าเป็น error แบบนี้ — "
+            "ถ้ายัง Failed ให้ตรวจว่า **Deploy แล้วใช้ commit ล่าสุด** ดูล็อก `REPORT_CORE_VERSION` และข้อความใน `jobs/failed/<job_id>.json`\n\n"
+            "**4) ล็อก `NoSuchKey` ตอนอ่าน `jobs/pending/`** — มักเป็น **ปกติ** เมื่อมี **report worker หลาย instance** ชนกัน "
+            "(อีกตัวย้ายไฟล์ไป `processing/` ก่อน) — แก้ที่ปลายทาง: **ตั้ง scale report worker = 1** หรือยอมรับ noise ในล็อก"
         )
     return ""
 
