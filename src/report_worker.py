@@ -3494,35 +3494,52 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
     out_dir = tempfile.mkdtemp(prefix=f"report_{job_id}_")
     try:
-        # Analyze once (shared for both languages)
-        result = run_analysis(analysis_video_path, job)
-        engine = str(result.get("analysis_engine") or "unknown")
-        logger.info("[analysis] job_id=%s analysis_engine=%s (real=mediapipe, placeholder=fallback)", job_id, engine)
+        # Analyze once (shared for both languages). Outer recovery: any uncaught error in run_analysis
+        # or People Reader movement matching still produces a PDF (placeholder + no movement block).
+        try:
+            result = run_analysis(analysis_video_path, job)
+            engine = str(result.get("analysis_engine") or "unknown")
+            logger.info("[analysis] job_id=%s analysis_engine=%s (real=mediapipe, placeholder=fallback)", job_id, engine)
 
-        if report_style == "people_reader":
-            aud = str(job.get("audience_mode") or "one").strip().lower()
-            if aud not in ("one", "many"):
-                aud = "one"
-            try:
-                fi_base = analyze_first_impression_from_video(
-                    analysis_video_path, sample_every_n=3, max_frames=100, audience_mode=aud
+            if report_style == "people_reader":
+                aud = str(job.get("audience_mode") or "one").strip().lower()
+                if aud not in ("one", "many"):
+                    aud = "one"
+                try:
+                    fi_base = analyze_first_impression_from_video(
+                        analysis_video_path, sample_every_n=3, max_frames=100, audience_mode=aud
+                    )
+                except Exception as e:
+                    logger.warning("[movement_type] baseline first impression failed: %s", e)
+                    fi_base = FirstImpressionData(
+                        eye_contact_pct=65.0,
+                        upright_pct=65.0,
+                        stance_stability=50.0,
+                    )
+                result, fi_blended, mt_info = apply_movement_type_classification(
+                    analysis_video_path, job, result, fi_base
                 )
-            except Exception as e:
-                logger.warning("[movement_type] baseline first impression failed: %s", e)
-                fi_base = FirstImpressionData(
-                    eye_contact_pct=65.0,
-                    upright_pct=65.0,
-                    stance_stability=50.0,
-                )
-            result, fi_blended, mt_info = apply_movement_type_classification(
-                analysis_video_path, job, result, fi_base
+                if mt_info:
+                    job["movement_type_info"] = mt_info
+                    job["_first_impression_for_report"] = fi_blended
+                else:
+                    job.pop("movement_type_info", None)
+                    job.pop("_first_impression_for_report", None)
+        except Exception as pipeline_exc:
+            logger.exception(
+                "[report] analysis/movement pipeline failed — placeholder recovery job_id=%s group_id=%s",
+                job_id,
+                group_id,
             )
-            if mt_info:
-                job["movement_type_info"] = mt_info
-                job["_first_impression_for_report"] = fi_blended
-            else:
-                job.pop("movement_type_info", None)
-                job.pop("_first_impression_for_report", None)
+            result = analyze_video_placeholder(video_path=analysis_video_path, job_id=job_id)
+            result["analysis_engine"] = "placeholder_pipeline_recovery"
+            result["pipeline_recovery_error"] = str(pipeline_exc)[:2000]
+            job.pop("movement_type_info", None)
+            job.pop("_first_impression_for_report", None)
+            logger.info(
+                "[analysis] job_id=%s analysis_engine=placeholder_pipeline_recovery (after pipeline exception)",
+                job_id,
+            )
 
         outputs: Dict[str, Any] = {"reports": {}, "graphs": {}}
 
