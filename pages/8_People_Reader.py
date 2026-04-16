@@ -1105,6 +1105,9 @@ if run:
                 "employee_email": "",
                 "notify_email": "",
                 "suppress_completion_email": True,
+                # Video worker: when dots is also queued, wait for dots.mp4 on S3 before encoding skeleton
+                # (avoids skeleton finishing first when multiple video-worker replicas run in parallel).
+                "require_dots_output": bool(want_dots),
                 **org_meta,
             }
             job_skeleton_id = job_skeleton["job_id"]
@@ -1288,6 +1291,8 @@ if current_group_id:
         current_group_id,
         preferred_report_job_id=_session_report_job_id,
     )
+    _report_hint_line = str(job_hints.get("report") or "").strip()
+    _report_status_says_finished = _report_hint_line.startswith("Finished")
     if overall_pct < 100:
         st.caption(
             "**Video worker** (`worker.py`) สร้าง dots + skeleton แยกงาน — แต่ละรายการจะขึ้น **Ready** เมื่อไฟล์ขึ้น S3 แล้ว "
@@ -1342,7 +1347,20 @@ if current_group_id:
             st.caption("Tip: click **Refresh** to poll S3, or enable auto-refresh above (disable it before file upload).")
 
     for label, ready in status_items:
-        st.progress(100 if ready else 0, text=f"{label}: {'Ready to download' if ready else 'Processing'}")
+        if ready:
+            bar_pct, bar_txt = 100, f"{label}: Ready to download"
+        elif label == "English Report (PDF)" and wants_en and (not en_report_ready) and _report_status_says_finished and bool(
+            report_en_pdf_key
+        ):
+            # Job JSON can show "Finished" while Streamlit IAM/HEAD has not yet seen the PDF — avoid "Finished" vs Processing clash.
+            bar_pct, bar_txt = 50, f"{label}: Worker finished — verifying PDF on S3…"
+        elif label == "Thai Report (PDF)" and wants_th and (not th_report_ready) and _report_status_says_finished and bool(
+            report_th_pdf_key
+        ):
+            bar_pct, bar_txt = 50, f"{label}: Worker finished — verifying PDF on S3…"
+        else:
+            bar_pct, bar_txt = 0, f"{label}: Processing"
+        st.progress(bar_pct, text=bar_txt)
 
     st.markdown("---")
     st.subheader("Available Downloads")

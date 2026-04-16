@@ -132,6 +132,66 @@ def s3_read_json(key: str) -> Dict[str, Any]:
     return json.loads(raw)
 
 
+def s3_head_exists(key: str) -> bool:
+    """True if object exists (HeadObject). Used to serialize skeleton after dots when multiple video replicas run."""
+    k = str(key or "").strip()
+    if not k:
+        return False
+    try:
+        s3.head_object(Bucket=AWS_BUCKET, Key=k)
+        return True
+    except Exception:
+        return False
+
+
+def wait_for_dots_mp4_before_skeleton(job: Dict[str, Any], group_id: str) -> None:
+    """
+    When Render (or any host) runs **more than one** video-worker replica, pending dots + skeleton
+    jobs can be claimed in parallel — skeleton may finish before dots.mp4 exists. People Reader expects
+    dots before skeleton in UX; bundle email also expects both files. Poll S3 for the canonical dots key.
+    """
+    if str(os.getenv("SKELETON_WAIT_FOR_DOTS", "true")).strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    if bool(job.get("skip_wait_for_dots")):
+        return
+    if job.get("require_dots_output") is False:
+        return
+    # Only People Reader (and explicit callers) set this — legacy skeleton jobs omit it and must not block here.
+    if job.get("require_dots_output") is not True:
+        return
+    gid = str(group_id or "").strip()
+    if not gid:
+        return
+    dots_key = str(job.get("dots_output_wait_key") or "").strip() or f"jobs/output/groups/{gid}/dots.mp4"
+    timeout_s = max(60.0, float(os.getenv("SKELETON_WAIT_FOR_DOTS_TIMEOUT_SEC", "7200") or "7200"))
+    poll_s = max(2.0, float(os.getenv("SKELETON_WAIT_FOR_DOTS_POLL_SEC", "5") or "5"))
+    log_every = max(20.0, float(os.getenv("SKELETON_WAIT_FOR_DOTS_LOG_EVERY_SEC", "60") or "60"))
+    deadline = time.time() + timeout_s
+    last_log = 0.0
+    if s3_head_exists(dots_key):
+        return
+    logging.info(
+        "[skeleton] waiting for dots.mp4 before encoding (multi-replica safe) group_id=%s key=%s",
+        gid,
+        dots_key,
+    )
+    while time.time() < deadline:
+        if s3_head_exists(dots_key):
+            logging.info("[skeleton] dots ready; starting skeleton encode group_id=%s", gid)
+            return
+        now = time.time()
+        if now - last_log >= log_every:
+            logging.info("[skeleton] still waiting for dots.mp4 group_id=%s key=%s", gid, dots_key)
+            last_log = now
+        time.sleep(poll_s)
+    logging.warning(
+        "[skeleton] timed out waiting for dots (%ss) — continuing skeleton encode group_id=%s key=%s",
+        int(timeout_s),
+        gid,
+        dots_key,
+    )
+
+
 def s3_write_json(key: str, payload: Dict[str, Any]) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     s3.put_object(
@@ -1077,6 +1137,7 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
             return {"ok": True, "mode": "dots", "output_key": out_key}
 
         if mode == "skeleton":
+            wait_for_dots_mp4_before_skeleton(job, str(group_id or "").strip())
             out_key = job["output_key"]
             raw_path = os.path.join(td, "skeleton_raw.mp4")
             out_path = os.path.join(td, "skeleton.mp4")

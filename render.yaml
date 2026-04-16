@@ -13,6 +13,8 @@
 # MediaPipe needs a virtual framebuffer on headless Linux: xvfb-run + libgl1 in build/start (below).
 #
 # Dots/Skeleton worker: processes dots and skeleton video jobs from S3 queue
+# Scale this service to **1 instance** if possible; multiple replicas claim dots+skeleton in parallel and
+# skeleton used to finish before dots — mitigated in code by waiting for dots.mp4 (see SKELETON_WAIT_FOR_DOTS).
 - type: worker
   name: ai-people-reader-v2-video-worker
   runtime: python
@@ -32,6 +34,8 @@
   envVars:
     - key: PYTHON_VERSION
       value: 3.11.9
+    - key: SKELETON_WAIT_FOR_DOTS
+      value: "true"
 
 # Report worker: after code changes to src/report_core.py, use "Clear build cache & deploy"
 # in Render Dashboard to ensure new code is used. Check logs for REPORT_CORE_VERSION in report_core.py
