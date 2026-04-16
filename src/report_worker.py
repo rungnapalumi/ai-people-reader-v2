@@ -2281,10 +2281,12 @@ def enrich_email_payload_from_finished_job(payload: Dict[str, Any]) -> None:
     if job.get("expect_dots") is not None:
         payload["expect_dots"] = bool(job.get("expect_dots"))
 
-    if "wants_th_report" in payload and "wants_en_report" in payload:
-        return
-
-    raw_languages = job.get("languages") or ["th", "en"]
+    # Always refresh languages / wants_* from the finished job (authoritative for bundle readiness).
+    # Stale email_pending JSON could imply both TH+EN required; skipping this left EN-only jobs waiting
+    # forever for Thai PDF — bundle email never sent.
+    raw_languages = job.get("languages")
+    if raw_languages is None:
+        raw_languages = ["th", "en"]
     if isinstance(raw_languages, str):
         raw_languages = [raw_languages]
     langs = [str(x).strip().lower() for x in raw_languages if str(x).strip()]
@@ -2293,12 +2295,9 @@ def enrich_email_payload_from_finished_job(payload: Dict[str, Any]) -> None:
     if not langs:
         wants_th, wants_en = True, True
         langs = ["th", "en"]
-    if "wants_th_report" not in payload:
-        payload["wants_th_report"] = wants_th
-    if "wants_en_report" not in payload:
-        payload["wants_en_report"] = wants_en
-    if "languages" not in payload:
-        payload["languages"] = langs
+    payload["wants_th_report"] = wants_th
+    payload["wants_en_report"] = wants_en
+    payload["languages"] = langs
 
 def email_payload_skeleton_ready(payload: Dict[str, Any]) -> bool:
     sk_key = str(payload.get("skeleton_key") or "").strip()
