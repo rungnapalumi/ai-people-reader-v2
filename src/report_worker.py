@@ -2941,8 +2941,16 @@ def count_json_under_prefix(prefix: str) -> int:
     return total
 
 
-def find_one_pending_job_key() -> Optional[str]:
+def find_one_pending_report_job() -> Optional[Tuple[str, Dict[str, Any]]]:
+    """
+    Scan jobs/pending/*.json and pick the highest-priority report job.
+
+    Returns (pending_s3_key, job_dict) so the main loop can call process_job(..., raw_job=dict)
+    without a second GetObject on the same key (avoids NoSuchKey races between pick and process
+    when multiple report worker replicas run).
+    """
     picked_key: Optional[str] = None
+    picked_job: Optional[Dict[str, Any]] = None
     picked_priority = -1
     picked_created_at = ""
 
@@ -2951,7 +2959,7 @@ def find_one_pending_job_key() -> Optional[str]:
             job = s3_get_json(k)
         except Exception as e:
             # Key may be consumed by another worker between list/get.
-            logger.info("[find_one_pending_job_key] skip key=%s reason=%s", k, e)
+            logger.info("[find_one_pending_report_job] skip key=%s reason=%s", k, e)
             continue
 
         mode = str(job.get("mode") or "").strip().lower()
@@ -2972,22 +2980,24 @@ def find_one_pending_job_key() -> Optional[str]:
                 or (priority == picked_priority and created_at > picked_created_at)
             ):
                 picked_key = k
+                picked_job = job
                 picked_priority = priority
                 picked_created_at = created_at
         else:
             logger.debug(
-                "[find_one_pending_job_key] ignore non-report key=%s mode=%s",
+                "[find_one_pending_report_job] ignore non-report key=%s mode=%s",
                 k,
                 mode,
             )
-    if picked_key:
+    if picked_key and isinstance(picked_job, dict):
         logger.info(
-            "[find_one_pending_job_key] picked report key=%s priority=%s created_at=%s",
+            "[find_one_pending_report_job] picked report key=%s priority=%s created_at=%s",
             picked_key,
             picked_priority,
             picked_created_at,
         )
-    return picked_key
+        return picked_key, picked_job
+    return None
 
 
 def move_json(old_key: str, new_key: str, payload: Dict[str, Any]) -> None:
@@ -3887,26 +3897,44 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
 # -----------------------------------------
 # Job processor
 # -----------------------------------------
-def process_job(job_json_key: str) -> None:
-    try:
-        raw_job = s3_get_json(job_json_key)
-    except ClientError as e:
-        code = (e.response.get("Error") or {}).get("Code") or ""
-        if code in ("NoSuchKey", "404"):
-            # Another report worker instance claimed first, or pending→processing moved between list and get.
-            logger.info(
-                "[process_job] pending key gone code=%s key=%s (normal with multiple replicas — set report worker to 1 instance if this spams)",
-                code,
-                job_json_key,
-            )
-            return
-        raise
-    except Exception as e:
-        if "NoSuchKey" in str(e) or "does not exist" in str(e):
-            logger.info("[process_job] pending key missing (race) key=%s err=%s", job_json_key, e)
-            return
-        raise
-    
+def process_job(job_json_key: str, raw_job: Optional[Dict[str, Any]] = None) -> None:
+    """
+    Process one pending report job. Pass ``raw_job`` from find_one_pending_report_job() so we do not
+    issue a second GetObject on the same pending key (reduces NoSuchKey when another replica claims first).
+    """
+    if raw_job is None:
+        try:
+            raw_job = s3_get_json(job_json_key)
+        except ClientError as e:
+            code = (e.response.get("Error") or {}).get("Code") or ""
+            if code in ("NoSuchKey", "404"):
+                logger.info(
+                    "[process_job] pending key gone code=%s key=%s (another replica likely claimed — prefer 1 instance)",
+                    code,
+                    job_json_key,
+                )
+                return
+            raise
+        except Exception as e:
+            if "NoSuchKey" in str(e) or "does not exist" in str(e):
+                logger.info("[process_job] pending key missing (race) key=%s err=%s", job_json_key, e)
+                return
+            raise
+    else:
+        # Prefetched in find_one_pending_report_job — confirm object still at pending path before we claim.
+        try:
+            s3.head_object(Bucket=AWS_BUCKET, Key=job_json_key)
+        except ClientError as e:
+            code = (e.response.get("Error") or {}).get("Code") or ""
+            if code in ("NoSuchKey", "404"):
+                logger.info(
+                    "[process_job] prefetch stale — pending key gone before claim key=%s (another worker took it)",
+                    job_json_key,
+                )
+                return
+            raise
+        logger.info("[process_job] using prefetched pending JSON key=%s (single GetObject path)", job_json_key)
+
     job_id = raw_job.get("job_id")
     mode = str(raw_job.get("mode") or "").strip().lower()
     group_id = str(raw_job.get("group_id") or "").strip()
@@ -4075,9 +4103,10 @@ def main() -> None:
             if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY > 0:
                 run_locked_email_queue(EMAIL_QUEUE_MAX_ITEMS_WHEN_BUSY)
 
-            job_key = find_one_pending_job_key()
-            if job_key:
-                process_job(job_key)
+            found = find_one_pending_report_job()
+            if found:
+                job_key, job_payload = found
+                process_job(job_key, raw_job=job_payload)
                 last_heartbeat_ts = time.time()
                 if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB > 0:
                     run_locked_email_queue(EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB)
