@@ -36,6 +36,8 @@
       value: 3.11.9
     - key: SKELETON_WAIT_FOR_DOTS
       value: "true"
+    - key: PROCESSING_STALE_MINUTES
+      value: "5"
 
 # Report worker: after code changes to src/report_core.py, use "Clear build cache & deploy"
 # in Render Dashboard to ensure new code is used. Check logs for REPORT_CORE_VERSION in report_core.py
