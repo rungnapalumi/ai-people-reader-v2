@@ -1,5 +1,5 @@
 # report_core.py — shared report logic for report generation
-REPORT_CORE_VERSION = "2026-03-28-mp-env-fallback"  # GPU/GL/OpenGL-safe fallbacks for all Pose() paths
+REPORT_CORE_VERSION = "2026-03-28-mp-never-raise"  # Pose failures always fall back — never fail whole report job
 
 import os
 import sys
@@ -77,26 +77,6 @@ def resolve_brand_asset_path(filename: str) -> str:
         except OSError:
             continue
     return ""
-
-
-def _mediapipe_environment_error(exc: BaseException) -> bool:
-    t = str(exc).lower()
-    return any(
-        k in t
-        for k in (
-            "kgpuservice",
-            "nsopengl",
-            "opengl",
-            "pixel format",
-            "imagetotensor",
-            "gpu service",
-            "glfw",
-            "egl",
-            "metal",
-            "cannot create",
-            "calculatorgraph",
-        )
-    )
 
 
 if _project_root not in sys.path:
@@ -368,10 +348,8 @@ def analyze_first_impression_from_video(
                 if len(frame_samples) >= max_frames:
                     break
     except Exception as e:
-        if _mediapipe_environment_error(e):
-            logger.warning("[first_impression] MediaPipe environment error (fallback scores): %s", e)
-            return FirstImpressionData(eye_contact_pct=65.0, upright_pct=65.0, stance_stability=50.0)
-        raise
+        logger.warning("[first_impression] MediaPipe failed (fallback scores): %s", e)
+        return FirstImpressionData(eye_contact_pct=65.0, upright_pct=65.0, stance_stability=50.0)
     finally:
         try:
             cap.release()
@@ -646,10 +624,8 @@ def extract_movement_type_frame_features_from_video(
                 if len(out["eye_contact"]) >= max_frames:
                     break
     except Exception as e:
-        if _mediapipe_environment_error(e):
-            logger.warning("[movement_features] MediaPipe environment error (empty features): %s", e)
-            return out
-        raise
+        logger.warning("[movement_features] MediaPipe failed (empty features): %s", e)
+        return out
     finally:
         try:
             cap.release()
@@ -1232,16 +1208,15 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                 frame_idx += 1
 
     except Exception as _mp_exc:
-        if _mediapipe_environment_error(_mp_exc):
-            logger.warning(
-                "[analysis] MediaPipe Pose failed in this environment (using placeholder scores): %s",
-                _mp_exc,
-            )
-            jid = str(kwargs.get("job_id") or "").strip()
-            ph = analyze_video_placeholder(video_path, job_id=jid)
-            ph["mediapipe_environment_fallback"] = True
-            return ph
-        raise
+        logger.warning(
+            "[analysis] MediaPipe Pose failed (using placeholder scores): %s",
+            _mp_exc,
+        )
+        jid = str(kwargs.get("job_id") or "").strip()
+        ph = analyze_video_placeholder(video_path, job_id=jid)
+        ph["mediapipe_environment_fallback"] = True
+        ph["mediapipe_fallback_reason"] = str(_mp_exc)[:500]
+        return ph
     finally:
         try:
             cap.release()

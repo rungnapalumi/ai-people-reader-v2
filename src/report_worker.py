@@ -2466,51 +2466,101 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             except Exception:
                 continue
 
-            enrich_email_payload_from_finished_job(payload)
+            try:
+                enrich_email_payload_from_finished_job(payload)
 
-            job_id = str(payload.get("job_id") or "").strip()
-            if bool(payload.get("bundle_completion_email")) and bool(payload.get("bundle_completion_email_sent")):
-                try:
-                    s3.delete_object(Bucket=AWS_BUCKET, Key=key)
-                    logger.info(
-                        "[email_queue] removed email_pending (bundle already marked sent in payload) job_id=%s key=%s",
-                        job_id,
-                        key,
-                    )
-                except Exception as exc:
-                    logger.warning("[email_queue] delete pending failed key=%s err=%s", key, exc)
-                continue
-            notify_email = str(payload.get("notify_email") or "").strip()
-            report_style = str(payload.get("report_style") or "").strip().lower()
-            is_operation_test = is_operation_test_style(report_style)
-            report_th_sent = bool(payload.get("report_th_email_sent"))
-            report_en_sent = bool(payload.get("report_en_email_sent"))
-            skeleton_sent = bool(payload.get("skeleton_email_sent"))
-            dots_sent = bool(payload.get("dots_email_sent"))
-            expect_skeleton = bool(payload.get("expect_skeleton", False))
-            expect_dots = bool(payload.get("expect_dots", True))
-            expects_report_th = email_payload_expects_report_th(payload)
-            expect_report_en = email_payload_expects_report_en(payload)
-            attempts = int(payload.get("attempts") or 0)
-            # Keep early retries responsive; apply backoff only after repeated failures.
-            if EMAIL_RETRY_BACKOFF_SECONDS > 0 and attempts >= 2:
-                updated_at = parse_iso_datetime_utc(payload.get("updated_at"))
-                if updated_at is not None:
-                    elapsed = (datetime.now(timezone.utc) - updated_at).total_seconds()
-                    if elapsed < float(EMAIL_RETRY_BACKOFF_SECONDS):
+                job_id = str(payload.get("job_id") or "").strip()
+                if bool(payload.get("bundle_completion_email")) and bool(payload.get("bundle_completion_email_sent")):
+                    try:
+                        s3.delete_object(Bucket=AWS_BUCKET, Key=key)
+                        logger.info(
+                            "[email_queue] removed email_pending (bundle already marked sent in payload) job_id=%s key=%s",
+                            job_id,
+                            key,
+                        )
+                    except Exception as exc:
+                        logger.warning("[email_queue] delete pending failed key=%s err=%s", key, exc)
+                    continue
+                notify_email = str(payload.get("notify_email") or "").strip()
+                report_style = str(payload.get("report_style") or "").strip().lower()
+                is_operation_test = is_operation_test_style(report_style)
+                report_th_sent = bool(payload.get("report_th_email_sent"))
+                report_en_sent = bool(payload.get("report_en_email_sent"))
+                skeleton_sent = bool(payload.get("skeleton_email_sent"))
+                dots_sent = bool(payload.get("dots_email_sent"))
+                expect_skeleton = bool(payload.get("expect_skeleton", False))
+                expect_dots = bool(payload.get("expect_dots", True))
+                expects_report_th = email_payload_expects_report_th(payload)
+                expect_report_en = email_payload_expects_report_en(payload)
+                attempts = int(payload.get("attempts") or 0)
+                # Keep early retries responsive; apply backoff only after repeated failures.
+                if EMAIL_RETRY_BACKOFF_SECONDS > 0 and attempts >= 2:
+                    updated_at = parse_iso_datetime_utc(payload.get("updated_at"))
+                    if updated_at is not None:
+                        elapsed = (datetime.now(timezone.utc) - updated_at).total_seconds()
+                        if elapsed < float(EMAIL_RETRY_BACKOFF_SECONDS):
+                            logger.info(
+                                "[email_queue] backoff skip job_id=%s key=%s attempts=%s elapsed=%.1fs need>=%ss",
+                                job_id,
+                                key,
+                                attempts,
+                                elapsed,
+                                float(EMAIL_RETRY_BACKOFF_SECONDS),
+                            )
+                            continue
+                job_created_at = parse_job_id_datetime_utc(job_id)
+                if (
+                    is_operation_test
+                    and OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS > 0
+                    and job_created_at is not None
+                ):
+                    age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
+                    if age_hours >= float(OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS):
+                        update_finished_job_notification(
+                            job_id,
+                            bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
+                            f"cleaned_operation_test_email_pending_{OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS}h",
+                            report_th_sent=report_th_sent,
+                            report_en_sent=report_en_sent,
+                            skeleton_sent=skeleton_sent,
+                            dots_sent=dots_sent,
+                        )
+                        suspended_key = move_email_pending_to_suspend(
+                            key,
+                            payload,
+                            reason=f"operation_test_email_pending_cleanup_{OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS}h",
+                        )
+                        logger.warning(
+                            "[email_queue] cleaned stale operation_test payload key=%s suspended_key=%s age_hours=%.1f",
+                            key,
+                            suspended_key,
+                            age_hours,
+                        )
                         continue
-            job_created_at = parse_job_id_datetime_utc(job_id)
-            if (
-                is_operation_test
-                and OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS > 0
-                and job_created_at is not None
-            ):
-                age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
-                if age_hours >= float(OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS):
+                if (not is_operation_test) and MAX_EMAIL_PENDING_JOB_AGE_HOURS > 0 and job_created_at is not None:
+                    age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
+                    if age_hours >= float(MAX_EMAIL_PENDING_JOB_AGE_HOURS):
+                        update_finished_job_notification(
+                            job_id,
+                            bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
+                            f"stopped_stale_email_job_{MAX_EMAIL_PENDING_JOB_AGE_HOURS}h",
+                            report_th_sent=report_th_sent,
+                            report_en_sent=report_en_sent,
+                            skeleton_sent=skeleton_sent,
+                            dots_sent=dots_sent,
+                        )
+                        suspended_key = move_email_pending_to_suspend(
+                            key,
+                            payload,
+                            reason=f"stale_email_job_age_{MAX_EMAIL_PENDING_JOB_AGE_HOURS}h",
+                        )
+                        logger.warning("[email_queue] moved stale payload key=%s suspended_key=%s age_hours=%.1f", key, suspended_key, age_hours)
+                        continue
+                if (not is_operation_test) and MAX_EMAIL_RETRY_ATTEMPTS > 0 and attempts >= MAX_EMAIL_RETRY_ATTEMPTS:
                     update_finished_job_notification(
                         job_id,
                         bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
-                        f"cleaned_operation_test_email_pending_{OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS}h",
+                        f"stopped_max_email_retries_{MAX_EMAIL_RETRY_ATTEMPTS}",
                         report_th_sent=report_th_sent,
                         report_en_sent=report_en_sent,
                         skeleton_sent=skeleton_sent,
@@ -2519,335 +2569,301 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     suspended_key = move_email_pending_to_suspend(
                         key,
                         payload,
-                        reason=f"operation_test_email_pending_cleanup_{OPERATION_TEST_EMAIL_PENDING_CLEANUP_HOURS}h",
+                        reason=f"max_email_retries_{MAX_EMAIL_RETRY_ATTEMPTS}",
                     )
-                    logger.warning(
-                        "[email_queue] cleaned stale operation_test payload key=%s suspended_key=%s age_hours=%.1f",
-                        key,
-                        suspended_key,
-                        age_hours,
-                    )
+                    logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
                     continue
-            if (not is_operation_test) and MAX_EMAIL_PENDING_JOB_AGE_HOURS > 0 and job_created_at is not None:
-                age_hours = (datetime.now(timezone.utc) - job_created_at).total_seconds() / 3600.0
-                if age_hours >= float(MAX_EMAIL_PENDING_JOB_AGE_HOURS):
-                    update_finished_job_notification(
-                        job_id,
-                        bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
-                        f"stopped_stale_email_job_{MAX_EMAIL_PENDING_JOB_AGE_HOURS}h",
-                        report_th_sent=report_th_sent,
-                        report_en_sent=report_en_sent,
-                        skeleton_sent=skeleton_sent,
-                        dots_sent=dots_sent,
+                if is_operation_test:
+                    recipients = resolve_notification_recipients(notify_email, report_style)
+                    if not recipients:
+                        update_finished_job_notification(
+                            job_id,
+                            False,
+                            "skipped_no_valid_recipients",
+                            report_th_sent=report_th_sent,
+                            report_en_sent=report_en_sent,
+                            skeleton_sent=skeleton_sent,
+                            dots_sent=dots_sent,
+                        )
+                        payload["attempts"] = int(payload.get("attempts") or 0) + 1
+                        payload["updated_at"] = utc_now_iso()
+                        s3_put_json(key, payload)
+                        logger.warning("[email_queue] operation_test has no valid recipients yet; keep pending key=%s", key)
+                        continue
+                else:
+                    # Use resolved recipients (customer + INTERNAL_ANALYSIS_NOTIFY_EMAILS), not raw notify_email alone.
+                    # Old logic suspended when notify_email was empty even though internal CC could still receive mail.
+                    recipients_gate = resolve_notification_recipients(notify_email, report_style)
+                    if not recipients_gate:
+                        update_finished_job_notification(
+                            job_id,
+                            False,
+                            "skipped_no_notification_recipients",
+                            report_th_sent=report_th_sent,
+                            report_en_sent=report_en_sent,
+                            skeleton_sent=skeleton_sent,
+                            dots_sent=dots_sent,
+                        )
+                        suspended_key = move_email_pending_to_suspend(key, payload, reason="no_notification_recipients")
+                        logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
+                        continue
+
+                statuses: List[str] = []
+                sent_any = False
+                email_send_attempted = False
+                email_send_any_ok = False
+
+                # ส่งแยกกัน: Report → Dots → Skeleton
+                job_info = {
+                    "job_id": job_id,
+                    "group_id": payload.get("group_id", ""),
+                    "notify_email": notify_email,
+                    "report_style": report_style,
+                }
+                video_keys_report: Dict[str, str] = {}
+                if is_operation_test and str(payload.get("input_video_key") or "").strip():
+                    video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
+
+                if bool(payload.get("bundle_completion_email")):
+                    bundle_sent = bool(payload.get("bundle_completion_email_sent"))
+                    if bundle_sent:
+                        statuses.append("bundle:done")
+                    elif email_payload_all_outputs_ready_for_bundle(payload):
+                        vk_bundle, report_links_bundle = build_bundle_result_email_links(payload)
+                        email_send_attempted = True
+                        sent_b, status_b = send_result_email(job_info, vk_bundle, report_links_bundle)
+                        statuses.append(f"bundle:{status_b}")
+                        if sent_b:
+                            email_send_any_ok = True
+                            sent_any = True
+                            if expects_report_th:
+                                report_th_sent = True
+                                payload["report_th_email_sent"] = True
+                            if expect_report_en:
+                                report_en_sent = True
+                                payload["report_en_email_sent"] = True
+                            if expect_skeleton:
+                                skeleton_sent = True
+                                payload["skeleton_email_sent"] = True
+                            if expect_dots:
+                                dots_sent = True
+                                payload["dots_email_sent"] = True
+                            payload["bundle_completion_email_sent"] = True
+                    else:
+                        parts = bundle_email_waiting_parts(payload)
+                        if parts:
+                            logger.info(
+                                "[email_queue] bundle not ready yet job_id=%s group_id=%s waiting=%s",
+                                job_id,
+                                str(payload.get("group_id") or "").strip(),
+                                parts,
+                            )
+                        statuses.append("waiting_for_" + "_and_".join(parts) if parts else "waiting_bundle")
+                else:
+                    # 1) Report email (TH + EN); only set *_email_sent for PDFs actually attached this send
+                    # Use choose_email_report_attachment so we never attach EN bytes under the TH label
+                    # (e.g. wrong report_th_pdf_key) and we can fall back to jobs/output/groups/.../report_th.pdf.
+                    report_links: Dict[str, str] = {}
+                    if (not report_th_sent) and email_payload_report_th_ready(payload):
+                        th_att, th_kind = choose_email_report_attachment(payload, "th")
+                        if th_kind == "PDF":
+                            report_links["Report TH (PDF)"] = th_att
+                        elif th_kind == "DOCX":
+                            report_links["Report TH (DOCX)"] = th_att
+                    if (not report_en_sent) and email_payload_report_en_ready(payload):
+                        en_att, en_kind = choose_email_report_attachment(payload, "en")
+                        if en_kind == "PDF":
+                            report_links["Report EN (PDF)"] = en_att
+                        elif en_kind == "DOCX":
+                            report_links["Report EN (DOCX)"] = en_att
+
+                    skeleton_ready = (not expect_skeleton) or email_payload_skeleton_ready(payload)
+                    defer_reports = should_defer_report_email_until_skeleton_ready(
+                        expect_skeleton, skeleton_ready, report_links, payload
                     )
-                    suspended_key = move_email_pending_to_suspend(
-                        key,
-                        payload,
-                        reason=f"stale_email_job_age_{MAX_EMAIL_PENDING_JOB_AGE_HOURS}h",
+                    # Do not send dots/skeleton-only mail while report PDFs are intentionally deferred (avoid "video only" mail).
+                    block_video_mails_until_reports = bool(report_links and defer_reports)
+                    if report_links and defer_reports:
+                        logger.info(
+                            "[email_queue] deferring report email until skeleton.mp4 exists job_id=%s",
+                            job_id,
+                        )
+                    elif report_links:
+                        email_send_attempted = True
+                        vk = merged_video_keys_for_report_email(
+                            video_keys_report,
+                            payload,
+                            expect_skeleton,
+                            skeleton_ready,
+                            skeleton_sent,
+                        )
+                        sent, status = send_result_email(job_info, vk, report_links)
+                        statuses.append(f"reports:{status}")
+                        if sent:
+                            email_send_any_ok = True
+                            if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
+                                report_th_sent = True
+                                payload["report_th_email_sent"] = True
+                            if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
+                                report_en_sent = True
+                                payload["report_en_email_sent"] = True
+                            if "Skeleton video (MP4)" in vk:
+                                skeleton_sent = True
+                                payload["skeleton_email_sent"] = True
+                            sent_any = True
+
+                    # 2) Dots email
+                    if (
+                        (not dots_sent)
+                        and expect_dots
+                        and email_payload_dots_ready(payload)
+                        and (not block_video_mails_until_reports)
+                    ):
+                        email_send_attempted = True
+                        d_key = str(payload.get("dots_key") or "").strip()
+                        sent, status = send_result_email(job_info, {"Dots video (MP4)": d_key}, {})
+                        statuses.append(f"dots:{status}")
+                        if sent:
+                            email_send_any_ok = True
+                            dots_sent = True
+                            payload["dots_email_sent"] = True
+                            sent_any = True
+
+                    # 3) Skeleton email — or TTB phase-2: one bundled mail (reports + skeleton) after phase 1 finished
+                    ttb_phase2 = bool(payload.get("ttb_phase2_bundle_email"))
+                    reports_fully_sent = True
+                    if expects_report_th:
+                        reports_fully_sent = reports_fully_sent and report_th_sent
+                    if expect_report_en:
+                        reports_fully_sent = reports_fully_sent and report_en_sent
+                    if (
+                        ttb_phase2
+                        and reports_fully_sent
+                        and (not payload.get("ttb_bundle_followup_sent"))
+                        and expect_skeleton
+                        and email_payload_skeleton_ready(payload)
+                        and (not skeleton_sent)
+                    ):
+                        email_send_attempted = True
+                        sk_key = str(payload.get("skeleton_key") or "").strip()
+                        bundle_reports: Dict[str, str] = {}
+                        if email_payload_report_th_ready(payload):
+                            th_att, th_kind = choose_email_report_attachment(payload, "th")
+                            if th_kind == "PDF":
+                                bundle_reports["Report TH (PDF)"] = th_att
+                            elif th_kind == "DOCX":
+                                bundle_reports["Report TH (DOCX)"] = th_att
+                        if email_payload_report_en_ready(payload):
+                            en_att, en_kind = choose_email_report_attachment(payload, "en")
+                            if en_kind == "PDF":
+                                bundle_reports["Report EN (PDF)"] = en_att
+                            elif en_kind == "DOCX":
+                                bundle_reports["Report EN (DOCX)"] = en_att
+                        vk_bundle = {"Skeleton video (MP4)": sk_key}
+                        sent, status = send_result_email(job_info, vk_bundle, bundle_reports)
+                        statuses.append(f"ttb_phase2_bundle:{status}")
+                        if sent:
+                            email_send_any_ok = True
+                            skeleton_sent = True
+                            payload["skeleton_email_sent"] = True
+                            payload["ttb_bundle_followup_sent"] = True
+                            sent_any = True
+                    elif (
+                        (not skeleton_sent)
+                        and expect_skeleton
+                        and email_payload_skeleton_ready(payload)
+                        and (not ttb_phase2)
+                        and (not block_video_mails_until_reports)
+                    ):
+                        # TTB two-phase jobs must not send skeleton-only before the bundled follow-up.
+                        email_send_attempted = True
+                        sk_key = str(payload.get("skeleton_key") or "").strip()
+                        sent, status = send_result_email(job_info, {"Skeleton video (MP4)": sk_key}, {})
+                        statuses.append(f"skeleton:{status}")
+                        if sent:
+                            email_send_any_ok = True
+                            skeleton_sent = True
+                            payload["skeleton_email_sent"] = True
+                            sent_any = True
+
+                    if not statuses:
+                        waiting = []
+                        if expects_report_th and not report_th_sent:
+                            waiting.append("report_th")
+                        if expect_report_en and not report_en_sent:
+                            waiting.append("report_en")
+                        if expect_skeleton and not skeleton_sent:
+                            waiting.append("skeleton")
+                        if expect_dots and not dots_sent:
+                            waiting.append("dots")
+                        statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
+
+                # Keep the enterprise handoff folder in sync once all outputs are ready.
+                try:
+                    package_info = sync_enterprise_package(
+                        group_id=str(payload.get("group_id") or "").strip(),
+                        enterprise_folder=str(payload.get("enterprise_folder") or "").strip(),
+                        notify_email=notify_email,
+                        dots_key=str(payload.get("dots_key") or "").strip(),
+                        skeleton_key=str(payload.get("skeleton_key") or "").strip(),
+                        report_en_key=str(payload.get("report_en_key") or "").strip(),
+                        report_th_key=str(payload.get("report_th_key") or "").strip(),
                     )
-                    logger.warning("[email_queue] moved stale payload key=%s suspended_key=%s age_hours=%.1f", key, suspended_key, age_hours)
-                    continue
-            if (not is_operation_test) and MAX_EMAIL_RETRY_ATTEMPTS > 0 and attempts >= MAX_EMAIL_RETRY_ATTEMPTS:
+                    if package_info:
+                        logger.info("[enterprise_package] synced for job_id=%s prefix=%s", job_id, package_info.get("package_prefix", ""))
+                except Exception as e:
+                    logger.warning("[enterprise_package] sync failed in email queue job_id=%s: %s", job_id, e)
+
+                status_text = " | ".join(statuses)
+                overall_sent = bool(report_th_sent or report_en_sent or dots_sent or sent_any)
+                sent_to_str = ""
+                if overall_sent and notify_email:
+                    rec = resolve_notification_recipients(notify_email, report_style)
+                    sent_to_str = ", ".join(rec) if rec else str(notify_email).strip()
+                    if sent_to_str:
+                        status_text = status_text + f" | sent to: {sent_to_str}"
                 update_finished_job_notification(
                     job_id,
-                    bool(report_th_sent or report_en_sent or skeleton_sent or dots_sent),
-                    f"stopped_max_email_retries_{MAX_EMAIL_RETRY_ATTEMPTS}",
+                    overall_sent,
+                    status_text,
                     report_th_sent=report_th_sent,
                     report_en_sent=report_en_sent,
                     skeleton_sent=skeleton_sent,
                     dots_sent=dots_sent,
+                    sent_to=sent_to_str or None,
                 )
-                suspended_key = move_email_pending_to_suspend(
-                    key,
-                    payload,
-                    reason=f"max_email_retries_{MAX_EMAIL_RETRY_ATTEMPTS}",
-                )
-                logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
-                continue
-            if is_operation_test:
-                recipients = resolve_notification_recipients(notify_email, report_style)
-                if not recipients:
-                    update_finished_job_notification(
-                        job_id,
-                        False,
-                        "skipped_no_valid_recipients",
-                        report_th_sent=report_th_sent,
-                        report_en_sent=report_en_sent,
-                        skeleton_sent=skeleton_sent,
-                        dots_sent=dots_sent,
-                    )
-                    payload["attempts"] = int(payload.get("attempts") or 0) + 1
-                    payload["updated_at"] = utc_now_iso()
-                    s3_put_json(key, payload)
-                    logger.warning("[email_queue] operation_test has no valid recipients yet; keep pending key=%s", key)
-                    continue
-            else:
-                # Use resolved recipients (customer + INTERNAL_ANALYSIS_NOTIFY_EMAILS), not raw notify_email alone.
-                # Old logic suspended when notify_email was empty even though internal CC could still receive mail.
-                recipients_gate = resolve_notification_recipients(notify_email, report_style)
-                if not recipients_gate:
-                    update_finished_job_notification(
-                        job_id,
-                        False,
-                        "skipped_no_notification_recipients",
-                        report_th_sent=report_th_sent,
-                        report_en_sent=report_en_sent,
-                        skeleton_sent=skeleton_sent,
-                        dots_sent=dots_sent,
-                    )
-                    suspended_key = move_email_pending_to_suspend(key, payload, reason="no_notification_recipients")
-                    logger.warning("[email_queue] moved to suspend key=%s suspended_key=%s", key, suspended_key)
-                    continue
 
-            statuses: List[str] = []
-            sent_any = False
-            email_send_attempted = False
-            email_send_any_ok = False
-
-            # ส่งแยกกัน: Report → Dots → Skeleton
-            job_info = {
-                "job_id": job_id,
-                "group_id": payload.get("group_id", ""),
-                "notify_email": notify_email,
-                "report_style": report_style,
-            }
-            video_keys_report: Dict[str, str] = {}
-            if is_operation_test and str(payload.get("input_video_key") or "").strip():
-                video_keys_report["Uploaded video (MP4)"] = str(payload.get("input_video_key") or "").strip()
-
-            if bool(payload.get("bundle_completion_email")):
-                bundle_sent = bool(payload.get("bundle_completion_email_sent"))
-                if bundle_sent:
-                    statuses.append("bundle:done")
-                elif email_payload_all_outputs_ready_for_bundle(payload):
-                    vk_bundle, report_links_bundle = build_bundle_result_email_links(payload)
-                    email_send_attempted = True
-                    sent_b, status_b = send_result_email(job_info, vk_bundle, report_links_bundle)
-                    statuses.append(f"bundle:{status_b}")
-                    if sent_b:
-                        email_send_any_ok = True
-                        sent_any = True
-                        if expects_report_th:
-                            report_th_sent = True
-                            payload["report_th_email_sent"] = True
-                        if expect_report_en:
-                            report_en_sent = True
-                            payload["report_en_email_sent"] = True
-                        if expect_skeleton:
-                            skeleton_sent = True
-                            payload["skeleton_email_sent"] = True
-                        if expect_dots:
-                            dots_sent = True
-                            payload["dots_email_sent"] = True
-                        payload["bundle_completion_email_sent"] = True
+                report_th_done = report_th_sent or (not expects_report_th)
+                report_en_done = report_en_sent or (not expect_report_en)
+                skeleton_done = skeleton_sent or (not expect_skeleton)
+                dots_done = dots_sent or (not expect_dots)
+                # Finish when all requested deliveries are done.
+                all_done = report_th_done and report_en_done and skeleton_done and dots_done
+                if all_done:
+                    s3.delete_object(Bucket=AWS_BUCKET, Key=key)
                 else:
-                    parts = bundle_email_waiting_parts(payload)
-                    if parts:
-                        logger.info(
-                            "[email_queue] bundle not ready yet job_id=%s group_id=%s waiting=%s",
+                    payload["updated_at"] = utc_now_iso()
+                    # Do not increment attempts every poll while waiting for S3 files — only when we
+                    # actually called send_result_email and nothing succeeded (e.g. missing SES/SMTP).
+                    if email_send_attempted and not email_send_any_ok:
+                        payload["attempts"] = int(payload.get("attempts") or 0) + 1
+                        logger.warning(
+                            "[email_queue] send failed for key=%s job_id=%s attempts=%s statuses=%s",
+                            key,
                             job_id,
-                            str(payload.get("group_id") or "").strip(),
-                            parts,
+                            payload["attempts"],
+                            status_text,
                         )
-                    statuses.append("waiting_for_" + "_and_".join(parts) if parts else "waiting_bundle")
-            else:
-                # 1) Report email (TH + EN); only set *_email_sent for PDFs actually attached this send
-                # Use choose_email_report_attachment so we never attach EN bytes under the TH label
-                # (e.g. wrong report_th_pdf_key) and we can fall back to jobs/output/groups/.../report_th.pdf.
-                report_links: Dict[str, str] = {}
-                if (not report_th_sent) and email_payload_report_th_ready(payload):
-                    th_att, th_kind = choose_email_report_attachment(payload, "th")
-                    if th_kind == "PDF":
-                        report_links["Report TH (PDF)"] = th_att
-                    elif th_kind == "DOCX":
-                        report_links["Report TH (DOCX)"] = th_att
-                if (not report_en_sent) and email_payload_report_en_ready(payload):
-                    en_att, en_kind = choose_email_report_attachment(payload, "en")
-                    if en_kind == "PDF":
-                        report_links["Report EN (PDF)"] = en_att
-                    elif en_kind == "DOCX":
-                        report_links["Report EN (DOCX)"] = en_att
-
-                skeleton_ready = (not expect_skeleton) or email_payload_skeleton_ready(payload)
-                defer_reports = should_defer_report_email_until_skeleton_ready(
-                    expect_skeleton, skeleton_ready, report_links, payload
+                    elif email_send_any_ok:
+                        payload["attempts"] = 0
+                    s3_put_json(key, payload)
+            except Exception as exc:
+                logger.exception(
+                    "[email_queue] key=%s job_id=%r failed: %s",
+                    key,
+                    str(payload.get("job_id") or "").strip(),
+                    exc,
                 )
-                # Do not send dots/skeleton-only mail while report PDFs are intentionally deferred (avoid "video only" mail).
-                block_video_mails_until_reports = bool(report_links and defer_reports)
-                if report_links and defer_reports:
-                    logger.info(
-                        "[email_queue] deferring report email until skeleton.mp4 exists job_id=%s",
-                        job_id,
-                    )
-                elif report_links:
-                    email_send_attempted = True
-                    vk = merged_video_keys_for_report_email(
-                        video_keys_report,
-                        payload,
-                        expect_skeleton,
-                        skeleton_ready,
-                        skeleton_sent,
-                    )
-                    sent, status = send_result_email(job_info, vk, report_links)
-                    statuses.append(f"reports:{status}")
-                    if sent:
-                        email_send_any_ok = True
-                        if "Report TH (PDF)" in report_links or "Report TH (DOCX)" in report_links:
-                            report_th_sent = True
-                            payload["report_th_email_sent"] = True
-                        if "Report EN (PDF)" in report_links or "Report EN (DOCX)" in report_links:
-                            report_en_sent = True
-                            payload["report_en_email_sent"] = True
-                        if "Skeleton video (MP4)" in vk:
-                            skeleton_sent = True
-                            payload["skeleton_email_sent"] = True
-                        sent_any = True
-
-                # 2) Dots email
-                if (
-                    (not dots_sent)
-                    and expect_dots
-                    and email_payload_dots_ready(payload)
-                    and (not block_video_mails_until_reports)
-                ):
-                    email_send_attempted = True
-                    d_key = str(payload.get("dots_key") or "").strip()
-                    sent, status = send_result_email(job_info, {"Dots video (MP4)": d_key}, {})
-                    statuses.append(f"dots:{status}")
-                    if sent:
-                        email_send_any_ok = True
-                        dots_sent = True
-                        payload["dots_email_sent"] = True
-                        sent_any = True
-
-                # 3) Skeleton email — or TTB phase-2: one bundled mail (reports + skeleton) after phase 1 finished
-                ttb_phase2 = bool(payload.get("ttb_phase2_bundle_email"))
-                reports_fully_sent = True
-                if expects_report_th:
-                    reports_fully_sent = reports_fully_sent and report_th_sent
-                if expect_report_en:
-                    reports_fully_sent = reports_fully_sent and report_en_sent
-                if (
-                    ttb_phase2
-                    and reports_fully_sent
-                    and (not payload.get("ttb_bundle_followup_sent"))
-                    and expect_skeleton
-                    and email_payload_skeleton_ready(payload)
-                    and (not skeleton_sent)
-                ):
-                    email_send_attempted = True
-                    sk_key = str(payload.get("skeleton_key") or "").strip()
-                    bundle_reports: Dict[str, str] = {}
-                    if email_payload_report_th_ready(payload):
-                        th_att, th_kind = choose_email_report_attachment(payload, "th")
-                        if th_kind == "PDF":
-                            bundle_reports["Report TH (PDF)"] = th_att
-                        elif th_kind == "DOCX":
-                            bundle_reports["Report TH (DOCX)"] = th_att
-                    if email_payload_report_en_ready(payload):
-                        en_att, en_kind = choose_email_report_attachment(payload, "en")
-                        if en_kind == "PDF":
-                            bundle_reports["Report EN (PDF)"] = en_att
-                        elif en_kind == "DOCX":
-                            bundle_reports["Report EN (DOCX)"] = en_att
-                    vk_bundle = {"Skeleton video (MP4)": sk_key}
-                    sent, status = send_result_email(job_info, vk_bundle, bundle_reports)
-                    statuses.append(f"ttb_phase2_bundle:{status}")
-                    if sent:
-                        email_send_any_ok = True
-                        skeleton_sent = True
-                        payload["skeleton_email_sent"] = True
-                        payload["ttb_bundle_followup_sent"] = True
-                        sent_any = True
-                elif (
-                    (not skeleton_sent)
-                    and expect_skeleton
-                    and email_payload_skeleton_ready(payload)
-                    and (not ttb_phase2)
-                    and (not block_video_mails_until_reports)
-                ):
-                    # TTB two-phase jobs must not send skeleton-only before the bundled follow-up.
-                    email_send_attempted = True
-                    sk_key = str(payload.get("skeleton_key") or "").strip()
-                    sent, status = send_result_email(job_info, {"Skeleton video (MP4)": sk_key}, {})
-                    statuses.append(f"skeleton:{status}")
-                    if sent:
-                        email_send_any_ok = True
-                        skeleton_sent = True
-                        payload["skeleton_email_sent"] = True
-                        sent_any = True
-
-                if not statuses:
-                    waiting = []
-                    if expects_report_th and not report_th_sent:
-                        waiting.append("report_th")
-                    if expect_report_en and not report_en_sent:
-                        waiting.append("report_en")
-                    if expect_skeleton and not skeleton_sent:
-                        waiting.append("skeleton")
-                    if expect_dots and not dots_sent:
-                        waiting.append("dots")
-                    statuses.append("waiting_for_" + "_and_".join(waiting) if waiting else "waiting")
-
-            # Keep the enterprise handoff folder in sync once all outputs are ready.
-            try:
-                package_info = sync_enterprise_package(
-                    group_id=str(payload.get("group_id") or "").strip(),
-                    enterprise_folder=str(payload.get("enterprise_folder") or "").strip(),
-                    notify_email=notify_email,
-                    dots_key=str(payload.get("dots_key") or "").strip(),
-                    skeleton_key=str(payload.get("skeleton_key") or "").strip(),
-                    report_en_key=str(payload.get("report_en_key") or "").strip(),
-                    report_th_key=str(payload.get("report_th_key") or "").strip(),
-                )
-                if package_info:
-                    logger.info("[enterprise_package] synced for job_id=%s prefix=%s", job_id, package_info.get("package_prefix", ""))
-            except Exception as e:
-                logger.warning("[enterprise_package] sync failed in email queue job_id=%s: %s", job_id, e)
-
-            status_text = " | ".join(statuses)
-            overall_sent = bool(report_th_sent or report_en_sent or dots_sent or sent_any)
-            sent_to_str = ""
-            if overall_sent and notify_email:
-                rec = resolve_notification_recipients(notify_email, report_style)
-                sent_to_str = ", ".join(rec) if rec else str(notify_email).strip()
-                if sent_to_str:
-                    status_text = status_text + f" | sent to: {sent_to_str}"
-            update_finished_job_notification(
-                job_id,
-                overall_sent,
-                status_text,
-                report_th_sent=report_th_sent,
-                report_en_sent=report_en_sent,
-                skeleton_sent=skeleton_sent,
-                dots_sent=dots_sent,
-                sent_to=sent_to_str or None,
-            )
-
-            report_th_done = report_th_sent or (not expects_report_th)
-            report_en_done = report_en_sent or (not expect_report_en)
-            skeleton_done = skeleton_sent or (not expect_skeleton)
-            dots_done = dots_sent or (not expect_dots)
-            # Finish when all requested deliveries are done.
-            all_done = report_th_done and report_en_done and skeleton_done and dots_done
-            if all_done:
-                s3.delete_object(Bucket=AWS_BUCKET, Key=key)
-            else:
-                payload["updated_at"] = utc_now_iso()
-                # Do not increment attempts every poll while waiting for S3 files — only when we
-                # actually called send_result_email and nothing succeeded (e.g. missing SES/SMTP).
-                if email_send_attempted and not email_send_any_ok:
-                    payload["attempts"] = int(payload.get("attempts") or 0) + 1
-                    logger.warning(
-                        "[email_queue] send failed for key=%s job_id=%s attempts=%s statuses=%s",
-                        key,
-                        job_id,
-                        payload["attempts"],
-                        status_text,
-                    )
-                elif email_send_any_ok:
-                    payload["attempts"] = 0
-                s3_put_json(key, payload)
 
 
 # Serialize email_pending processing (main loop + background poll) to avoid duplicate sends / S3 races.
