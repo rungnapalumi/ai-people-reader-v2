@@ -52,7 +52,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 import smtplib
 import ssl
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Iterable, List, Tuple
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -165,6 +165,7 @@ EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB = int(os.getenv("EMAIL_QUEUE_MAX_ITEMS_AFTER_JOB
 EMAIL_PENDING_BACKGROUND_POLL_SECONDS = int(os.getenv("EMAIL_PENDING_BACKGROUND_POLL_SECONDS", "10"))
 EMAIL_QUEUE_BACKGROUND_MAX_ITEMS = max(1, int(os.getenv("EMAIL_QUEUE_BACKGROUND_MAX_ITEMS", "25")))
 EMAIL_PENDING_MAX_ITEMS_PER_ROUND = int(os.getenv("EMAIL_PENDING_MAX_ITEMS_PER_ROUND", "30"))
+# Applied only after a real SES/SMTP failure (stored as email_retry_not_before on the pending JSON).
 EMAIL_RETRY_BACKOFF_SECONDS = int(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1200"))  # 20 minutes
 
 # Defaults (can be overridden per-job)
@@ -2493,21 +2494,21 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                 expects_report_th = email_payload_expects_report_th(payload)
                 expect_report_en = email_payload_expects_report_en(payload)
                 attempts = int(payload.get("attempts") or 0)
-                # Keep early retries responsive; apply backoff only after repeated failures.
-                if EMAIL_RETRY_BACKOFF_SECONDS > 0 and attempts >= 2:
-                    updated_at = parse_iso_datetime_utc(payload.get("updated_at"))
-                    if updated_at is not None:
-                        elapsed = (datetime.now(timezone.utc) - updated_at).total_seconds()
-                        if elapsed < float(EMAIL_RETRY_BACKOFF_SECONDS):
-                            logger.info(
-                                "[email_queue] backoff skip job_id=%s key=%s attempts=%s elapsed=%.1fs need>=%ss",
-                                job_id,
-                                key,
-                                attempts,
-                                elapsed,
-                                float(EMAIL_RETRY_BACKOFF_SECONDS),
-                            )
-                            continue
+                # Backoff must NOT use updated_at — that field refreshes every poll while waiting for S3
+                # outputs, which would keep elapsed < EMAIL_RETRY_BACKOFF_SECONDS forever when attempts>=2.
+                # Only schedule retry-after on actual send failures (see email_retry_not_before below).
+                rb_raw = str(payload.get("email_retry_not_before") or "").strip()
+                if rb_raw and EMAIL_RETRY_BACKOFF_SECONDS > 0:
+                    rb_dt = parse_iso_datetime_utc(rb_raw)
+                    if rb_dt is not None and datetime.now(timezone.utc) < rb_dt:
+                        logger.debug(
+                            "[email_queue] backoff skip until=%s job_id=%s key=%s attempts=%s",
+                            rb_raw,
+                            job_id,
+                            key,
+                            attempts,
+                        )
+                        continue
                 job_created_at = parse_job_id_datetime_utc(job_id)
                 if (
                     is_operation_test
@@ -2847,15 +2848,21 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                     # actually called send_result_email and nothing succeeded (e.g. missing SES/SMTP).
                     if email_send_attempted and not email_send_any_ok:
                         payload["attempts"] = int(payload.get("attempts") or 0) + 1
+                        if EMAIL_RETRY_BACKOFF_SECONDS > 0:
+                            payload["email_retry_not_before"] = (
+                                datetime.now(timezone.utc) + timedelta(seconds=float(EMAIL_RETRY_BACKOFF_SECONDS))
+                            ).isoformat()
                         logger.warning(
-                            "[email_queue] send failed for key=%s job_id=%s attempts=%s statuses=%s",
+                            "[email_queue] send failed for key=%s job_id=%s attempts=%s statuses=%s retry_not_before=%s",
                             key,
                             job_id,
                             payload["attempts"],
                             status_text,
+                            str(payload.get("email_retry_not_before") or ""),
                         )
                     elif email_send_any_ok:
                         payload["attempts"] = 0
+                        payload.pop("email_retry_not_before", None)
                     s3_put_json(key, payload)
             except Exception as exc:
                 logger.exception(
