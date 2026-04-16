@@ -666,11 +666,10 @@ def report_failure_user_hint(report_line: str) -> str:
         )
     ):
         return (
-            "**MediaPipe / OpenGL:** ข้อความแบบ `NSOpenGLPixelFormat` หรือ `kGpuService` มักเกิดเมื่อรัน report worker "
-            "บน **Mac แบบไม่มีจอ** หรือ SSH โดยไม่มี GL context — บน **Render** worker ใช้ `xvfb-run` อยู่แล้ว (ดู `render.yaml`) "
-            "จึงไม่ควรเจอบน production ถ้า deploy ถูกต้อง\n\n"
-            "**งานที่ fail แล้ว:** ไฟล์จะอยู่ใน `jobs/failed/` — ระบบไม่ retry อัตโนมัติ ให้กด **Clear and Start New Upload** "
-            "แล้วอัปโหลดชุดใหม่ (ได้ `group_id` ใหม่) หรือแก้ worker แล้วส่งคิวใหม่"
+            "**MediaPipe / OpenGL:** `NSOpenGLPixelFormat` / `kGpuService` มักเกิดเมื่อรัน worker บน **Mac ไม่มีจอ** หรือ SSH ไม่มี GL — "
+            "บน **Render** ให้ใช้ `xvfb-run` (ดู `render.yaml`) และ deploy **Linux** เท่านั้นสำหรับรายงานจริง\n\n"
+            "โค้ดล่าสุดพยายาม **fallback** ถ้า Pose ล้ม (placeholder analysis) เพื่อไม่ให้ PDF หลุดทั้งก้อน — "
+            "ถ้ายังเห็น fail ให้ดู `jobs/failed/` แล้ว deploy worker เวอร์ชันล่าสุดจาก `main` แล้วลอง **Clear and Start New Upload**"
         )
     return ""
 

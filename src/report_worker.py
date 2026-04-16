@@ -3099,6 +3099,7 @@ def run_analysis(video_path: str, job: Dict[str, Any]) -> Dict[str, Any]:
                 video_path=video_path,
                 sample_fps=float(sample_fps),
                 max_frames=int(max_frames),
+                job_id=str(job.get("job_id") or "").strip(),
                 pose_model_complexity=int(job.get("pose_model_complexity") or DEFAULT_POSE_MODEL_COMPLEXITY),
                 pose_min_detection_confidence=float(job.get("pose_min_det") or DEFAULT_POSE_MIN_DET),
                 pose_min_tracking_confidence=float(job.get("pose_min_track") or DEFAULT_POSE_MIN_TRACK),

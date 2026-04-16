@@ -1,5 +1,5 @@
 # report_core.py — shared report logic for report generation
-REPORT_CORE_VERSION = "2026-03-28-mp-cap-safe-assets"  # mediapipe try/finally + brand assets resilient
+REPORT_CORE_VERSION = "2026-03-28-mp-env-fallback"  # GPU/GL/OpenGL-safe fallbacks for all Pose() paths
 
 import os
 import sys
@@ -14,14 +14,20 @@ def _configure_mediapipe_headless_env() -> None:
     Call before importing mediapipe. Override with MEDIAPIPE_USE_GPU=1 on a real desktop with GPU.
 
     Production (Render): use `xvfb-run -a` in startCommand — see `render.yaml`.
-    Local macOS without a display: install/run `xvfb-run` (e.g. `brew install xvfb`) or run the report
-    worker on Linux/Render instead of raw `python` over SSH.
+    Code paths that still fail (e.g. raw python on macOS without GL) fall back to placeholder analysis —
+    jobs must finish with PDF/email, not hard-fail on Pose init.
+
+    Note: Some MediaPipe builds still touch GPU calculators until graph init; defensive try/except around
+    every Pose() remains required in addition to env tuning.
     """
     if str(os.getenv("MEDIAPIPE_USE_GPU", "")).strip().lower() in ("1", "true", "yes", "on"):
         return
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("GLOG_minloglevel", "2")
+    # TensorFlow / XLA: prefer CPU when GPU stack would pull GL/Metal paths
+    os.environ.setdefault("TF_FORCE_CPU", "1")
+    os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 
 _configure_mediapipe_headless_env()
@@ -86,6 +92,9 @@ def _mediapipe_environment_error(exc: BaseException) -> bool:
             "gpu service",
             "glfw",
             "egl",
+            "metal",
+            "cannot create",
+            "calculatorgraph",
         )
     )
 
@@ -309,56 +318,65 @@ def analyze_first_impression_from_video(
             deg += 180.0
         return deg
 
-    with Pose(static_image_mode=False, model_complexity=1) as pose:
-        i = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            i += 1
-            if i % sample_every_n != 0:
-                continue
+    try:
+        with Pose(static_image_mode=False, model_complexity=1) as pose:
+            i = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                i += 1
+                if i % sample_every_n != 0:
+                    continue
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(rgb)
-            if not res.pose_landmarks:
-                continue
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                res = pose.process(rgb)
+                if not res.pose_landmarks:
+                    continue
 
-            lms = res.pose_landmarks.landmark
-            nose = lms[PoseLandmark.NOSE]
-            leye = lms[PoseLandmark.LEFT_EYE]
-            reye = lms[PoseLandmark.RIGHT_EYE]
-            lsh = lms[PoseLandmark.LEFT_SHOULDER]
-            rsh = lms[PoseLandmark.RIGHT_SHOULDER]
-            lhip = lms[PoseLandmark.LEFT_HIP]
-            rhip = lms[PoseLandmark.RIGHT_HIP]
-            lank = lms[PoseLandmark.LEFT_ANKLE]
-            rank = lms[PoseLandmark.RIGHT_ANKLE]
+                lms = res.pose_landmarks.landmark
+                nose = lms[PoseLandmark.NOSE]
+                leye = lms[PoseLandmark.LEFT_EYE]
+                reye = lms[PoseLandmark.RIGHT_EYE]
+                lsh = lms[PoseLandmark.LEFT_SHOULDER]
+                rsh = lms[PoseLandmark.RIGHT_SHOULDER]
+                lhip = lms[PoseLandmark.LEFT_HIP]
+                rhip = lms[PoseLandmark.RIGHT_HIP]
+                lank = lms[PoseLandmark.LEFT_ANKLE]
+                rank = lms[PoseLandmark.RIGHT_ANKLE]
 
-            if min(nose.visibility, leye.visibility, reye.visibility, lsh.visibility, rsh.visibility, lhip.visibility, rhip.visibility) < 0.5:
-                continue
+                if min(nose.visibility, leye.visibility, reye.visibility, lsh.visibility, rsh.visibility, lhip.visibility, rhip.visibility) < 0.5:
+                    continue
 
-            frame_samples.append(
-                {
-                    "nose": (float(nose.x), float(nose.y)),
-                    "leye": (float(leye.x), float(leye.y)),
-                    "reye": (float(reye.x), float(reye.y)),
-                    "lsh": (float(lsh.x), float(lsh.y)),
-                    "rsh": (float(rsh.x), float(rsh.y)),
-                    "lhip": (float(lhip.x), float(lhip.y)),
-                    "rhip": (float(rhip.x), float(rhip.y)),
-                    "lank": (float(lank.x), float(lank.y)),
-                    "rank": (float(rank.x), float(rank.y)),
-                    "leye_vis": float(leye.visibility),
-                    "reye_vis": float(reye.visibility),
-                    "lank_vis": float(lank.visibility),
-                    "rank_vis": float(rank.visibility),
-                }
-            )
-            if len(frame_samples) >= max_frames:
-                break
-
-    cap.release()
+                frame_samples.append(
+                    {
+                        "nose": (float(nose.x), float(nose.y)),
+                        "leye": (float(leye.x), float(leye.y)),
+                        "reye": (float(reye.x), float(reye.y)),
+                        "lsh": (float(lsh.x), float(lsh.y)),
+                        "rsh": (float(rsh.x), float(rsh.y)),
+                        "lhip": (float(lhip.x), float(lhip.y)),
+                        "rhip": (float(rhip.x), float(rhip.y)),
+                        "lank": (float(lank.x), float(lank.y)),
+                        "rank": (float(rank.x), float(rank.y)),
+                        "leye_vis": float(leye.visibility),
+                        "reye_vis": float(reye.visibility),
+                        "lank_vis": float(lank.visibility),
+                        "rank_vis": float(rank.visibility),
+                    }
+                )
+                if len(frame_samples) >= max_frames:
+                    break
+    except Exception as e:
+        if _mediapipe_environment_error(e):
+            logger.warning("[first_impression] MediaPipe environment error (fallback scores): %s", e)
+            return FirstImpressionData(eye_contact_pct=65.0, upright_pct=65.0, stance_stability=50.0)
+        raise
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
 
     total = len(frame_samples)
     if total == 0:
@@ -514,120 +532,129 @@ def extract_movement_type_frame_features_from_video(
     def _sh_angle_deg(lsh: Tuple[float, float], rsh: Tuple[float, float]) -> float:
         return math.degrees(math.atan2(rsh[1] - lsh[1], rsh[0] - lsh[0]))
 
-    with Pose(static_image_mode=False, model_complexity=1) as pose:
-        i = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            i += 1
-            if i % sample_every_n != 0:
-                continue
+    try:
+        with Pose(static_image_mode=False, model_complexity=1) as pose:
+            i = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                i += 1
+                if i % sample_every_n != 0:
+                    continue
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(rgb)
-            if not res.pose_landmarks:
-                continue
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                res = pose.process(rgb)
+                if not res.pose_landmarks:
+                    continue
 
-            lms = res.pose_landmarks.landmark
-            nose = lms[PoseLandmark.NOSE]
-            leye = lms[PoseLandmark.LEFT_EYE]
-            reye = lms[PoseLandmark.RIGHT_EYE]
-            lsh = lms[PoseLandmark.LEFT_SHOULDER]
-            rsh = lms[PoseLandmark.RIGHT_SHOULDER]
-            lhip = lms[PoseLandmark.LEFT_HIP]
-            rhip = lms[PoseLandmark.RIGHT_HIP]
-            lank = lms[PoseLandmark.LEFT_ANKLE]
-            rank = lms[PoseLandmark.RIGHT_ANKLE]
-            lw = lms[PoseLandmark.LEFT_WRIST]
-            rw = lms[PoseLandmark.RIGHT_WRIST]
+                lms = res.pose_landmarks.landmark
+                nose = lms[PoseLandmark.NOSE]
+                leye = lms[PoseLandmark.LEFT_EYE]
+                reye = lms[PoseLandmark.RIGHT_EYE]
+                lsh = lms[PoseLandmark.LEFT_SHOULDER]
+                rsh = lms[PoseLandmark.RIGHT_SHOULDER]
+                lhip = lms[PoseLandmark.LEFT_HIP]
+                rhip = lms[PoseLandmark.RIGHT_HIP]
+                lank = lms[PoseLandmark.LEFT_ANKLE]
+                rank = lms[PoseLandmark.RIGHT_ANKLE]
+                lw = lms[PoseLandmark.LEFT_WRIST]
+                rw = lms[PoseLandmark.RIGHT_WRIST]
 
-            if min(
-                nose.visibility,
-                leye.visibility,
-                reye.visibility,
-                lsh.visibility,
-                rsh.visibility,
-                lhip.visibility,
-                rhip.visibility,
-            ) < 0.5:
-                continue
+                if min(
+                    nose.visibility,
+                    leye.visibility,
+                    reye.visibility,
+                    lsh.visibility,
+                    rsh.visibility,
+                    lhip.visibility,
+                    rhip.visibility,
+                ) < 0.5:
+                    continue
 
-            lsh_pt = (float(lsh.x), float(lsh.y))
-            rsh_pt = (float(rsh.x), float(rsh.y))
-            lhip_pt = (float(lhip.x), float(lhip.y))
-            rhip_pt = (float(rhip.x), float(rhip.y))
-            lank_pt = (float(lank.x), float(lank.y))
-            rank_pt = (float(rank.x), float(rank.y))
-            leye_pt = (float(leye.x), float(leye.y))
-            reye_pt = (float(reye.x), float(reye.y))
-            nose_pt = (float(nose.x), float(nose.y))
+                lsh_pt = (float(lsh.x), float(lsh.y))
+                rsh_pt = (float(rsh.x), float(rsh.y))
+                lhip_pt = (float(lhip.x), float(lhip.y))
+                rhip_pt = (float(rhip.x), float(rhip.y))
+                lank_pt = (float(lank.x), float(lank.y))
+                rank_pt = (float(rank.x), float(rank.y))
+                leye_pt = (float(leye.x), float(leye.y))
+                reye_pt = (float(reye.x), float(reye.y))
+                nose_pt = (float(nose.x), float(nose.y))
 
-            eye_dist = abs(leye_pt[0] - reye_pt[0])
-            if eye_dist > 1e-4:
-                mid_eye_x = (leye_pt[0] + reye_pt[0]) / 2.0
-                nose_offset_ratio = abs(nose_pt[0] - mid_eye_x) / eye_dist
-                out["eye_contact"].append(1.0 if nose_offset_ratio <= nose_offset_max else 0.0)
-            else:
-                out["eye_contact"].append(0.5)
+                eye_dist = abs(leye_pt[0] - reye_pt[0])
+                if eye_dist > 1e-4:
+                    mid_eye_x = (leye_pt[0] + reye_pt[0]) / 2.0
+                    nose_offset_ratio = abs(nose_pt[0] - mid_eye_x) / eye_dist
+                    out["eye_contact"].append(1.0 if nose_offset_ratio <= nose_offset_max else 0.0)
+                else:
+                    out["eye_contact"].append(0.5)
 
-            mid_sh = np.array([(lsh_pt[0] + rsh_pt[0]) / 2.0, (lsh_pt[1] + rsh_pt[1]) / 2.0])
-            mid_hip = np.array([(lhip_pt[0] + rhip_pt[0]) / 2.0, (lhip_pt[1] + rhip_pt[1]) / 2.0])
-            v = mid_sh - mid_hip
-            v_norm = np.linalg.norm(v) + 1e-9
-            vert = np.array([0.0, -1.0])
-            cosang = float(np.dot(v / v_norm, vert))
-            ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
-            out["uprightness"].append(max(0.0, min(1.0, 1.0 - ang / 55.0)))
+                mid_sh = np.array([(lsh_pt[0] + rsh_pt[0]) / 2.0, (lsh_pt[1] + rsh_pt[1]) / 2.0])
+                mid_hip = np.array([(lhip_pt[0] + rhip_pt[0]) / 2.0, (lhip_pt[1] + rhip_pt[1]) / 2.0])
+                v = mid_sh - mid_hip
+                v_norm = np.linalg.norm(v) + 1e-9
+                vert = np.array([0.0, -1.0])
+                cosang = float(np.dot(v / v_norm, vert))
+                ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+                out["uprightness"].append(max(0.0, min(1.0, 1.0 - ang / 55.0)))
 
-            shoulder_width = abs(lsh_pt[0] - rsh_pt[0]) + 1e-9
-            if min(float(lank.visibility), float(rank.visibility)) >= 0.5:
-                dx = lank_pt[0] - rank_pt[0]
-                dy = lank_pt[1] - rank_pt[1]
-                ankle_dist = math.sqrt(dx * dx + dy * dy)
-                out["stance_width_ratio"].append(ankle_dist / shoulder_width)
-                ankle_mid = ((lank_pt[0] + rank_pt[0]) / 2.0, (lank_pt[1] + rank_pt[1]) / 2.0)
-                if prev_ankle_mid is not None:
-                    shift = math.hypot(ankle_mid[0] - prev_ankle_mid[0], ankle_mid[1] - prev_ankle_mid[1])
-                    out["weight_shift"].append(min(1.0, shift / (shoulder_width * 0.8 + 1e-9)))
-                prev_ankle_mid = ankle_mid
-            else:
-                out["stance_width_ratio"].append(0.35)
-                out["weight_shift"].append(0.35)
+                shoulder_width = abs(lsh_pt[0] - rsh_pt[0]) + 1e-9
+                if min(float(lank.visibility), float(rank.visibility)) >= 0.5:
+                    dx = lank_pt[0] - rank_pt[0]
+                    dy = lank_pt[1] - rank_pt[1]
+                    ankle_dist = math.sqrt(dx * dx + dy * dy)
+                    out["stance_width_ratio"].append(ankle_dist / shoulder_width)
+                    ankle_mid = ((lank_pt[0] + rank_pt[0]) / 2.0, (lank_pt[1] + rank_pt[1]) / 2.0)
+                    if prev_ankle_mid is not None:
+                        shift = math.hypot(ankle_mid[0] - prev_ankle_mid[0], ankle_mid[1] - prev_ankle_mid[1])
+                        out["weight_shift"].append(min(1.0, shift / (shoulder_width * 0.8 + 1e-9)))
+                    prev_ankle_mid = ankle_mid
+                else:
+                    out["stance_width_ratio"].append(0.35)
+                    out["weight_shift"].append(0.35)
 
-            if min(float(lw.visibility), float(rw.visibility)) >= 0.4:
-                wmid = ((float(lw.x) + float(rw.x)) / 2.0, (float(lw.y) + float(rw.y)) / 2.0)
-                if prev_wrist_mid is not None:
-                    vel = math.hypot(wmid[0] - prev_wrist_mid[0], wmid[1] - prev_wrist_mid[1])
-                    e = min(1.0, vel * 25.0)
-                    out["gesture_energy"].append(e)
-                    energy_window.append(e)
-                    if len(energy_window) > 7:
-                        energy_window.pop(0)
-                    if len(energy_window) >= 2:
-                        out["gesture_variation"].append(float(np.std(np.array(energy_window))))
-                    else:
-                        out["gesture_variation"].append(e)
-                prev_wrist_mid = wmid
-            else:
-                out["gesture_energy"].append(0.15)
-                out["gesture_variation"].append(0.12)
+                if min(float(lw.visibility), float(rw.visibility)) >= 0.4:
+                    wmid = ((float(lw.x) + float(rw.x)) / 2.0, (float(lw.y) + float(rw.y)) / 2.0)
+                    if prev_wrist_mid is not None:
+                        vel = math.hypot(wmid[0] - prev_wrist_mid[0], wmid[1] - prev_wrist_mid[1])
+                        e = min(1.0, vel * 25.0)
+                        out["gesture_energy"].append(e)
+                        energy_window.append(e)
+                        if len(energy_window) > 7:
+                            energy_window.pop(0)
+                        if len(energy_window) >= 2:
+                            out["gesture_variation"].append(float(np.std(np.array(energy_window))))
+                        else:
+                            out["gesture_variation"].append(e)
+                    prev_wrist_mid = wmid
+                else:
+                    out["gesture_energy"].append(0.15)
+                    out["gesture_variation"].append(0.12)
 
-            out["chest_blocking"].append(0.12)
-            out["chest_open"].append(min(1.0, shoulder_width * 1.8))
+                out["chest_blocking"].append(0.12)
+                out["chest_open"].append(min(1.0, shoulder_width * 1.8))
 
-            sh_ang = _sh_angle_deg(lsh_pt, rsh_pt)
-            if prev_sh_angle is not None:
-                delta = abs(sh_ang - prev_sh_angle)
-                while delta > 180.0:
-                    delta = 360.0 - delta
-                out["rotation"].append(min(1.0, delta / 45.0))
-            prev_sh_angle = sh_ang
+                sh_ang = _sh_angle_deg(lsh_pt, rsh_pt)
+                if prev_sh_angle is not None:
+                    delta = abs(sh_ang - prev_sh_angle)
+                    while delta > 180.0:
+                        delta = 360.0 - delta
+                    out["rotation"].append(min(1.0, delta / 45.0))
+                prev_sh_angle = sh_ang
 
-            if len(out["eye_contact"]) >= max_frames:
-                break
-
-    cap.release()
+                if len(out["eye_contact"]) >= max_frames:
+                    break
+    except Exception as e:
+        if _mediapipe_environment_error(e):
+            logger.warning("[movement_features] MediaPipe environment error (empty features): %s", e)
+            return out
+        raise
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
     return out
 
 
@@ -1206,7 +1233,14 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
 
     except Exception as _mp_exc:
         if _mediapipe_environment_error(_mp_exc):
-            logger.warning("[analysis] MediaPipe Pose unavailable in this environment: %s", _mp_exc)
+            logger.warning(
+                "[analysis] MediaPipe Pose failed in this environment (using placeholder scores): %s",
+                _mp_exc,
+            )
+            jid = str(kwargs.get("job_id") or "").strip()
+            ph = analyze_video_placeholder(video_path, job_id=jid)
+            ph["mediapipe_environment_fallback"] = True
+            return ph
         raise
     finally:
         try:

@@ -28,6 +28,9 @@ def _configure_mediapipe_headless_env() -> None:
         return
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    os.environ.setdefault("GLOG_minloglevel", "2")
+    os.environ.setdefault("TF_FORCE_CPU", "1")
+    os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 
 _configure_mediapipe_headless_env()
