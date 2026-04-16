@@ -48,6 +48,7 @@ import tempfile
 import re
 import subprocess
 import shutil
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 import smtplib
 import ssl
@@ -297,8 +298,15 @@ def s3_get_json(key: str, log_key: bool = True) -> Dict[str, Any]:
     return json.loads(data.decode("utf-8"))
 
 
+def _json_serialize_default(obj: Any) -> Any:
+    """Allow dataclass instances (e.g. FirstImpressionData) in nested job dicts — never fail S3 JSON writes."""
+    if is_dataclass(obj):
+        return asdict(obj)
+    raise TypeError(f"Object of type {type(obj).__name__!r} is not JSON serializable")
+
+
 def s3_put_json(key: str, payload: Dict[str, Any]) -> None:
-    body_str = json.dumps(payload, ensure_ascii=False)
+    body_str = json.dumps(payload, ensure_ascii=False, default=_json_serialize_default)
     logger.info("[s3_put_json] key=%s size=%d bytes", key, len(body_str))
     s3.put_object(
         Bucket=AWS_BUCKET,
@@ -3633,6 +3641,9 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                                 job["report_en_email_sent"] = True
                 except Exception as e:
                     logger.warning("[email] early EN report send failed job_id=%s: %s", job_id, e)
+
+        # In-memory only (FirstImpressionData breaks json.dumps for jobs/finished + email_pending).
+        job.pop("_first_impression_for_report", None)
 
         # Save structured outputs into job JSON
         job["output_prefix"] = output_prefix
