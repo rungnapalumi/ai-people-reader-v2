@@ -2238,11 +2238,19 @@ def enrich_email_payload_from_finished_job(payload: Dict[str, Any]) -> None:
     if not job_id:
         return
     fk = f"{FINISHED_PREFIX}/{job_id}.json"
-    if not s3_key_exists(fk):
-        return
+    # Do not rely on HeadObject alone — some policies / timing make Head fail while GetObject works.
     try:
         job = s3_get_json(fk, log_key=False)
-    except Exception:
+    except ClientError as e:
+        code = (e.response.get("Error") or {}).get("Code") or ""
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return
+        logger.warning("[enrich_email] cannot read finished job job_id=%s key=%s code=%s", job_id, fk, code)
+        return
+    except Exception as e:
+        logger.warning("[enrich_email] cannot read finished job job_id=%s key=%s err=%s", job_id, fk, e)
+        return
+    if not isinstance(job, dict):
         return
 
     if not str(payload.get("notify_email") or "").strip():
@@ -2411,9 +2419,17 @@ def update_finished_job_notification(
     if not job_id:
         return
     key = f"{FINISHED_PREFIX}/{job_id}.json"
-    if not s3_key_exists(key):
+    try:
+        job = s3_get_json(key, log_key=False)
+    except ClientError as e:
+        code = (e.response.get("Error") or {}).get("Code") or ""
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return
+        logger.warning("[notification] cannot read finished job job_id=%s code=%s", job_id, code)
         return
-    job = s3_get_json(key, log_key=False)
+    except Exception as e:
+        logger.warning("[notification] cannot read finished job job_id=%s err=%s", job_id, e)
+        return
     job["notification"] = {
         "notify_email": str(job.get("notify_email") or "").strip(),
         "sent": bool(sent),
@@ -2453,6 +2469,17 @@ def process_pending_email_queue(max_items: int = 10) -> None:
             enrich_email_payload_from_finished_job(payload)
 
             job_id = str(payload.get("job_id") or "").strip()
+            if bool(payload.get("bundle_completion_email")) and bool(payload.get("bundle_completion_email_sent")):
+                try:
+                    s3.delete_object(Bucket=AWS_BUCKET, Key=key)
+                    logger.info(
+                        "[email_queue] removed email_pending (bundle already marked sent in payload) job_id=%s key=%s",
+                        job_id,
+                        key,
+                    )
+                except Exception as exc:
+                    logger.warning("[email_queue] delete pending failed key=%s err=%s", key, exc)
+                continue
             notify_email = str(payload.get("notify_email") or "").strip()
             report_style = str(payload.get("report_style") or "").strip().lower()
             is_operation_test = is_operation_test_style(report_style)
@@ -2615,6 +2642,13 @@ def process_pending_email_queue(max_items: int = 10) -> None:
                         payload["bundle_completion_email_sent"] = True
                 else:
                     parts = bundle_email_waiting_parts(payload)
+                    if parts:
+                        logger.info(
+                            "[email_queue] bundle not ready yet job_id=%s group_id=%s waiting=%s",
+                            job_id,
+                            str(payload.get("group_id") or "").strip(),
+                            parts,
+                        )
                     statuses.append("waiting_for_" + "_and_".join(parts) if parts else "waiting_bundle")
             else:
                 # 1) Report email (TH + EN); only set *_email_sent for PDFs actually attached this send
