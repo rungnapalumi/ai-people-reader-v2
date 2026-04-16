@@ -3030,6 +3030,42 @@ def count_json_under_prefix(prefix: str) -> int:
     return total
 
 
+_REPORT_MODES_FS = frozenset({"report", "report_th_en", "report_generator"})
+_HEARTBEAT_REPORT_MODE_MAX_KEYS = max(50, int(os.getenv("HEARTBEAT_REPORT_MODE_MAX_KEYS", "500")))
+
+
+def count_report_mode_json_under_prefix(prefix: str, max_keys: Optional[int] = None) -> Tuple[int, bool]:
+    """
+    Count *.json under prefix whose job mode is a report mode (reads each JSON — capped).
+
+    Returns (count, truncated): truncated True if listing stopped at max_keys before end of prefix.
+    Video worker shares jobs/pending|processing/ with report jobs; heartbeat must show report-only counts.
+    """
+    cap = max_keys if max_keys is not None else _HEARTBEAT_REPORT_MODE_MAX_KEYS
+    p = str(prefix or "").strip().rstrip("/") + "/"
+    n_report = 0
+    scanned = 0
+    truncated = False
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=p):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if not key.endswith(".json"):
+                continue
+            if scanned >= cap:
+                truncated = True
+                return n_report, truncated
+            scanned += 1
+            try:
+                job = s3_get_json(key, log_key=False)
+            except Exception:
+                continue
+            mode = str(job.get("mode") or "").strip().lower()
+            if mode in _REPORT_MODES_FS:
+                n_report += 1
+    return n_report, truncated
+
+
 def find_one_pending_report_job() -> Optional[Tuple[str, Dict[str, Any]]]:
     """
     Scan jobs/pending/*.json and pick the highest-priority report job.
@@ -4228,16 +4264,21 @@ def main() -> None:
                     processing_count = count_processing_jobs()
                     pending_queue_json = count_json_under_prefix(PENDING_PREFIX)
                     email_pending_json = count_json_under_prefix(EMAIL_PENDING_PREFIX)
+                    report_pending, rp_trunc = count_report_mode_json_under_prefix(PENDING_PREFIX)
+                    report_processing, rx_trunc = count_report_mode_json_under_prefix(PROCESSING_PREFIX)
                     logger.info(
                         "[heartbeat] worker_alive pending_queue_json=%s email_pending_json=%s "
-                        "processing_json=%s poll_interval=%ss "
-                        "(pending_queue=%s all modes; this worker picks report jobs; "
-                        "email_pending=notifications still to send/clear)",
+                        "processing_json=%s (all modes: dots+skeleton+report share these folders) "
+                        "report_pending=%s%s report_processing=%s%s poll_interval=%ss "
+                        "(this worker runs mode=report only; email_pending=notifications still to send/clear)",
                         pending_queue_json,
                         email_pending_json,
                         processing_count,
+                        report_pending,
+                        "+" if rp_trunc else "",
+                        report_processing,
+                        "+" if rx_trunc else "",
                         POLL_INTERVAL,
-                        PENDING_PREFIX,
                     )
                     last_heartbeat_ts = now_ts
                 if ENABLE_EMAIL_NOTIFICATIONS and EMAIL_QUEUE_MAX_ITEMS_WHEN_IDLE > 0:
