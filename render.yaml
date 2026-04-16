@@ -57,6 +57,9 @@
   envVars:
     - key: PYTHON_VERSION
       value: 3.11.9
+    # Optional: absolute path to directory containing Header.png / Footer.png if not at repo root on disk.
+    # - key: AI_PEOPLE_READER_ASSET_DIR
+    #   value: /opt/render/project
     - key: ANALYSIS_MODE
       value: real
     - key: DOCX_THAI_FONT_FAMILY

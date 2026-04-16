@@ -1,5 +1,5 @@
 # report_core.py — shared report logic for report generation
-REPORT_CORE_VERSION = "2026-03-28-calibrated-type-7-10"  # expected ranges from K.Type 7.mov + Type 8–10.mov
+REPORT_CORE_VERSION = "2026-03-28-mp-cap-safe-assets"  # mediapipe try/finally + brand assets resilient
 
 import os
 import sys
@@ -48,6 +48,48 @@ logger = logging.getLogger("report_core.analysis")
 # Ensure project root is in path so narrative_engine (at project root) can be imported
 _report_core_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(_report_core_dir)
+
+
+def resolve_brand_asset_path(filename: str) -> str:
+    """
+    Header.png / Footer.png live at repo root. Optional override: AI_PEOPLE_READER_ASSET_DIR=/path
+    (useful on servers or when the working directory differs). Skips unreadable paths (macOS sandbox, etc.).
+    """
+    fn = str(filename or "").strip()
+    if not fn:
+        return ""
+    roots: List[str] = []
+    env_root = (os.environ.get("AI_PEOPLE_READER_ASSET_DIR") or "").strip()
+    if env_root:
+        roots.append(env_root)
+    roots.append(_project_root)
+    for root in roots:
+        p = os.path.join(root, fn)
+        try:
+            if os.path.isfile(p) and os.access(p, os.R_OK):
+                return p
+        except OSError:
+            continue
+    return ""
+
+
+def _mediapipe_environment_error(exc: BaseException) -> bool:
+    t = str(exc).lower()
+    return any(
+        k in t
+        for k in (
+            "kgpuservice",
+            "nsopengl",
+            "opengl",
+            "pixel format",
+            "imagetotensor",
+            "gpu service",
+            "glfw",
+            "egl",
+        )
+    )
+
+
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
@@ -983,172 +1025,175 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     prev_landmarks = None
     analysis_started_at = time.time()
     analysis_timeout_seconds = max(60, int(os.getenv("ANALYSIS_TIMEOUT_SECONDS", "420")))
-    
-    with Pose(static_image_mode=False, model_complexity=1) as pose:
-        frame_idx = 0
-        while analyzed < max_frames and sampled < max_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if (time.time() - analysis_started_at) > analysis_timeout_seconds:
-                logger.warning(
-                    "[analysis] timeout reached (%ss): sampled=%s detected=%s max_frames=%s",
-                    analysis_timeout_seconds,
-                    sampled,
-                    analyzed,
-                    max_frames,
-                )
-                break
+
+    mc = max(0, min(2, int(kwargs.get("pose_model_complexity") or 1)))
+
+    try:
+        with Pose(static_image_mode=False, model_complexity=mc) as pose:
+            frame_idx = 0
+            while analyzed < max_frames and sampled < max_frames:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if (time.time() - analysis_started_at) > analysis_timeout_seconds:
+                    logger.warning(
+                        "[analysis] timeout reached (%ss): sampled=%s detected=%s max_frames=%s",
+                        analysis_timeout_seconds,
+                        sampled,
+                        analyzed,
+                        max_frames,
+                    )
+                    break
             
-            if frame_idx % frame_interval == 0:
-                sampled += 1
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = pose.process(rgb)
+                if frame_idx % frame_interval == 0:
+                    sampled += 1
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    results = pose.process(rgb)
                 
-                if results.pose_landmarks:
-                    lms = results.pose_landmarks.landmark
+                    if results.pose_landmarks:
+                        lms = results.pose_landmarks.landmark
                     
-                    # Calculate movement vectors if we have previous frame
-                    if prev_landmarks is not None:
-                        # Get key points
-                        left_wrist = lms[PoseLandmark.LEFT_WRIST]
-                        right_wrist = lms[PoseLandmark.RIGHT_WRIST]
-                        left_elbow = lms[PoseLandmark.LEFT_ELBOW]
-                        right_elbow = lms[PoseLandmark.RIGHT_ELBOW]
-                        left_shoulder = lms[PoseLandmark.LEFT_SHOULDER]
-                        right_shoulder = lms[PoseLandmark.RIGHT_SHOULDER]
-                        nose = lms[PoseLandmark.NOSE]
+                        # Calculate movement vectors if we have previous frame
+                        if prev_landmarks is not None:
+                            # Get key points
+                            left_wrist = lms[PoseLandmark.LEFT_WRIST]
+                            right_wrist = lms[PoseLandmark.RIGHT_WRIST]
+                            left_elbow = lms[PoseLandmark.LEFT_ELBOW]
+                            right_elbow = lms[PoseLandmark.RIGHT_ELBOW]
+                            left_shoulder = lms[PoseLandmark.LEFT_SHOULDER]
+                            right_shoulder = lms[PoseLandmark.RIGHT_SHOULDER]
+                            nose = lms[PoseLandmark.NOSE]
                         
-                        # Previous frame landmarks
-                        prev_left_wrist = prev_landmarks[PoseLandmark.LEFT_WRIST]
-                        prev_right_wrist = prev_landmarks[PoseLandmark.RIGHT_WRIST]
+                            # Previous frame landmarks
+                            prev_left_wrist = prev_landmarks[PoseLandmark.LEFT_WRIST]
+                            prev_right_wrist = prev_landmarks[PoseLandmark.RIGHT_WRIST]
                         
-                        # Calculate velocities (movement speed)
-                        left_wrist_vel = math.sqrt(
-                            (left_wrist.x - prev_left_wrist.x)**2 +
-                            (left_wrist.y - prev_left_wrist.y)**2 +
-                            (left_wrist.z - prev_left_wrist.z)**2
-                        )
-                        right_wrist_vel = math.sqrt(
-                            (right_wrist.x - prev_right_wrist.x)**2 +
-                            (right_wrist.y - prev_right_wrist.y)**2 +
-                            (right_wrist.z - prev_right_wrist.z)**2
-                        )
-                        avg_velocity = (left_wrist_vel + right_wrist_vel) / 2
-                        
-                        # Spatial measurements
-                        wrist_dist = abs(left_wrist.x - right_wrist.x)
-                        shoulder_width = abs(left_shoulder.x - right_shoulder.x)
-                        body_expansion = wrist_dist / max(shoulder_width, 0.1)
-                        
-                        # Hand height relative to shoulders
-                        avg_hand_y = (left_wrist.y + right_wrist.y) / 2
-                        avg_shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
-                        hands_above_shoulders = avg_hand_y < avg_shoulder_y
-                        
-                        # Hand depth (Z-axis) relative to body
-                        avg_hand_z = (left_wrist.z + right_wrist.z) / 2
-                        avg_shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
-                        hands_forward = avg_hand_z < avg_shoulder_z
-                        
-                        # Movement direction (hands)
-                        left_z_delta = left_wrist.z - prev_left_wrist.z
-                        right_z_delta = right_wrist.z - prev_right_wrist.z
-                        avg_z_delta = (left_z_delta + right_z_delta) / 2
-                        
-                        # Forward/backward: Use average of both hands with higher threshold
-                        forward_movement = avg_z_delta < -0.03  # Both hands moving toward camera
-                        # Use stricter backward threshold to avoid counting normal return-to-neutral motion.
-                        backward_movement = avg_z_delta > 0.05  # Both hands moving away from camera
-                        
-                        # Vertical movement
-                        upward_movement = (left_wrist.y - prev_left_wrist.y) < -0.01 or (right_wrist.y - prev_right_wrist.y) < -0.01
-                        downward_movement = (left_wrist.y - prev_left_wrist.y) > 0.01 or (right_wrist.y - prev_right_wrist.y) > 0.01
-                        
-                        # Effort qualities
-                        is_sudden = avg_velocity > 0.08  # Fast movement
-                        is_sustained = 0.02 < avg_velocity <= 0.08  # Moderate movement
-                        is_strong = body_expansion > 1.2 or hands_above_shoulders
-                        is_light = body_expansion < 0.8
-                        
-                        # === EFFORT DETECTION (11 types) ===
-                        
-                        # 1. DIRECTING: Direct, sustained, forward movement
-                        if hands_forward and is_sustained and forward_movement:
-                            effort_counts["Directing"] += 1
-                            shape_counts["Directing"] += 1
-                        
-                        # 2. ENCLOSING: Arms coming together, wrapping motion
-                        enclosing_detected = (
-                            body_expansion < enclosing_max_expansion
-                            and avg_velocity > enclosing_min_velocity
-                        )
-                        if enclosing_detected:
-                            effort_counts["Enclosing"] += 1
-                            shape_counts["Enclosing"] += 1
-                        
-                        # 3. PUNCHING: Sudden, strong, direct forward thrust
-                        if is_sudden and is_strong and forward_movement:
-                            effort_counts["Punching"] += 1
-                        
-                        # 4. SPREADING: Arms spreading wide, opening gesture
-                        spreading_detected = (
-                            body_expansion > spreading_body_expansion_threshold
-                            and avg_velocity > spreading_min_velocity
-                        )
-                        if spreading_detected:
-                            effort_counts["Spreading"] += 1
-                            shape_counts["Spreading"] += 1
-                        if gesture_debug_log and (analyzed % gesture_debug_every_n == 0):
-                            logger.info(
-                                "[gesture_debug] frame=%s enclosing=%s spreading=%s body_expansion=%.3f [enclose<%.3f, spread>%.3f] avg_velocity=%.4f [>enclose%.4f, >spread%.4f]",
-                                analyzed,
-                                enclosing_detected,
-                                spreading_detected,
-                                body_expansion,
-                                enclosing_max_expansion,
-                                spreading_body_expansion_threshold,
-                                avg_velocity,
-                                enclosing_min_velocity,
-                                spreading_min_velocity,
+                            # Calculate velocities (movement speed)
+                            left_wrist_vel = math.sqrt(
+                                (left_wrist.x - prev_left_wrist.x)**2 +
+                                (left_wrist.y - prev_left_wrist.y)**2 +
+                                (left_wrist.z - prev_left_wrist.z)**2
                             )
+                            right_wrist_vel = math.sqrt(
+                                (right_wrist.x - prev_right_wrist.x)**2 +
+                                (right_wrist.y - prev_right_wrist.y)**2 +
+                                (right_wrist.z - prev_right_wrist.z)**2
+                            )
+                            avg_velocity = (left_wrist_vel + right_wrist_vel) / 2
                         
-                        # 5. PRESSING: Sustained, strong, downward force
-                        if is_sustained and is_strong and downward_movement:
-                            effort_counts["Pressing"] += 1
+                            # Spatial measurements
+                            wrist_dist = abs(left_wrist.x - right_wrist.x)
+                            shoulder_width = abs(left_shoulder.x - right_shoulder.x)
+                            body_expansion = wrist_dist / max(shoulder_width, 0.1)
                         
-                        # 6. DABBING: Sudden, light, direct touch
-                        if is_sudden and is_light and avg_velocity > 0.05:
-                            effort_counts["Dabbing"] += 1
+                            # Hand height relative to shoulders
+                            avg_hand_y = (left_wrist.y + right_wrist.y) / 2
+                            avg_shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+                            hands_above_shoulders = avg_hand_y < avg_shoulder_y
                         
-                        # 7. INDIRECTING: Indirect, curved, wandering movements
-                        if not hands_forward and avg_velocity > 0.04 and body_expansion > 1.0:
-                            effort_counts["Indirecting"] += 1
-                            shape_counts["Indirecting"] += 1
+                            # Hand depth (Z-axis) relative to body
+                            avg_hand_z = (left_wrist.z + right_wrist.z) / 2
+                            avg_shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
+                            hands_forward = avg_hand_z < avg_shoulder_z
                         
-                        # 8. GLIDING: Sustained, light, indirect floating
-                        if is_sustained and is_light and upward_movement:
-                            effort_counts["Gliding"] += 1
+                            # Movement direction (hands)
+                            left_z_delta = left_wrist.z - prev_left_wrist.z
+                            right_z_delta = right_wrist.z - prev_right_wrist.z
+                            avg_z_delta = (left_z_delta + right_z_delta) / 2
                         
-                        # 9. FLICKING: Sudden, light, indirect quick gesture
-                        if is_sudden and is_light and not forward_movement:
-                            effort_counts["Flicking"] += 1
+                            # Forward/backward: Use average of both hands with higher threshold
+                            forward_movement = avg_z_delta < -0.03  # Both hands moving toward camera
+                            # Use stricter backward threshold to avoid counting normal return-to-neutral motion.
+                            backward_movement = avg_z_delta > 0.05  # Both hands moving away from camera
                         
-                        # 10. ADVANCING: Significant forward movement (toward audience)
-                        # Requires sustained forward motion with reasonable speed
-                        if forward_movement and avg_velocity > 0.06 and is_sustained:
-                            effort_counts["Advancing"] += 1
-                            shape_counts["Advancing"] += 1
+                            # Vertical movement
+                            upward_movement = (left_wrist.y - prev_left_wrist.y) < -0.01 or (right_wrist.y - prev_right_wrist.y) < -0.01
+                            downward_movement = (left_wrist.y - prev_left_wrist.y) > 0.01 or (right_wrist.y - prev_right_wrist.y) > 0.01
                         
-                        # 11. RETREATING: Significant backward movement (pulling back defensively)
-                        # Requires stronger sustained backward motion - not just gesture return.
-                        if backward_movement and avg_velocity > 0.07 and is_sustained:
-                            effort_counts["Retreating"] += 1
-                            shape_counts["Retreating"] += 1
+                            # Effort qualities
+                            is_sudden = avg_velocity > 0.08  # Fast movement
+                            is_sustained = 0.02 < avg_velocity <= 0.08  # Moderate movement
+                            is_strong = body_expansion > 1.2 or hands_above_shoulders
+                            is_light = body_expansion < 0.8
+                        
+                            # === EFFORT DETECTION (11 types) ===
+                        
+                            # 1. DIRECTING: Direct, sustained, forward movement
+                            if hands_forward and is_sustained and forward_movement:
+                                effort_counts["Directing"] += 1
+                                shape_counts["Directing"] += 1
+                        
+                            # 2. ENCLOSING: Arms coming together, wrapping motion
+                            enclosing_detected = (
+                                body_expansion < enclosing_max_expansion
+                                and avg_velocity > enclosing_min_velocity
+                            )
+                            if enclosing_detected:
+                                effort_counts["Enclosing"] += 1
+                                shape_counts["Enclosing"] += 1
+                        
+                            # 3. PUNCHING: Sudden, strong, direct forward thrust
+                            if is_sudden and is_strong and forward_movement:
+                                effort_counts["Punching"] += 1
+                        
+                            # 4. SPREADING: Arms spreading wide, opening gesture
+                            spreading_detected = (
+                                body_expansion > spreading_body_expansion_threshold
+                                and avg_velocity > spreading_min_velocity
+                            )
+                            if spreading_detected:
+                                effort_counts["Spreading"] += 1
+                                shape_counts["Spreading"] += 1
+                            if gesture_debug_log and (analyzed % gesture_debug_every_n == 0):
+                                logger.info(
+                                    "[gesture_debug] frame=%s enclosing=%s spreading=%s body_expansion=%.3f [enclose<%.3f, spread>%.3f] avg_velocity=%.4f [>enclose%.4f, >spread%.4f]",
+                                    analyzed,
+                                    enclosing_detected,
+                                    spreading_detected,
+                                    body_expansion,
+                                    enclosing_max_expansion,
+                                    spreading_body_expansion_threshold,
+                                    avg_velocity,
+                                    enclosing_min_velocity,
+                                    spreading_min_velocity,
+                                )
+                        
+                            # 5. PRESSING: Sustained, strong, downward force
+                            if is_sustained and is_strong and downward_movement:
+                                effort_counts["Pressing"] += 1
+                        
+                            # 6. DABBING: Sudden, light, direct touch
+                            if is_sudden and is_light and avg_velocity > 0.05:
+                                effort_counts["Dabbing"] += 1
+                        
+                            # 7. INDIRECTING: Indirect, curved, wandering movements
+                            if not hands_forward and avg_velocity > 0.04 and body_expansion > 1.0:
+                                effort_counts["Indirecting"] += 1
+                                shape_counts["Indirecting"] += 1
+                        
+                            # 8. GLIDING: Sustained, light, indirect floating
+                            if is_sustained and is_light and upward_movement:
+                                effort_counts["Gliding"] += 1
+                        
+                            # 9. FLICKING: Sudden, light, indirect quick gesture
+                            if is_sudden and is_light and not forward_movement:
+                                effort_counts["Flicking"] += 1
+                        
+                            # 10. ADVANCING: Significant forward movement (toward audience)
+                            # Requires sustained forward motion with reasonable speed
+                            if forward_movement and avg_velocity > 0.06 and is_sustained:
+                                effort_counts["Advancing"] += 1
+                                shape_counts["Advancing"] += 1
+                        
+                            # 11. RETREATING: Significant backward movement (pulling back defensively)
+                            # Requires stronger sustained backward motion - not just gesture return.
+                            if backward_movement and avg_velocity > 0.07 and is_sustained:
+                                effort_counts["Retreating"] += 1
+                                shape_counts["Retreating"] += 1
                     
-                    # Store current landmarks for next iteration
-                    prev_landmarks = lms
-                    analyzed += 1
+                        # Store current landmarks for next iteration
+                        prev_landmarks = lms
+                        analyzed += 1
                 if sampled % 25 == 0:
                     logger.info(
                         "[analysis] progress sampled=%s/%s detected=%s",
@@ -1156,10 +1201,18 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                         max_frames,
                         analyzed,
                     )
-            
-            frame_idx += 1
-    
-    cap.release()
+
+                frame_idx += 1
+
+    except Exception as _mp_exc:
+        if _mediapipe_environment_error(_mp_exc):
+            logger.warning("[analysis] MediaPipe Pose unavailable in this environment: %s", _mp_exc)
+        raise
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
     
     # Calculate percentages
     total_detections = max(1, sum(effort_counts.values()))
@@ -1711,23 +1764,28 @@ def build_docx_report(
     section.left_margin = Inches(1)
     section.right_margin = Inches(1)
 
-    # Add header image
-    header_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png")
-    if os.path.exists(header_path):
-        header = section.header
-        header_para = header.paragraphs[0]
-        header_run = header_para.add_run()
-        header_run.add_picture(header_path, width=Inches(6.5))
-        header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    # Add footer image
-    footer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Footer.png")
+    # Add header image (skip on permission errors — do not fail whole report)
+    header_path = resolve_brand_asset_path("Header.png")
+    if header_path:
+        try:
+            header = section.header
+            header_para = header.paragraphs[0]
+            header_run = header_para.add_run()
+            header_run.add_picture(header_path, width=Inches(6.5))
+            header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        except Exception as ex:
+            logger.warning("[docx] skip Header.png: %s", ex)
+
+    footer_path = resolve_brand_asset_path("Footer.png")
     footer = section.footer
-    if os.path.exists(footer_path):
-        footer_para = footer.paragraphs[0]
-        footer_run = footer_para.add_run()
-        footer_run.add_picture(footer_path, width=Inches(6.5))
-        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    if footer_path:
+        try:
+            footer_para = footer.paragraphs[0]
+            footer_run = footer_para.add_run()
+            footer_run.add_picture(footer_path, width=Inches(6.5))
+            footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        except Exception as ex:
+            logger.warning("[docx] skip Footer.png: %s", ex)
     
     # ============================================================
     # PAGE 1: Cover + First Impression (Eye Contact start)
@@ -2103,8 +2161,8 @@ def build_pdf_report(
     x_left = 72
     x_right = 72
     usable_width = width - x_left - x_right
-    header_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Header.png")
-    footer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Footer.png")
+    header_path = resolve_brand_asset_path("Header.png")
+    footer_path = resolve_brand_asset_path("Footer.png")
     top_content_y = height - 95
     bottom_content_y = 70
     y = top_content_y
