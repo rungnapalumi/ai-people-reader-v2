@@ -373,9 +373,17 @@ def get_group_id_variants(group_id: str) -> List[str]:
     if not g:
         return []
     out = [g]
-    # Fix missing "20" (year) — e.g. 0260319... → 20260319...
-    if g.startswith("0") and len(g) >= 7 and g[1:7].isdigit():
-        out.append("20" + g)
+    # Typo: leading "0" instead of "20" on the date (common paste error).
+    # e.g. 0260416_063310_... → 20260416_063310_...  (NOT "20"+g — that becomes 200260416_...)
+    if re.match(r"^0\d{6}(?:_|$)", g):
+        alt = "2" + g
+        if alt not in out:
+            out.append(alt)
+    # Missing "20" century: 260416_063310_... → 20260416_... (must not match 0260416_ — that uses "2"+g above)
+    if re.match(r"^2(?!0)\d{6}_", g):
+        alt2 = "20" + g
+        if alt2 not in out:
+            out.append(alt2)
     if "__" in g:
         alt = g.replace("__", "_", 1)
         if alt != g:
@@ -387,6 +395,15 @@ def get_group_id_variants(group_id: str) -> List[str]:
             if alt != g:
                 out.append(alt)
     return out
+
+
+def _YYYYMMDD_prefix_from_group_variants(group_id: str) -> str:
+    """Prefix for S3 listing jobs/finished|pending/YYYYMMDD… — works when user typos 0260416 → 20260416."""
+    variants = set(get_group_id_variants(group_id) or [group_id])
+    for v in variants:
+        if len(v) >= 8 and v[:8].isdigit():
+            return v[:8]
+    return ""
 
 
 def find_report_files_in_s3(prefix: str) -> Dict[str, str]:
@@ -553,7 +570,7 @@ def find_finished_report_job_for_group(group_id: str, max_json: int = 800) -> Op
     except Exception:
         pass
 
-    date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
+    date_prefix = _YYYYMMDD_prefix_from_group_variants(gid)
     scan_prefix = f"{JOBS_FINISHED_PREFIX}{date_prefix}" if date_prefix else JOBS_FINISHED_PREFIX
     matches: List[Dict[str, Any]] = []
     seen = 0
@@ -612,7 +629,7 @@ def discover_video_outputs_from_finished_jobs(group_id: str, outputs: Dict[str, 
     if not gid:
         return
     variants = set(get_group_id_variants(gid) or [gid])
-    date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
+    date_prefix = _YYYYMMDD_prefix_from_group_variants(gid)
     scan_prefix = f"{JOBS_FINISHED_PREFIX}{date_prefix}" if date_prefix else JOBS_FINISHED_PREFIX
     seen = 0
     try:
@@ -717,7 +734,7 @@ def scan_dots_skeleton_job_status(
     if not gid or not AWS_BUCKET or AWS_BUCKET == "local":
         return out
     variants = set(get_group_id_variants(gid) or [gid])
-    date_prefix = gid[:8] if len(gid) >= 8 and gid[:8].isdigit() else ""
+    date_prefix = _YYYYMMDD_prefix_from_group_variants(gid)
     if not date_prefix:
         return out
 
