@@ -284,10 +284,10 @@ def s3_upload_stream(key: str, file_obj: Any, content_type: str) -> None:
     )
 
 
-def presigned_put_url(key: str, content_type: str = "video/mp4", expires: int = 1800) -> str:
+def presigned_put_url(key: str, expires: int = 1800) -> str:
     return s3.generate_presigned_url(
         ClientMethod="put_object",
-        Params={"Bucket": AWS_BUCKET, "Key": key, "ContentType": content_type},
+        Params={"Bucket": AWS_BUCKET, "Key": key},
         ExpiresIn=expires,
     )
 
@@ -1184,7 +1184,7 @@ def _start_direct_upload_flow() -> None:
     st.session_state["direct_upload_key"] = input_key
 
     try:
-        url = presigned_put_url(input_key, content_type="video/mp4", expires=1800)
+        url = presigned_put_url(input_key, expires=1800)
     except Exception as e:
         st.error(f"ไม่สามารถสร้าง upload URL ได้: {e}")
         return
