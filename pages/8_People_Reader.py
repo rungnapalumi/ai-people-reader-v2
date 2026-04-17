@@ -1247,6 +1247,7 @@ if True:
     want_skeleton = bool(org_payload.get("enable_skeleton", True))
     org_display = str(org_payload.get("organization_name") or PAGE_TITLE).strip()
     org_id = normalize_org_name(org_display)
+    base_user = safe_slug(name_value, fallback="user")
 
     with st.status("Creating analysis jobs...", expanded=True) as status:
         st.write("✓ Video already uploaded directly to S3.")
