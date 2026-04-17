@@ -284,6 +284,14 @@ def s3_upload_stream(key: str, file_obj: Any, content_type: str) -> None:
     )
 
 
+def presigned_put_url(key: str, content_type: str = "video/mp4", expires: int = 1800) -> str:
+    return s3.generate_presigned_url(
+        ClientMethod="put_object",
+        Params={"Bucket": AWS_BUCKET, "Key": key, "ContentType": content_type},
+        ExpiresIn=expires,
+    )
+
+
 def s3_put_json(key: str, payload: Dict[str, Any]) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     s3.put_object(
@@ -1034,35 +1042,190 @@ movement_type_mode = st.selectbox(
     "Or choose a type to align Engaging, Confidence, Authority, Adaptability and first-impression cues to that profile.",
 )
 
-uploaded = st.file_uploader(
-    "Video (MP4 / MOV / M4V / WEBM)",
-    type=["mp4", "mov", "m4v", "webm"],
-    accept_multiple_files=False,
-    key="people_reader_video_upload",
-)
+# --- Direct-to-S3 upload (browser → S3 via presigned URL, bypasses Streamlit server) ---
+if "direct_upload_done" not in st.session_state:
+    st.session_state["direct_upload_done"] = False
+if "direct_upload_key" not in st.session_state:
+    st.session_state["direct_upload_key"] = ""
+if "direct_upload_group_id" not in st.session_state:
+    st.session_state["direct_upload_group_id"] = ""
+if "direct_upload_filename" not in st.session_state:
+    st.session_state["direct_upload_filename"] = ""
 
-if uploaded is not None:
-    uploaded_name = str(uploaded.name or "input.mp4")
-    uploaded_size_mb = float((uploaded.size or 0) / (1024 * 1024))
-    st.caption(f"Selected file: `{uploaded_name}` ({uploaded_size_mb:.2f} MB)")
+ACCEPTED_VIDEO_TYPES = "video/mp4,video/quicktime,video/x-m4v,video/webm,.mp4,.mov,.m4v,.webm"
 
-run = st.button(
-    "Start Analysis",
-    type="primary",
-    use_container_width=True,
-    disabled=(uploaded is None or not AWS_BUCKET or AWS_BUCKET == "local"),
-)
+def _render_direct_uploader(presigned_url: str, upload_id: str) -> None:
+    """Inject HTML/JS that uploads a file directly to S3 via presigned PUT URL."""
+    html = f"""
+    <div id="uploader-{upload_id}" style="font-family:sans-serif;">
+      <input type="file" id="file-{upload_id}" accept="{ACCEPTED_VIDEO_TYPES}"
+             style="margin-bottom:8px;color:#e6d9c8;" />
+      <div id="info-{upload_id}" style="color:#ccbda8;font-size:0.85rem;margin-bottom:8px;"></div>
+      <button id="btn-{upload_id}" disabled
+              style="background:linear-gradient(180deg,#c9a67a,#b48d5f);color:#231d17;
+                     border:0;padding:10px 24px;border-radius:6px;font-weight:600;font-size:1rem;
+                     cursor:pointer;width:100%;opacity:0.5;">
+        Upload &amp; Start Analysis
+      </button>
+      <div id="progress-wrap-{upload_id}" style="display:none;margin-top:10px;">
+        <div style="background:#3a332d;border-radius:6px;overflow:hidden;height:22px;">
+          <div id="bar-{upload_id}" style="background:linear-gradient(90deg,#c9a67a,#b48d5f);
+               height:100%;width:0%;transition:width 0.2s;display:flex;align-items:center;
+               justify-content:center;font-size:0.8rem;color:#231d17;font-weight:600;">0%</div>
+        </div>
+        <div id="speed-{upload_id}" style="color:#ccbda8;font-size:0.8rem;margin-top:4px;"></div>
+      </div>
+      <div id="status-{upload_id}" style="margin-top:8px;font-size:0.9rem;"></div>
+    </div>
+    <script>
+    (function() {{
+      const fInput = document.getElementById('file-{upload_id}');
+      const btn = document.getElementById('btn-{upload_id}');
+      const info = document.getElementById('info-{upload_id}');
+      const bar = document.getElementById('bar-{upload_id}');
+      const progWrap = document.getElementById('progress-wrap-{upload_id}');
+      const speedEl = document.getElementById('speed-{upload_id}');
+      const statusEl = document.getElementById('status-{upload_id}');
+      const url = {json.dumps(presigned_url)};
 
-st.caption(SUPPORT_TEXT)
+      fInput.addEventListener('change', function() {{
+        const f = fInput.files[0];
+        if (!f) {{ btn.disabled = true; btn.style.opacity='0.5'; info.textContent=''; return; }}
+        const mb = (f.size / 1048576).toFixed(2);
+        info.textContent = f.name + ' (' + mb + ' MB)';
+        btn.disabled = false;
+        btn.style.opacity = '1';
+      }});
 
-if run:
-    if not AWS_BUCKET or AWS_BUCKET == "local":
-        st.error("ขั้นตอน 1 — โครงสร้างพื้นฐาน: ต้องตั้งค่า S3 (AWS_BUCKET) ใน .env")
-        st.stop()
+      btn.addEventListener('click', function() {{
+        const f = fInput.files[0];
+        if (!f) return;
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+        fInput.disabled = true;
+        progWrap.style.display = 'block';
+        statusEl.innerHTML = '<span style="color:#c9a67a;">Uploading directly to cloud...</span>';
+
+        const startTime = Date.now();
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url, true);
+        xhr.setRequestHeader('Content-Type', f.type || 'video/mp4');
+
+        xhr.upload.addEventListener('progress', function(e) {{
+          if (e.lengthComputable) {{
+            const pct = Math.round(e.loaded / e.total * 100);
+            bar.style.width = pct + '%';
+            bar.textContent = pct + '%';
+            const elapsed = (Date.now() - startTime) / 1000;
+            if (elapsed > 0.5) {{
+              const mbps = (e.loaded / 1048576 / elapsed).toFixed(1);
+              const remain = ((e.total - e.loaded) / (e.loaded / elapsed) );
+              speedEl.textContent = mbps + ' MB/s — ~' + Math.ceil(remain) + 's remaining';
+            }}
+          }}
+        }});
+
+        xhr.addEventListener('load', function() {{
+          if (xhr.status >= 200 && xhr.status < 300) {{
+            bar.style.width = '100%';
+            bar.textContent = '100%';
+            speedEl.textContent = '';
+            statusEl.innerHTML = '<span style="color:#4ade80;">✓ Upload complete! Creating analysis jobs...</span>';
+            // Signal Streamlit to proceed
+            const data = {{ uploaded: true, filename: f.name, size: f.size }};
+            window.parent.postMessage({{
+              type: 'streamlit:setComponentValue',
+              value: JSON.stringify(data)
+            }}, '*');
+            // Also set a marker on the iframe for polling
+            document.getElementById('uploader-{upload_id}').dataset.done = 'true';
+            document.getElementById('uploader-{upload_id}').dataset.filename = f.name;
+            document.getElementById('uploader-{upload_id}').dataset.filesize = f.size;
+          }} else {{
+            statusEl.innerHTML = '<span style="color:#f87171;">Upload failed (HTTP ' + xhr.status + '). Please try again.</span>';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            fInput.disabled = false;
+          }}
+        }});
+
+        xhr.addEventListener('error', function() {{
+          statusEl.innerHTML = '<span style="color:#f87171;">Network error. Please check your connection and try again.</span>';
+          btn.disabled = false;
+          btn.style.opacity = '1';
+          fInput.disabled = false;
+        }});
+
+        xhr.send(f);
+      }});
+    }})();
+    </script>
+    """
+    import streamlit.components.v1 as components
+    components.html(html, height=200)
+
+
+def _start_direct_upload_flow() -> None:
+    """Pre-generate group_id + presigned URL, render the uploader, and wait."""
+    if not name_value.strip():
+        st.warning("กรุณากรอกชื่อก่อนอัปโหลดวิดีโอ")
+        return
+    if not str(report_notify_email or "").strip() or not is_valid_email_format(str(report_notify_email)):
+        st.warning("กรุณากรอกอีเมลที่ถูกต้องก่อนอัปโหลดวิดีโอ")
+        return
+
+    base_user = safe_slug(name_value, fallback="user")
+    group_id = st.session_state.get("direct_upload_group_id") or ""
+    if not group_id:
+        group_id = f"{new_group_id()}__{base_user}"
+        st.session_state["direct_upload_group_id"] = group_id
+
+    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
+    st.session_state["direct_upload_key"] = input_key
+
+    try:
+        url = presigned_put_url(input_key, content_type="video/mp4", expires=1800)
+    except Exception as e:
+        st.error(f"ไม่สามารถสร้าง upload URL ได้: {e}")
+        return
+
+    upload_id = group_id.replace(".", "_").replace("-", "_")
+    _render_direct_uploader(url, upload_id)
+
+
+# Show the direct uploader if not yet uploaded
+if not st.session_state["direct_upload_done"]:
+    st.markdown("**Video (MP4 / MOV / M4V / WEBM)**")
+    _start_direct_upload_flow()
+
+    confirm = st.button(
+        "✓ Upload finished — Create Jobs",
+        type="primary",
+        use_container_width=True,
+        help="Click after the upload bar shows 100%",
+    )
+    st.caption(SUPPORT_TEXT)
+
+    if confirm:
+        input_key = st.session_state.get("direct_upload_key", "")
+        if input_key and s3_key_exists(input_key):
+            st.session_state["direct_upload_done"] = True
+            st.rerun()
+        else:
+            st.error("วิดีโอยังอัปโหลดไม่เสร็จ กรุณารอให้ progress bar ถึง 100% ก่อนกดปุ่ม")
+    st.stop()
+
+# --- Upload confirmed — create jobs ---
+group_id = st.session_state["direct_upload_group_id"]
+input_key = st.session_state["direct_upload_key"]
+uploaded_filename = st.session_state.get("direct_upload_filename") or "input.mp4"
+st.session_state["direct_upload_done"] = False
+st.session_state["direct_upload_group_id"] = ""
+st.session_state["direct_upload_key"] = ""
+st.session_state["direct_upload_filename"] = ""
+
+if True:
     org_payload = people_reader_fixed_settings()
-    if uploaded is None:
-        st.warning("ขั้นตอน 6 — วิดีโอ: กรุณาอัปโหลดไฟล์วิดีโอก่อน")
-        st.stop()
     if not name_value.strip():
         st.warning("ขั้นตอน 6 — ชื่อ: กรุณากรอกชื่อก่อน")
         st.stop()
@@ -1085,26 +1248,8 @@ if run:
     org_display = str(org_payload.get("organization_name") or PAGE_TITLE).strip()
     org_id = normalize_org_name(org_display)
 
-    base_user = safe_slug(name_value, fallback="user")
-    group_id = f"{new_group_id()}__{base_user}"
-    input_key = f"{JOBS_GROUP_PREFIX}{group_id}/input/input.mp4"
-
-    with st.status("Uploading video to cloud...", expanded=True) as status:
-        try:
-            st.write("Uploading your video (this may take a minute for large files)...")
-            s3_upload_stream(
-                key=input_key,
-                file_obj=uploaded,
-                content_type=guess_content_type(uploaded.name or "input.mp4"),
-            )
-            st.write("✓ Upload complete.")
-        except Exception as e:
-            status.update(label="Upload failed", state="error")
-            st.error(f"ขั้นตอน 7 — อัปโหลดวิดีโอ: ล้มเหลว — {e}")
-            st.stop()
-
-        # Do not block on HEAD after upload: upload_fileobj success means the object is there.
-        # Extra HEAD often fails on misconfigured IAM (HeadObject denied) and looked like "Verification failed".
+    with st.status("Creating analysis jobs...", expanded=True) as status:
+        st.write("✓ Video already uploaded directly to S3.")
         st.write("✓ Video uploaded. Queuing analysis jobs...")
         outputs = build_output_keys(group_id)
         created_at = utc_now_iso()
