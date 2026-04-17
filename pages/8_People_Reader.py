@@ -272,15 +272,48 @@ def guess_content_type(filename: str) -> str:
     return "application/octet-stream"
 
 
-def s3_upload_stream(key: str, file_obj: Any, content_type: str) -> None:
+import time as _time
+
+
+class _UploadProgressCallback:
+    """Tracks bytes uploaded for boto3 multipart upload and updates Streamlit UI."""
+
+    def __init__(self, total_bytes: int, progress_bar: Any, status_text: Any):
+        self._total = max(total_bytes, 1)
+        self._uploaded = 0
+        self._bar = progress_bar
+        self._text = status_text
+        self._start = _time.monotonic()
+
+    def __call__(self, bytes_transferred: int) -> None:
+        self._uploaded += bytes_transferred
+        pct = min(self._uploaded / self._total, 1.0)
+        self._bar.progress(pct)
+        elapsed = _time.monotonic() - self._start
+        if elapsed > 0.3:
+            speed_mbps = self._uploaded / 1_048_576 / elapsed
+            remaining_bytes = self._total - self._uploaded
+            eta_s = int(remaining_bytes / (self._uploaded / elapsed)) if self._uploaded > 0 else 0
+            self._text.caption(f"{pct:.0%} — {speed_mbps:.1f} MB/s — ~{eta_s}s remaining")
+
+
+def s3_upload_stream(
+    key: str, file_obj: Any, content_type: str,
+    progress_bar: Any = None, status_text: Any = None,
+) -> None:
     if hasattr(file_obj, "seek"):
         file_obj.seek(0)
+    total = int(getattr(file_obj, "size", 0) or 0)
+    callback = None
+    if progress_bar is not None and status_text is not None and total > 0:
+        callback = _UploadProgressCallback(total, progress_bar, status_text)
     s3.upload_fileobj(
         Fileobj=file_obj,
         Bucket=AWS_BUCKET,
         Key=key,
         ExtraArgs={"ContentType": content_type},
         Config=S3_UPLOAD_CONFIG,
+        Callback=callback,
     )
 
 
@@ -1100,11 +1133,17 @@ if run:
     with st.status("Uploading video to cloud...", expanded=True) as status:
         try:
             st.write(f"Uploading `{uploaded.name}` ({uploaded_size_mb:.1f} MB)...")
+            upload_bar = st.progress(0.0)
+            upload_eta = st.empty()
             s3_upload_stream(
                 key=input_key,
                 file_obj=uploaded,
                 content_type=guess_content_type(uploaded.name or "input.mp4"),
+                progress_bar=upload_bar,
+                status_text=upload_eta,
             )
+            upload_bar.progress(1.0)
+            upload_eta.caption("100% — Upload complete")
             st.write("✓ Upload complete.")
         except Exception as e:
             status.update(label="Upload failed", state="error")
