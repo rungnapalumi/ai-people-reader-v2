@@ -14,7 +14,7 @@ import boto3
 import streamlit as st
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 # -------------------------
 # Page setup
@@ -276,7 +276,11 @@ import time as _time
 
 
 class _UploadProgressCallback:
-    """Tracks bytes uploaded for boto3 multipart upload and updates Streamlit UI."""
+    """Tracks bytes uploaded for boto3 multipart upload and updates Streamlit UI.
+
+    Widget updates run from boto3's worker threads (no ScriptRunContext). On newer Streamlit
+    that can emit warnings or raise; swallow those so a UI hiccup never aborts the upload.
+    """
 
     def __init__(self, total_bytes: int, progress_bar: Any, status_text: Any):
         self._total = max(total_bytes, 1)
@@ -288,33 +292,108 @@ class _UploadProgressCallback:
     def __call__(self, bytes_transferred: int) -> None:
         self._uploaded += bytes_transferred
         pct = min(self._uploaded / self._total, 1.0)
-        self._bar.progress(pct)
+        try:
+            self._bar.progress(pct)
+        except Exception:
+            pass
         elapsed = _time.monotonic() - self._start
         if elapsed > 0.3:
             speed_mbps = self._uploaded / 1_048_576 / elapsed
             remaining_bytes = self._total - self._uploaded
             eta_s = int(remaining_bytes / (self._uploaded / elapsed)) if self._uploaded > 0 else 0
-            self._text.caption(f"{pct:.0%} — {speed_mbps:.1f} MB/s — ~{eta_s}s remaining")
+            try:
+                self._text.caption(f"{pct:.0%} — {speed_mbps:.1f} MB/s — ~{eta_s}s remaining")
+            except Exception:
+                pass
+
+
+# Retry transient S3 uploads: Render worker restarts, cold-start networking, and momentary
+# boto3 SSL/connection resets all look like a blank failure from the user side otherwise.
+S3_UPLOAD_MAX_ATTEMPTS = 3
+S3_UPLOAD_RETRY_BACKOFF_SEC = 1.5
+
+
+def _is_transient_s3_error(exc: BaseException) -> bool:
+    """Treat connection/timeout/5xx and closed-file errors as retryable; auth/permission errors are not."""
+    if isinstance(exc, ClientError):
+        code = str((exc.response.get("Error") or {}).get("Code") or "")
+        # Retryable S3/network 5xx-ish responses; keep 4xx (AccessDenied, NoSuchBucket, ...) fatal.
+        return code in {
+            "RequestTimeout",
+            "RequestTimeoutException",
+            "SlowDown",
+            "InternalError",
+            "ServiceUnavailable",
+            "ThrottlingException",
+        }
+    if isinstance(exc, BotoCoreError):
+        # BotoCoreError covers EndpointConnectionError / ReadTimeoutError / ConnectionClosedError / etc.
+        return True
+    if isinstance(exc, (OSError, ValueError)):
+        # OSError: socket resets during a Render worker swap.
+        # ValueError: "I/O operation on closed file" if the UploadedFile buffer was invalidated mid-flight.
+        return True
+    return False
 
 
 def s3_upload_stream(
     key: str, file_obj: Any, content_type: str,
     progress_bar: Any = None, status_text: Any = None,
 ) -> None:
-    if hasattr(file_obj, "seek"):
-        file_obj.seek(0)
     total = int(getattr(file_obj, "size", 0) or 0)
-    callback = None
-    if progress_bar is not None and status_text is not None and total > 0:
-        callback = _UploadProgressCallback(total, progress_bar, status_text)
-    s3.upload_fileobj(
-        Fileobj=file_obj,
-        Bucket=AWS_BUCKET,
-        Key=key,
-        ExtraArgs={"ContentType": content_type},
-        Config=S3_UPLOAD_CONFIG,
-        Callback=callback,
-    )
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, S3_UPLOAD_MAX_ATTEMPTS + 1):
+        try:
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+            # Attempts >1 drop the callback AND force single-thread upload. Fixes the class of failures
+            # where boto3 worker threads touching Streamlit widgets (no ScriptRunContext) raise through.
+            use_callback = attempt == 1 and progress_bar is not None and status_text is not None and total > 0
+            cfg = S3_UPLOAD_CONFIG if attempt == 1 else TransferConfig(
+                multipart_threshold=8 * 1024 * 1024,
+                multipart_chunksize=8 * 1024 * 1024,
+                max_concurrency=1,
+                use_threads=False,
+            )
+            callback = _UploadProgressCallback(total, progress_bar, status_text) if use_callback else None
+            if attempt > 1 and status_text is not None:
+                try:
+                    status_text.caption(f"Retrying upload (attempt {attempt}/{S3_UPLOAD_MAX_ATTEMPTS})…")
+                except Exception:
+                    pass
+            s3.upload_fileobj(
+                Fileobj=file_obj,
+                Bucket=AWS_BUCKET,
+                Key=key,
+                ExtraArgs={"ContentType": content_type},
+                Config=cfg,
+                Callback=callback,
+            )
+            return
+        except Exception as exc:
+            last_exc = exc
+            # Always give the single-thread fallback at least one shot on attempt 1 — even for
+            # "mystery" empty-message exceptions from boto3 threads — before surfacing the error.
+            is_last_attempt = attempt >= S3_UPLOAD_MAX_ATTEMPTS
+            is_fatal = attempt > 1 and not _is_transient_s3_error(exc)
+            if is_last_attempt or is_fatal:
+                raise
+            _time.sleep(S3_UPLOAD_RETRY_BACKOFF_SEC * attempt)
+    if last_exc is not None:
+        raise last_exc
+
+
+def _format_exception(exc: BaseException) -> str:
+    """Never return an empty string — boto3/kill-signal failures often have str(e) == ''."""
+    msg = str(exc or "").strip()
+    if not msg:
+        msg = repr(exc).strip()
+    cls = type(exc).__name__
+    if isinstance(exc, ClientError):
+        code = str((exc.response.get("Error") or {}).get("Code") or "").strip()
+        if code:
+            cls = f"{cls}[{code}]"
+    return f"{cls}: {msg}" if msg else cls
 
 
 def presigned_put_url(key: str, expires: int = 1800) -> str:
@@ -1147,7 +1226,13 @@ if run:
             st.write("✓ Upload complete.")
         except Exception as e:
             status.update(label="Upload failed", state="error")
-            st.error(f"ขั้นตอน 7 — อัปโหลดวิดีโอ: ล้มเหลว — {e}")
+            err_msg = _format_exception(e)
+            st.error(f"ขั้นตอน 7 — อัปโหลดวิดีโอ: ล้มเหลว — {err_msg}")
+            st.caption(
+                "If the message above is empty or mentions a connection/closed-file error, the Render "
+                "instance likely restarted mid-upload. Hard-refresh the page (Cmd/Ctrl+Shift+R), "
+                "re-select the video, and click Start Analysis again."
+            )
             st.stop()
 
         st.write("✓ Video uploaded. Queuing analysis jobs...")
