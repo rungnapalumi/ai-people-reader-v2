@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import gc
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -850,9 +851,10 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
     scale = 2
     w2, h2 = w * scale, h * scale
     kblur = max(3, int(round(glow_sigma * 4)) | 1)
-    pose_max_side = max(0, int(os.getenv("SKELETON_POSE_MAX_SIDE", "1280") or "1280"))
-    model_cx = max(0, min(2, int(os.getenv("SKELETON_MODEL_COMPLEXITY", "2") or "2")))
+    pose_max_side = max(0, int(os.getenv("SKELETON_POSE_MAX_SIDE", "640") or "640"))
+    model_cx = max(0, min(2, int(os.getenv("SKELETON_MODEL_COMPLEXITY", "1") or "1")))
     last_landmarks = None
+    process_every_n = 2 if fps >= 20 else 1
 
     with Pose(
         static_image_mode=False,
@@ -872,9 +874,10 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
             if fw != w or fh != h:
                 frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
 
-            rgb, _pw, _ph = _prepare_pose_input_uniform(frame, pose_max_side)
-            res = pose.process(rgb)
-            last_landmarks = res.pose_landmarks.landmark if res.pose_landmarks else None
+            if frame_n % process_every_n == 0:
+                rgb, _pw, _ph = _prepare_pose_input_uniform(frame, pose_max_side)
+                res = pose.process(rgb)
+                last_landmarks = res.pose_landmarks.landmark if res.pose_landmarks else last_landmarks
 
             if last_landmarks:
                 lms = last_landmarks
@@ -1390,6 +1393,7 @@ def main_loop(poll_seconds: int = 3) -> None:
                     email_status,
                 )
                 # One job per poll: re-list pending next loop (avoids stale snapshot + clearer logs).
+                gc.collect()
                 break
 
             except Exception as e:
