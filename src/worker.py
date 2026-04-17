@@ -2,6 +2,10 @@ import os
 import io
 import json
 import gc
+import threading
+import resource
+import uuid
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -80,6 +84,19 @@ PROCESSING_RECOVERY_MAX_ITEMS = int(os.getenv("PROCESSING_RECOVERY_MAX_ITEMS", "
 PROCESSING_RECOVERY_INTERVAL_SECONDS = int(os.getenv("PROCESSING_RECOVERY_INTERVAL_SECONDS", "60"))
 IDLE_HEARTBEAT_SECONDS = int(os.getenv("IDLE_HEARTBEAT_SECONDS", "60"))
 MAX_VIDEO_JOB_RETRIES = int(os.getenv("MAX_VIDEO_JOB_RETRIES", "2"))
+# Unique per-process identifier stamped into every processing JSON we claim. Used by
+# orphan detection to tell "my live claim" from "a dead worker left this behind".
+WORKER_ID = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+# On startup the video worker is the sole claimer of processing/*.json (render.yaml: single
+# instance). Any JSON already sitting in processing/ must therefore belong to a crashed
+# predecessor — reclaim unconditionally instead of waiting PROCESSING_STALE_MINUTES, because
+# the predecessor's heartbeat thread may have refreshed LastModified seconds before it died.
+FORCE_RECOVER_ON_STARTUP = str(os.getenv("FORCE_RECOVER_ON_STARTUP", "true")).strip().lower() in ("1", "true", "yes", "on")
+# Secondary orphan sweep: when the worker is idle (no claimed job in this process) but S3
+# still shows processing>0, read each processing JSON and reclaim any whose worker_id does
+# not match this process's WORKER_ID. Cheap (only runs while idle) and complementary to the
+# age-based stale check.
+ORPHAN_SWEEP_WHEN_IDLE = str(os.getenv("ORPHAN_SWEEP_WHEN_IDLE", "true")).strip().lower() in ("1", "true", "yes", "on")
 # S3 lists pending in lexicographic order; many report jobs can fill the first N keys and hide dots/skeleton.
 REPORT_JOB_MODES = frozenset({"report", "report_th_en", "report_generator"})
 # Max *.json keys to *read* under jobs/pending/ per list_pending() call while searching for
@@ -164,9 +181,9 @@ def wait_for_dots_mp4_before_skeleton(job: Dict[str, Any], group_id: str) -> Non
     if not gid:
         return
     dots_key = str(job.get("dots_output_wait_key") or "").strip() or f"jobs/output/groups/{gid}/dots.mp4"
-    timeout_s = max(60.0, float(os.getenv("SKELETON_WAIT_FOR_DOTS_TIMEOUT_SEC", "7200") or "7200"))
+    timeout_s = max(60.0, float(os.getenv("SKELETON_WAIT_FOR_DOTS_TIMEOUT_SEC", "300") or "300"))
     poll_s = max(2.0, float(os.getenv("SKELETON_WAIT_FOR_DOTS_POLL_SEC", "5") or "5"))
-    log_every = max(20.0, float(os.getenv("SKELETON_WAIT_FOR_DOTS_LOG_EVERY_SEC", "60") or "60"))
+    log_every = max(10.0, float(os.getenv("SKELETON_WAIT_FOR_DOTS_LOG_EVERY_SEC", "30") or "30"))
     deadline = time.time() + timeout_s
     last_log = 0.0
     if s3_head_exists(dots_key):
@@ -185,11 +202,9 @@ def wait_for_dots_mp4_before_skeleton(job: Dict[str, Any], group_id: str) -> Non
             logging.info("[skeleton] still waiting for dots.mp4 group_id=%s key=%s", gid, dots_key)
             last_log = now
         time.sleep(poll_s)
-    logging.warning(
-        "[skeleton] timed out waiting for dots (%ss) — continuing skeleton encode group_id=%s key=%s",
-        int(timeout_s),
-        gid,
-        dots_key,
+    raise RuntimeError(
+        f"[skeleton] timed out waiting for dots.mp4 ({int(timeout_s)}s) — failing job "
+        f"group_id={gid} key={dots_key}. Dots job may have failed or is still processing."
     )
 
 
@@ -403,6 +418,79 @@ def count_jobs(prefix: str) -> int:
     return total
 
 
+def force_recover_all_processing_on_startup(max_items: int) -> int:
+    """Unconditionally move every jobs/processing/*.json back to pending.
+
+    Safe only because the video worker is deployed as a single instance (see render.yaml):
+    when this process starts, no other worker is holding a live claim, so every file under
+    processing/ belongs to a crashed predecessor. The age-based stale recovery can be fooled
+    for several minutes after a crash because the dying process's ProcessingHeartbeat may
+    have just refreshed LastModified; this bypass closes that window.
+    """
+    max_items = max(1, int(max_items or 1))
+    recovered = 0
+    scanned = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PROCESSING):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if not key.endswith(".json"):
+                continue
+            scanned += 1
+            try:
+                move_job(key, PENDING)
+                recovered += 1
+                logging.warning(
+                    "[startup_force_recovery] reclaimed orphaned processing->pending key=%s (single-instance worker)",
+                    key,
+                )
+            except Exception as e:
+                logging.warning("[startup_force_recovery] failed to move key=%s err=%s", key, e)
+            if scanned >= max_items:
+                return recovered
+    return recovered
+
+
+def recover_orphaned_processing_by_worker_id(current_worker_id: str, max_items: int) -> int:
+    """Reclaim any processing JSON whose worker_id differs from this process's WORKER_ID.
+
+    Run only while this worker holds no active claim (idle sweep). A JSON without a
+    worker_id field is treated as legacy/orphan and reclaimed too.
+    """
+    max_items = max(1, int(max_items or 1))
+    recovered = 0
+    scanned = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PROCESSING):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if not key.endswith(".json"):
+                continue
+            scanned += 1
+            try:
+                body = s3_read_json(key)
+            except Exception as e:
+                logging.warning("[orphan_sweep] could not read key=%s err=%s", key, e)
+                continue
+            owner = str(body.get("worker_id") or "").strip()
+            if owner == current_worker_id:
+                continue
+            try:
+                move_job(key, PENDING)
+                recovered += 1
+                logging.warning(
+                    "[orphan_sweep] reclaimed key=%s owner=%r (current worker_id=%s)",
+                    key,
+                    owner or "<missing>",
+                    current_worker_id,
+                )
+            except Exception as e:
+                logging.warning("[orphan_sweep] failed to move key=%s err=%s", key, e)
+            if scanned >= max_items:
+                return recovered
+    return recovered
+
+
 def recover_stale_processing_jobs(stale_minutes: int, max_items: int) -> int:
     stale_minutes = max(1, int(stale_minutes or 1))
     max_items = max(1, int(max_items or 1))
@@ -507,7 +595,7 @@ def validate_video_file(path: str) -> None:
 
     if frames_meta <= 0:
         n = 0
-        while n < 2_000_000:
+        while n < 50_000:
             ok, _ = cap.read()
             if not ok:
                 break
@@ -531,8 +619,11 @@ def validate_video_file(path: str) -> None:
         raise RuntimeError(f"Output video duration too short ({duration:.3f}s): {path}")
 
 
-def _run_ffmpeg_transcode(cmd: List[str]) -> None:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+def _run_ffmpeg_transcode(cmd: List[str], timeout: int = 600) -> None:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"ffmpeg transcode timed out after {timeout}s")
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg transcode failed: {proc.stderr[-400:]}")
 
@@ -842,13 +933,13 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
     WHITE_BGR = (255, 255, 255)
     skeleton_pose_spread = 1.0
     vis_min = 0.35
-    glow_line_thick = 11
+    glow_line_thick = 6
     core_line_thick = 2
-    glow_joint_r = 7
-    core_joint_r = 3
-    glow_sigma = 4.0
+    glow_joint_r = 4
+    core_joint_r = 2
+    glow_sigma = 2.0
     glow_alpha = 0.52
-    scale = 2
+    scale = 1
     w2, h2 = w * scale, h * scale
     kblur = max(3, int(round(glow_sigma * 4)) | 1)
     pose_max_side = max(0, int(os.getenv("SKELETON_POSE_MAX_SIDE", "640") or "640"))
@@ -1122,6 +1213,51 @@ def build_report_th(fi: FirstImpressionResult, meta: Dict[str, Any]) -> bytes:
 
 
 # -----------------------------
+# Processing heartbeat (prevents stale recovery during long skeleton encode)
+# -----------------------------
+class ProcessingHeartbeat:
+    """Background thread that periodically re-writes the processing JSON to S3,
+    refreshing its LastModified timestamp so stale-recovery doesn't reclaim it."""
+
+    def __init__(self, processing_key: str, job: Dict[str, Any], interval_s: float = 60.0):
+        self._key = processing_key
+        self._job = job
+        self._interval = max(10.0, interval_s)
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="heartbeat")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self._stop.wait(timeout=self._interval):
+            try:
+                s3_write_json(self._key, self._job)
+                logging.info("[heartbeat-thread] refreshed processing key=%s", self._key)
+            except Exception as exc:
+                logging.warning("[heartbeat-thread] failed to refresh key=%s err=%s", self._key, exc)
+
+
+def _get_peak_rss_mb() -> float:
+    """Return peak RSS in MB using resource module (macOS returns bytes, Linux returns KB)."""
+    try:
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        import sys
+        if sys.platform == "darwin":
+            return ru.ru_maxrss / (1024 * 1024)
+        return ru.ru_maxrss / 1024
+    except Exception:
+        return -1.0
+
+
+# -----------------------------
 # Job processor
 # -----------------------------
 def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -1233,11 +1369,25 @@ def main_loop(poll_seconds: int = 3) -> None:
         "Scope: only modes dots|skeleton. mode=report stays in %s for the REPORT worker — both should run in parallel.",
         PENDING,
     )
+    logging.info(
+        "Identity: worker_id=%s force_recover_on_startup=%s orphan_sweep_when_idle=%s",
+        WORKER_ID,
+        FORCE_RECOVER_ON_STARTUP,
+        ORPHAN_SWEEP_WHEN_IDLE,
+    )
+    if FORCE_RECOVER_ON_STARTUP:
+        forced = force_recover_all_processing_on_startup(PROCESSING_RECOVERY_MAX_ITEMS)
+        logging.info("[startup_force_recovery] completed reclaimed=%s", forced)
     recovered = recover_stale_processing_jobs(PROCESSING_STALE_MINUTES, PROCESSING_RECOVERY_MAX_ITEMS)
     logging.info("[startup_recovery] completed recovered=%s", recovered)
     last_recovery_at = time.time()
     last_heartbeat_at = 0.0
     last_queue_diag_ts = 0.0
+    last_orphan_sweep_at = 0.0
+    # We track in-process active claims so an idle orphan sweep only runs when this worker
+    # holds nothing — avoids a rare race where we'd reclaim our own freshly-written JSON
+    # between status write and heartbeat start.
+    active_claim_keys: set = set()
 
     while True:
         now = time.time()
@@ -1253,14 +1403,38 @@ def main_loop(poll_seconds: int = 3) -> None:
                 pending_count = -1
                 processing_count = -1
             logging.info(
-                "[heartbeat] worker_alive pending_json_all_modes=%s processing=%s poll_interval=%ss "
+                "[heartbeat] worker_alive worker_id=%s active_claims=%s pending_json_all_modes=%s processing=%s poll_interval=%ss "
                 "| note: pending count is every jobs/pending/*.json (includes report). "
                 "Video worker only claims dots/skeleton; mail is drained by REPORT worker via jobs/email_pending/.",
+                WORKER_ID,
+                len(active_claim_keys),
                 pending_count,
                 processing_count,
                 poll_seconds,
             )
             last_heartbeat_at = now
+
+            # Idle orphan sweep: if S3 shows processing>0 but this worker is holding no
+            # claim, any foreign worker_id on disk belongs to a dead predecessor. This
+            # catches the scenario where a predecessor's heartbeat refreshed LastModified
+            # just before it died, so the age-based stale check won't reclaim for minutes.
+            if (
+                ORPHAN_SWEEP_WHEN_IDLE
+                and isinstance(processing_count, int)
+                and processing_count > 0
+                and not active_claim_keys
+                and (now - last_orphan_sweep_at) >= max(30.0, float(IDLE_HEARTBEAT_SECONDS))
+            ):
+                last_orphan_sweep_at = now
+                try:
+                    reclaimed = recover_orphaned_processing_by_worker_id(
+                        WORKER_ID, PROCESSING_RECOVERY_MAX_ITEMS
+                    )
+                    logging.info(
+                        "[orphan_sweep] idle sweep completed reclaimed=%s", reclaimed
+                    )
+                except Exception as exc:
+                    logging.warning("[orphan_sweep] idle sweep errored err=%s", exc)
 
         # Scan deeper in pending queue so skeleton/dots are not starved
         # by many report jobs.
@@ -1350,8 +1524,10 @@ def main_loop(poll_seconds: int = 3) -> None:
             processing_key = claim_job(pending_key)
             if not processing_key:
                 continue
+            active_claim_keys.add(processing_key)
 
             job: Optional[Dict[str, Any]] = None
+            heartbeat: Optional[ProcessingHeartbeat] = None
             try:
                 job = s3_read_json(processing_key)
                 mode = (job.get("mode") or "").strip()
@@ -1368,10 +1544,29 @@ def main_loop(poll_seconds: int = 3) -> None:
                     continue
                 
                 job["status"] = "processing"
+                job["worker_id"] = WORKER_ID
+                job["claimed_at"] = datetime.now(timezone.utc).isoformat()
                 s3_write_json(processing_key, job)
 
+                if mode in ("skeleton", "dots"):
+                    hb_interval = max(30.0, float(PROCESSING_STALE_MINUTES) * 60.0 / 3.0)
+                    heartbeat = ProcessingHeartbeat(processing_key, job, interval_s=hb_interval)
+                    heartbeat.start()
+
                 logging.info("Processing job job_id=%s group_id=%s mode=%s", job.get("job_id"), group_id, mode)
-                result = process_job(job)
+                try:
+                    rss_before = _get_peak_rss_mb()
+                    result = process_job(job)
+                    if mode == "skeleton":
+                        rss_after = _get_peak_rss_mb()
+                        logging.info(
+                            "[skeleton] finished job_id=%s peak_rss_mb=%.1f (before=%.1f)",
+                            job.get("job_id"), rss_after, rss_before,
+                        )
+                finally:
+                    if heartbeat is not None:
+                        heartbeat.stop()
+
                 email_sent, email_status = send_mode_ready_email(job, result)
 
                 job["status"] = "finished"
@@ -1397,9 +1592,16 @@ def main_loop(poll_seconds: int = 3) -> None:
                 break
 
             except Exception as e:
+                if heartbeat is not None:
+                    heartbeat.stop()
+                    heartbeat = None
                 _jid = (job.get("job_id") if isinstance(job, dict) else "") or ""
                 _gid = (job.get("group_id") if isinstance(job, dict) else "") or ""
-                logging.exception("Job failed job_id=%s group_id=%s: %s", _jid, _gid, e)
+                _peak = _get_peak_rss_mb()
+                logging.exception(
+                    "Job failed job_id=%s group_id=%s peak_rss_mb=%.1f: %s",
+                    _jid, _gid, _peak, e,
+                )
                 try:
                     job = s3_read_json(processing_key)
                     current_mode = str(job.get("mode") or "").strip().lower()
@@ -1426,6 +1628,8 @@ def main_loop(poll_seconds: int = 3) -> None:
                 except Exception:
                     pass
                 move_job(processing_key, FAILED)
+            finally:
+                active_claim_keys.discard(processing_key)
 
         time.sleep(0.2)
 
