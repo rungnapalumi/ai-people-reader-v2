@@ -939,46 +939,13 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
     core_joint_r = 2
     glow_sigma = 2.0
     glow_alpha = 0.52
-    # Drawing canvas scale. 1.0 = draw at native resolution (highest quality), <1.0 = draw
-    # on a smaller canvas and upscale once before writing (big speedup for 1080p+ sources,
-    # since GaussianBlur + per-edge antialiased cv2.line cost scale with pixel count).
-    # Default 1.0 keeps byte-identical output. Render: set SKELETON_RENDER_SCALE=0.5 for ~3x
-    # faster per-frame drawing on 1080p video with minimal visual difference.
-    try:
-        render_scale = float(os.getenv("SKELETON_RENDER_SCALE", "1.0") or "1.0")
-    except ValueError:
-        render_scale = 1.0
-    render_scale = max(0.25, min(1.0, render_scale))
-    w2 = max(2, int(round(w * render_scale)))
-    h2 = max(2, int(round(h * render_scale)))
+    scale = 1
+    w2, h2 = w * scale, h * scale
     kblur = max(3, int(round(glow_sigma * 4)) | 1)
-    # Tuned for Render starter plan: complexity=0 (BlazePose Lite) is ~2x faster than
-    # complexity=1 with negligible visual difference on full-body skeleton overlays; smaller
-    # pose input (432 vs 640) roughly halves inference time again. Both are overridable via
-    # env if a future video needs higher accuracy.
-    pose_max_side = max(0, int(os.getenv("SKELETON_POSE_MAX_SIDE", "432") or "432"))
-    model_cx = max(0, min(2, int(os.getenv("SKELETON_MODEL_COMPLEXITY", "0") or "0")))
+    pose_max_side = max(0, int(os.getenv("SKELETON_POSE_MAX_SIDE", "640") or "640"))
+    model_cx = max(0, min(2, int(os.getenv("SKELETON_MODEL_COMPLEXITY", "1") or "1")))
     last_landmarks = None
-    # Inference every Nth frame; in-between frames reuse last_landmarks. For 24+fps video
-    # inferring every 3rd frame still yields visually smooth skeleton because source frames
-    # are <=42ms apart and body pose changes slowly relative to that. Override with
-    # SKELETON_PROCESS_EVERY_N for stricter accuracy.
-    _pen_env = os.getenv("SKELETON_PROCESS_EVERY_N", "").strip()
-    if _pen_env.isdigit() and int(_pen_env) >= 1:
-        process_every_n = int(_pen_env)
-    elif fps >= 24:
-        process_every_n = 3
-    elif fps >= 16:
-        process_every_n = 2
-    else:
-        process_every_n = 1
-    logging.info(
-        "[skeleton] encoder cfg: model_complexity=%s pose_max_side=%s process_every_n=%s fps=%.1f (env overrides: SKELETON_MODEL_COMPLEXITY, SKELETON_POSE_MAX_SIDE, SKELETON_PROCESS_EVERY_N)",
-        model_cx,
-        pose_max_side,
-        process_every_n,
-        float(fps or 0.0),
-    )
+    process_every_n = 2 if fps >= 20 else 1
 
     with Pose(
         static_image_mode=False,
