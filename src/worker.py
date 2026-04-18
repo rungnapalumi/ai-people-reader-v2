@@ -928,24 +928,48 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
 
     vw = write_mp4(out_path, fps, w, h)
 
-    # Cyan glow + white core; body-only; spread 1.0 = aligned to body (uniform pose resize).
+    # ----- Fixed colors (never vary per video) -----
+    # Cyan outer, white inner. Drawn DIRECTLY on the frame (no alpha blend, no Gaussian
+    # blur) so the rendered color is exactly these BGR values regardless of what is
+    # underneath. Previous "glow" pipeline composited a blurred cyan layer via
+    # cv2.addWeighted(frame, 1.0, glow, 0.52, 0.0) which made the perceived color depend
+    # on background brightness — bright videos saturated to white, dark videos stayed cyan.
     CYAN_BGR = (255, 255, 0)
     WHITE_BGR = (255, 255, 255)
+
     skeleton_pose_spread = 1.0
     vis_min = 0.35
-    glow_line_thick = 6
-    core_line_thick = 2
-    glow_joint_r = 4
-    core_joint_r = 2
+
+    # ----- Resolution-aware line thickness so all videos look similar -----
+    # Fixed pixel thickness looked thin on 1080p and chunky on 540p. Scale by the shorter
+    # side of the output so a given person on screen gets visually-consistent strokes.
+    # Overridable via env for fine-tuning without redeploying code.
+    _min_side = max(1, min(w, h))
+    _auto_outer = max(3, int(round(_min_side / 240)))  # 1080p -> 4-5, 720p -> 3, 480p -> 2
+    try:
+        outer_thick = max(1, int(os.getenv("SKELETON_OUTER_THICKNESS", "0") or "0") or _auto_outer)
+    except ValueError:
+        outer_thick = _auto_outer
+    inner_thick = max(1, int(os.getenv("SKELETON_INNER_THICKNESS", "0") or "0") or max(1, outer_thick - 2))
+    outer_joint_r = outer_thick + 1
+    inner_joint_r = max(1, inner_thick)
+
+    # ----- Optional legacy glow mode, off by default -----
+    # SKELETON_STYLE=glow restores the previous blurred-cyan compositing if ever wanted.
+    skeleton_style = str(os.getenv("SKELETON_STYLE", "sharp")).strip().lower()
     glow_sigma = 2.0
     glow_alpha = 0.52
-    scale = 1
-    w2, h2 = w * scale, h * scale
     kblur = max(3, int(round(glow_sigma * 4)) | 1)
+
     pose_max_side = max(0, int(os.getenv("SKELETON_POSE_MAX_SIDE", "640") or "640"))
     model_cx = max(0, min(2, int(os.getenv("SKELETON_MODEL_COMPLEXITY", "1") or "1")))
     last_landmarks = None
     process_every_n = 2 if fps >= 20 else 1
+
+    logging.info(
+        "[skeleton] render cfg: style=%s outer_thick=%s inner_thick=%s w=%s h=%s fps=%.1f",
+        skeleton_style, outer_thick, inner_thick, w, h, float(fps or 0.0),
+    )
 
     with Pose(
         static_image_mode=False,
@@ -973,43 +997,54 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
             if last_landmarks:
                 lms = last_landmarks
 
-                hi = cv2.resize(frame, (w2, h2), interpolation=cv2.INTER_LINEAR)
-                glow_layer = np.zeros_like(hi, dtype=np.uint8)
+                if skeleton_style == "glow":
+                    # Legacy blurred-glow compositor (kept for parity / opt-in via env).
+                    glow_layer = np.zeros_like(frame, dtype=np.uint8)
+                    for a, b in SKELETON_EDGES:
+                        la, lb = lms[a], lms[b]
+                        if la.visibility < vis_min or lb.visibility < vis_min:
+                            continue
+                        xa, ya = _lm_to_px_spread(la, w, h, skeleton_pose_spread)
+                        xb, yb = _lm_to_px_spread(lb, w, h, skeleton_pose_spread)
+                        cv2.line(glow_layer, (xa, ya), (xb, yb), CYAN_BGR, outer_thick + 4, cv2.LINE_AA)
+                    for pid in SKELETON_JOINT_IDS:
+                        lm = lms[pid]
+                        if lm.visibility < vis_min:
+                            continue
+                        x, y = _lm_to_px_spread(lm, w, h, skeleton_pose_spread)
+                        cv2.circle(glow_layer, (x, y), outer_joint_r + 2, CYAN_BGR, -1, lineType=cv2.LINE_AA)
+                    glow_soft = cv2.GaussianBlur(glow_layer, (kblur, kblur), glow_sigma)
+                    frame = cv2.addWeighted(frame, 1.0, glow_soft, glow_alpha, 0.0)
 
+                # Sharp cyan outer stroke — always pure (255,255,0) BGR.
                 for a, b in SKELETON_EDGES:
                     la, lb = lms[a], lms[b]
                     if la.visibility < vis_min or lb.visibility < vis_min:
                         continue
-                    xa, ya = _lm_to_px_spread(la, w2, h2, skeleton_pose_spread)
-                    xb, yb = _lm_to_px_spread(lb, w2, h2, skeleton_pose_spread)
-                    cv2.line(glow_layer, (xa, ya), (xb, yb), CYAN_BGR, glow_line_thick, cv2.LINE_AA)
-
+                    xa, ya = _lm_to_px_spread(la, w, h, skeleton_pose_spread)
+                    xb, yb = _lm_to_px_spread(lb, w, h, skeleton_pose_spread)
+                    cv2.line(frame, (xa, ya), (xb, yb), CYAN_BGR, outer_thick, cv2.LINE_AA)
                 for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
                     if lm.visibility < vis_min:
                         continue
-                    x, y = _lm_to_px_spread(lm, w2, h2, skeleton_pose_spread)
-                    cv2.circle(glow_layer, (x, y), glow_joint_r, CYAN_BGR, -1, lineType=cv2.LINE_AA)
+                    x, y = _lm_to_px_spread(lm, w, h, skeleton_pose_spread)
+                    cv2.circle(frame, (x, y), outer_joint_r, CYAN_BGR, -1, lineType=cv2.LINE_AA)
 
-                glow_soft = cv2.GaussianBlur(glow_layer, (kblur, kblur), glow_sigma)
-                frame2 = cv2.addWeighted(hi, 1.0, glow_soft, glow_alpha, 0.0)
-
+                # Sharp white inner stroke — always pure (255,255,255) BGR.
                 for a, b in SKELETON_EDGES:
                     la, lb = lms[a], lms[b]
                     if la.visibility < vis_min or lb.visibility < vis_min:
                         continue
-                    xa, ya = _lm_to_px_spread(la, w2, h2, skeleton_pose_spread)
-                    xb, yb = _lm_to_px_spread(lb, w2, h2, skeleton_pose_spread)
-                    cv2.line(frame2, (xa, ya), (xb, yb), WHITE_BGR, core_line_thick, cv2.LINE_AA)
-
+                    xa, ya = _lm_to_px_spread(la, w, h, skeleton_pose_spread)
+                    xb, yb = _lm_to_px_spread(lb, w, h, skeleton_pose_spread)
+                    cv2.line(frame, (xa, ya), (xb, yb), WHITE_BGR, inner_thick, cv2.LINE_AA)
                 for pid in SKELETON_JOINT_IDS:
                     lm = lms[pid]
                     if lm.visibility < vis_min:
                         continue
-                    x, y = _lm_to_px_spread(lm, w2, h2, skeleton_pose_spread)
-                    cv2.circle(frame2, (x, y), core_joint_r, WHITE_BGR, -1, lineType=cv2.LINE_AA)
-
-                frame = cv2.resize(frame2, (w, h), interpolation=cv2.INTER_LINEAR)
+                    x, y = _lm_to_px_spread(lm, w, h, skeleton_pose_spread)
+                    cv2.circle(frame, (x, y), inner_joint_r, WHITE_BGR, -1, lineType=cv2.LINE_AA)
 
             vw.write(frame)
 
