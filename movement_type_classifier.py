@@ -397,7 +397,10 @@ TYPE_TEMPLATES: Dict[str, TypeTemplate] = {
         expected={
             "eye_contact": (0.90, 1.00),
             "uprightness": (0.82, 0.96),
-            "stance_width_score": (0.30, 0.44),
+            # Lower bound tightened from 0.30 -> 0.345 so Type 3 (0.303) and
+            # Type 7 (0.332) no longer fall inside Type 10's stance band.
+            # Type 10's own reference measures 0.374, still comfortably inside.
+            "stance_width_score": (0.345, 0.44),
             "weight_shift_score": (0.89, 1.00),
             "engagement_score": (0.00, 0.13),
             "gesture_variation_score": (0.00, 0.08),
