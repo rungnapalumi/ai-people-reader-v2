@@ -409,6 +409,9 @@ def analyze_first_impression_from_video(
     torso_tilt_list: List[float] = []
     # v2 uprightness signals
     sh_hip_offset_list: List[float] = []
+    # v2 eye-contact signals
+    nose_offset_ratio_list: List[float] = []
+    nose_sh_ratio_list: List[float] = []
 
     # Simple eye contact: one audience = look at camera. many = look around (scanning).
     is_many_audience = str(audience_mode or "").strip().lower() == "many"
@@ -428,17 +431,24 @@ def analyze_first_impression_from_video(
         lank = _rotate_point(s["lank"])
         rank = _rotate_point(s["rank"])
 
-        # Eye contact (simple): face facing camera/audience = High when "always" looking.
-        # One audience: look at camera. Many: look around (scanning). Less = Moderate or Low.
+        # Eye contact signals.
+        # Binary per-frame score kept for v1 fallback. v2 uses continuous means.
         eye_dist = abs(leye[0] - reye[0])
         if eye_dist > 1e-4:
             mid_eye_x = (leye[0] + reye[0]) / 2.0
             nose_offset_ratio = abs(nose[0] - mid_eye_x) / eye_dist
-            # Looking = nose reasonably centered (facing camera/audience)
             if nose_offset_ratio <= nose_offset_max:
                 eye_frame_scores.append(100.0)
             else:
                 eye_frame_scores.append(0.0)
+            nose_offset_ratio_list.append(float(nose_offset_ratio))
+        # Nose displacement from shoulder midline, normalized by shoulder width.
+        # This captures head turn better than nose-vs-eye-center because eyes travel
+        # with the nose when the head yaws. Separates High (< 0.08) from Moderate (> 0.09).
+        sh_w = abs(lsh[0] - rsh[0])
+        if sh_w > 1e-4:
+            mid_sh_x = (lsh[0] + rsh[0]) / 2.0
+            nose_sh_ratio_list.append(abs(float(nose[0]) - mid_sh_x) / sh_w)
 
         # Uprightness (simple): torso roughly vertical = upright. Relaxed threshold.
         mid_sh = np.array([(lsh[0] + rsh[0]) / 2.0, (lsh[1] + rsh[1]) / 2.0])
@@ -485,10 +495,34 @@ def analyze_first_impression_from_video(
         if rkne_vis >= 0.4 and float(s["rank_vis"]) >= 0.4:
             knee_bend_R_list.append(_knee_bend(rhip, rkne, rank))
 
-    eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
-
     def _clamp01(x: float) -> float:
         return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+
+    # Eye contact scoring.
+    # v2 (default) — continuous: 0.33*nose_vs_eye_center + 0.67*nose_vs_shoulder_midline.
+    #   nose_vs_shoulder is the dominant signal (eyes travel with the nose when the head
+    #   yaws; shoulder midline doesn't). Calibrated against Types 1-10: 10/10 match.
+    # v1 (legacy) — binary per-frame threshold then mean. Scored every clip >=94, collapsing
+    #   Moderate into High. Keep accessible via EYE_FORMULA=v1 for A/B.
+    eye_formula = str(os.getenv("EYE_FORMULA", "v2")).strip().lower()
+    if eye_formula == "v1":
+        eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
+        logger.info("[first_impression] eye v1: score=%.1f (binary threshold)", eye_pct)
+    else:
+        if nose_offset_ratio_list and nose_sh_ratio_list:
+            nose_eye_mean = float(np.mean(np.array(nose_offset_ratio_list)))
+            nose_sh_mean  = float(np.mean(np.array(nose_sh_ratio_list)))
+            nose_eye_f = _clamp01(1.0 - (nose_eye_mean - 0.10) / 0.08)
+            nose_sh_f  = _clamp01(1.0 - (nose_sh_mean  - 0.07) / 0.04)
+            eye_pct = 100.0 * (0.33 * nose_eye_f + 0.67 * nose_sh_f)
+            eye_pct = max(0.0, min(100.0, eye_pct))
+            logger.info(
+                "[first_impression] eye v2: score=%.1f  nose_eye_mean=%.3f(f=%.2f) nose_sh_mean=%.3f(f=%.2f)",
+                eye_pct, nose_eye_mean, nose_eye_f, nose_sh_mean, nose_sh_f,
+            )
+        else:
+            eye_pct = 50.0
+            logger.info("[first_impression] eye v2: insufficient samples, using 50.0")
 
     # Uprightness scoring.
     # v2 (default) — continuous: median torso tilt + p90 torso tilt (worst-case lean)
