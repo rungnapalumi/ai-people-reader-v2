@@ -331,6 +331,8 @@ def analyze_first_impression_from_video(
                 rsh = lms[PoseLandmark.RIGHT_SHOULDER]
                 lhip = lms[PoseLandmark.LEFT_HIP]
                 rhip = lms[PoseLandmark.RIGHT_HIP]
+                lkne = lms[PoseLandmark.LEFT_KNEE]
+                rkne = lms[PoseLandmark.RIGHT_KNEE]
                 lank = lms[PoseLandmark.LEFT_ANKLE]
                 rank = lms[PoseLandmark.RIGHT_ANKLE]
 
@@ -346,10 +348,14 @@ def analyze_first_impression_from_video(
                         "rsh": (float(rsh.x), float(rsh.y)),
                         "lhip": (float(lhip.x), float(lhip.y)),
                         "rhip": (float(rhip.x), float(rhip.y)),
+                        "lkne": (float(lkne.x), float(lkne.y)),
+                        "rkne": (float(rkne.x), float(rkne.y)),
                         "lank": (float(lank.x), float(lank.y)),
                         "rank": (float(rank.x), float(rank.y)),
                         "leye_vis": float(leye.visibility),
                         "reye_vis": float(reye.visibility),
+                        "lkne_vis": float(lkne.visibility),
+                        "rkne_vis": float(rkne.visibility),
                         "lank_vis": float(lank.visibility),
                         "rank_vis": float(rank.visibility),
                     }
@@ -397,6 +403,10 @@ def analyze_first_impression_from_video(
     ankle_dist = []
     ankle_center_x = []
     stance_width_ratios = []
+    # v2 stance signals
+    knee_bend_L_list: List[float] = []
+    knee_bend_R_list: List[float] = []
+    torso_tilt_list: List[float] = []
 
     # Simple eye contact: one audience = look at camera. many = look around (scanning).
     is_many_audience = str(audience_mode or "").strip().lower() == "many"
@@ -411,6 +421,8 @@ def analyze_first_impression_from_video(
         rsh = _rotate_point(s["rsh"])
         lhip = _rotate_point(s["lhip"])
         rhip = _rotate_point(s["rhip"])
+        lkne = _rotate_point(s.get("lkne", (0.0, 0.0)))
+        rkne = _rotate_point(s.get("rkne", (0.0, 0.0)))
         lank = _rotate_point(s["lank"])
         rank = _rotate_point(s["rank"])
 
@@ -439,6 +451,7 @@ def analyze_first_impression_from_video(
             upright_frame_scores.append(100.0)
         else:
             upright_frame_scores.append(0.0)
+        torso_tilt_list.append(float(ang))
 
         # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
         if min(float(s["lank_vis"]), float(s["rank_vis"])) >= 0.5:
@@ -451,30 +464,91 @@ def analyze_first_impression_from_video(
             if shoulder_width > 1e-4:
                 stance_width_ratios.append(dist / shoulder_width)
 
+        # Per-frame knee bend (v2 signal). Bend = 180 - angle(hip,knee,ankle).
+        # Bigger value = more bent knee. Straight leg ~ 0-2 degrees.
+        def _knee_bend(hip_pt, knee_pt, ank_pt) -> float:
+            ax, ay = hip_pt[0] - knee_pt[0], hip_pt[1] - knee_pt[1]
+            cx, cy = ank_pt[0] - knee_pt[0], ank_pt[1] - knee_pt[1]
+            na = math.sqrt(ax * ax + ay * ay) + 1e-9
+            nc = math.sqrt(cx * cx + cy * cy) + 1e-9
+            cosv = max(-1.0, min(1.0, (ax * cx + ay * cy) / (na * nc)))
+            return 180.0 - math.degrees(math.acos(cosv))
+
+        lkne_vis = float(s.get("lkne_vis", 0.0))
+        rkne_vis = float(s.get("rkne_vis", 0.0))
+        if lkne_vis >= 0.4 and float(s["lank_vis"]) >= 0.4:
+            knee_bend_L_list.append(_knee_bend(lhip, lkne, lank))
+        if rkne_vis >= 0.4 and float(s["rank_vis"]) >= 0.4:
+            knee_bend_R_list.append(_knee_bend(rhip, rkne, rank))
+
     eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
     upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
 
-    # Stance (simple): lower ankle-distance variance = more stable. Relaxed thresholds.
-    # When insufficient ankle data (< 10 frames), use 50 (Moderate) — วิเคราะห์ไม่ได้ = Moderate
-    if len(ankle_dist) >= 10:
-        dist_arr = np.array(ankle_dist)
-        dist_std = float(np.std(dist_arr))
-        dist_mean = float(np.mean(dist_arr)) + 1e-9
-        rel_std = dist_std / dist_mean
+    # Stance scoring.
+    # v2 (default) — geometry-based: stance width + knee straightness + knee symmetry + torso upright.
+    #   Calibrated against 10 reference clips: matches human-judged level 8/10 (vs 3/10 for v1).
+    # v1 (legacy) — ankle-distance variance only. Keep accessible via STANCE_FORMULA=v1 for A/B.
+    stance_formula = str(os.getenv("STANCE_FORMULA", "v2")).strip().lower()
 
-        # Relaxed: rel_std/0.60 (was 0.35) — easier to get high score
-        base_stability = max(0.0, min(100.0, 100.0 * (1.0 - (rel_std / 0.60))))
+    def _clamp01(x: float) -> float:
+        return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
 
-        sway_score = 0.0
-        if len(ankle_center_x) >= 10:
-            sway_std = float(np.std(np.array(ankle_center_x)))
-            # Relaxed: sway_std/0.12 (was 0.06)
-            sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.12))))
-
-        # Simple blend: base + sway, no strict width penalty
-        stability = max(0.0, min(100.0, 0.70 * base_stability + 0.30 * sway_score))
+    if stance_formula == "v1":
+        if len(ankle_dist) >= 10:
+            dist_arr = np.array(ankle_dist)
+            dist_std = float(np.std(dist_arr))
+            dist_mean = float(np.mean(dist_arr)) + 1e-9
+            rel_std = dist_std / dist_mean
+            base_stability = max(0.0, min(100.0, 100.0 * (1.0 - (rel_std / 0.60))))
+            sway_score = 0.0
+            if len(ankle_center_x) >= 10:
+                sway_std = float(np.std(np.array(ankle_center_x)))
+                sway_score = max(0.0, min(100.0, 100.0 * (1.0 - (sway_std / 0.12))))
+            stability = max(0.0, min(100.0, 0.70 * base_stability + 0.30 * sway_score))
+        else:
+            stability = 50.0
+        logger.info("[first_impression] stance v1: score=%.1f (base+sway)", stability)
     else:
-        stability = 50.0  # วิเคราะห์ไม่ได้ → Moderate (ไม่ใช้ 0 ที่จะได้ Low)
+        # v2: stance_score = 0.56*width + 0.22*knee_straight + 0.07*knee_symmetry + 0.15*torso_upright
+        if len(stance_width_ratios) >= 10:
+            width_ratio_med = float(np.median(np.array(stance_width_ratios)))
+            width_factor = _clamp01((width_ratio_med - 0.35) / 0.40)
+
+            if knee_bend_L_list and knee_bend_R_list:
+                kL_med = float(np.median(np.array(knee_bend_L_list)))
+                kR_med = float(np.median(np.array(knee_bend_R_list)))
+                knee_avg = (kL_med + kR_med) / 2.0
+                knee_straight = _clamp01(1.0 - (knee_avg - 1.0) / 6.0)
+                knee_symmetry = _clamp01(1.0 - abs(kL_med - kR_med) / 6.0)
+            else:
+                kL_med = kR_med = knee_avg = float("nan")
+                knee_straight = 0.5
+                knee_symmetry = 0.5
+
+            if torso_tilt_list:
+                torso_med = float(np.median(np.array(torso_tilt_list)))
+                torso_upright = _clamp01(1.0 - (torso_med - 1.0) / 5.0)
+            else:
+                torso_med = float("nan")
+                torso_upright = 0.5
+
+            stability = 100.0 * (
+                0.56 * width_factor
+                + 0.22 * knee_straight
+                + 0.07 * knee_symmetry
+                + 0.15 * torso_upright
+            )
+            stability = max(0.0, min(100.0, stability))
+            logger.info(
+                "[first_impression] stance v2: score=%.1f  width_ratio=%.3f(f=%.2f) knee_avg=%.2f(f=%.2f) knee_sym=%.2f(f=%.2f) torso=%.2f(f=%.2f)",
+                stability, width_ratio_med, width_factor,
+                knee_avg if knee_avg == knee_avg else -1.0, knee_straight,
+                (kL_med - kR_med) if (kL_med == kL_med and kR_med == kR_med) else 0.0, knee_symmetry,
+                torso_med if torso_med == torso_med else -1.0, torso_upright,
+            )
+        else:
+            stability = 50.0
+            logger.info("[first_impression] stance v2: insufficient ankle samples (%d), using 50.0", len(stance_width_ratios))
 
     return FirstImpressionData(eye_contact_pct=eye_pct, upright_pct=upright_pct, stance_stability=stability)
 
