@@ -1097,18 +1097,6 @@ apply_theme()
 render_top_banner()
 
 st.markdown(f"# {PAGE_TITLE}")
-st.caption(
-    "รายงาน **ภาษาอังกฤษอย่างเดียว** (PDF) แบบ People Reader — **Adaptability** + movement-type matching. "
-    "ไม่ต้องตั้งค่าองค์กรใน Admin"
-)
-_git = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("APP_GIT_SHA") or "").strip()
-_build = f"`{_git[:10]}`" if len(_git) >= 7 else "`local`"
-st.caption(
-    f"**Deploy:** Streamlit app build {_build}. "
-    "PDF/DOCX files are **not** rendered here — they are built by the separate **report worker** "
-    "(`src/report_worker.py` + `src/report_core.py` on Render). After `git push`, redeploy **that** worker "
-    "and use **Clear build cache** if reports still look old."
-)
 st.divider()
 
 name_value = st.text_input(
@@ -1139,10 +1127,6 @@ _combo_img = combination_10_types_image_path()
 if _combo_img:
     with st.expander("Movement type reference — 10 types (product table)", expanded=True):
         st.image(_combo_img, use_container_width=True)
-        st.caption(
-            "Columns: Eye contact · Stance · Uprightness · Engaging · Authority · Confidence · Adaptability "
-            "(low / moderate / high). Types 7–10 use the same rubric; weighted Auto match uses `movement_type_classifier.py`."
-        )
 
 movement_type_mode = st.selectbox(
     "Movement type (report profile)",
@@ -1694,13 +1678,6 @@ else:
     st.caption("Upload a video above or paste an existing Group ID to download results.")
 
 st.divider()
-st.caption(
-    "Movement type (Auto) ranks **10** profiles in **`movement_type_classifier.py`** by **weighted template score** "
-    "(pose features vs each profile’s `expected` ranges), then uses **7-dimension agreement** as a tie-break. "
-    "The seven rubric levels (`people_reader_seven`) are eye, stance, upright, engaging, authority, confidence, adaptability; "
-    "video side uses pose-summary tertiles (1–4) and composites as high/low (5–7). Report bars follow the chosen profile. "
-    "No S3 calibration."
-)
 
 # -------------------------
 # Recording guide
