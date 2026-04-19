@@ -407,6 +407,8 @@ def analyze_first_impression_from_video(
     knee_bend_L_list: List[float] = []
     knee_bend_R_list: List[float] = []
     torso_tilt_list: List[float] = []
+    # v2 uprightness signals
+    sh_hip_offset_list: List[float] = []
 
     # Simple eye contact: one audience = look at camera. many = look around (scanning).
     is_many_audience = str(audience_mode or "").strip().lower() == "many"
@@ -446,12 +448,14 @@ def analyze_first_impression_from_video(
         v_norm = np.linalg.norm(v) + 1e-9
         cosang = float(np.dot(v / v_norm, vert))
         ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
-        # Simple: torso angle <= 50° = upright (100). No penalty for natural movement.
+        # Keep legacy per-frame 100/0 list for v1 fallback only.
         if ang <= 50.0:
             upright_frame_scores.append(100.0)
         else:
             upright_frame_scores.append(0.0)
         torso_tilt_list.append(float(ang))
+        # Horizontal offset between shoulder midline and hip midline — slouch indicator.
+        sh_hip_offset_list.append(abs(float(mid_sh[0]) - float(mid_hip[0])))
 
         # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
         if min(float(s["lank_vis"]), float(s["rank_vis"])) >= 0.5:
@@ -482,16 +486,51 @@ def analyze_first_impression_from_video(
             knee_bend_R_list.append(_knee_bend(rhip, rkne, rank))
 
     eye_pct = float(np.mean(np.array(eye_frame_scores))) if eye_frame_scores else 0.0
-    upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
+
+    def _clamp01(x: float) -> float:
+        return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+
+    # Uprightness scoring.
+    # v2 (default) — continuous: median torso tilt + p90 torso tilt (worst-case lean)
+    #                            + median shoulder-vs-hip horizontal offset (slouch).
+    #   Calibrated against 10 reference clips: matches human-judged level 8/10.
+    #   v1 binary (tilt<=50°=100 else 0) effectively always returns 100 in practice,
+    #   because real torso tilts are 1..6° — so everyone scored High. Replaced.
+    # v1 (legacy) remains accessible via env flag UPRIGHT_FORMULA=v1 for A/B.
+    upright_formula = str(os.getenv("UPRIGHT_FORMULA", "v2")).strip().lower()
+    if upright_formula == "v1":
+        upright_pct = float(np.mean(np.array(upright_frame_scores))) if upright_frame_scores else 0.0
+        logger.info("[first_impression] upright v1: score=%.1f (binary <=50deg)", upright_pct)
+    else:
+        if torso_tilt_list:
+            torso_arr = np.array(torso_tilt_list)
+            torso_med = float(np.median(torso_arr))
+            torso_p90 = float(np.percentile(torso_arr, 90))
+            sh_hip_med = float(np.median(np.array(sh_hip_offset_list))) if sh_hip_offset_list else 0.02
+
+            torso_med_f = _clamp01(1.0 - (torso_med - 0.5) / 4.0)
+            torso_p90_f = _clamp01(1.0 - (torso_p90 - 3.0) / 4.0)
+            sh_hip_f    = _clamp01(1.0 - (sh_hip_med - 0.015) / 0.015)
+
+            upright_pct = 100.0 * (
+                0.20 * torso_med_f
+                + 0.40 * torso_p90_f
+                + 0.40 * sh_hip_f
+            )
+            upright_pct = max(0.0, min(100.0, upright_pct))
+            logger.info(
+                "[first_impression] upright v2: score=%.1f  torso_med=%.2f(f=%.2f) torso_p90=%.2f(f=%.2f) sh_hip_off=%.3f(f=%.2f)",
+                upright_pct, torso_med, torso_med_f, torso_p90, torso_p90_f, sh_hip_med, sh_hip_f,
+            )
+        else:
+            upright_pct = 50.0
+            logger.info("[first_impression] upright v2: no torso samples, using 50.0")
 
     # Stance scoring.
     # v2 (default) — geometry-based: stance width + knee straightness + knee symmetry + torso upright.
     #   Calibrated against 10 reference clips: matches human-judged level 8/10 (vs 3/10 for v1).
     # v1 (legacy) — ankle-distance variance only. Keep accessible via STANCE_FORMULA=v1 for A/B.
     stance_formula = str(os.getenv("STANCE_FORMULA", "v2")).strip().lower()
-
-    def _clamp01(x: float) -> float:
-        return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
 
     if stance_formula == "v1":
         if len(ankle_dist) >= 10:
