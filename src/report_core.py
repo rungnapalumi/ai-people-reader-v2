@@ -135,7 +135,25 @@ def first_impression_level(value: float, metric: str = "", is_fallback: bool = F
     v = float(value or 0.0)
     if is_fallback and v == 0:
         return "N/A"
-    if metric in ("eye_contact", "uprightness", "stance"):
+    if metric == "stance":
+        # Stance bands calibrated against the 10 reference clips:
+        #   High >= 53, Moderate 30-52, Low < 30.
+        if v >= 53.0:
+            raw = "High"
+        elif v >= 30.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+    elif metric == "uprightness":
+        # Uprightness bands calibrated against the 10 reference clips:
+        #   High >= 70, Moderate 15-69, Low < 15.
+        if v >= 70.0:
+            raw = "High"
+        elif v >= 15.0:
+            raw = "Moderate"
+        else:
+            raw = "Low"
+    elif metric == "eye_contact":
         if v >= 60.0:
             raw = "High"
         elif v >= 35.0:
