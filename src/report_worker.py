@@ -3564,9 +3564,21 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 result, fi_blended, mt_info = apply_movement_type_classification(
                     analysis_video_path, job, result, fi_base
                 )
+                # Use the raw v2 first-impression scores in the report instead of the
+                # 42/58 blend with summary features. The v2 formulas (stance, uprightness,
+                # eye contact) and their band thresholds are calibrated against the 10
+                # reference clips; the blended version re-injects summary features that
+                # bypass that calibration and push scores upward. Keep fi_blended logged
+                # for diagnostics but store fi_base for the PDF/DOCX.
+                logger.info(
+                    "[first_impression] raw v2: eye=%.1f up=%.1f st=%.1f  "
+                    "blended: eye=%.1f up=%.1f st=%.1f",
+                    fi_base.eye_contact_pct, fi_base.upright_pct, fi_base.stance_stability,
+                    fi_blended.eye_contact_pct, fi_blended.upright_pct, fi_blended.stance_stability,
+                )
                 if mt_info:
                     job["movement_type_info"] = mt_info
-                    job["_first_impression_for_report"] = fi_blended
+                    job["_first_impression_for_report"] = fi_base
                 else:
                     job.pop("movement_type_info", None)
                     job.pop("_first_impression_for_report", None)
