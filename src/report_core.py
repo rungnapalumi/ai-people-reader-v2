@@ -2030,16 +2030,17 @@ def build_docx_report(
     if not compact_thai_first_page:
         doc.add_paragraph()
     
-    # Detailed Analysis header (EN: move down 1 line)
-    if not is_thai:
-        doc.add_paragraph()
+    # Detailed Analysis header. Keep tight against "1. First impression" below
+    # (reference layout places them on consecutive lines).
     detailed = doc.add_paragraph(texts["detailed_analysis"])
     detailed.runs[0].bold = True
-    
-    # Section 1: First impression (same spacing TH & EN)
+    detailed.paragraph_format.space_before = Pt(6)
+    detailed.paragraph_format.space_after = Pt(2)
+
+    # Section 1: First impression — sits right under "Detailed Analysis".
     section1 = doc.add_paragraph(texts["first_impression"])
     section1.runs[0].bold = True
-    section1.paragraph_format.space_before = Pt(10)
+    section1.paragraph_format.space_before = Pt(2)
     section1.paragraph_format.space_after = Pt(4)
     
     # First Impression - scale (low/moderate/high)
@@ -2053,7 +2054,10 @@ def build_docx_report(
             ("• ความตั้งตรงของร่างกาย (Uprightness)" if is_thai else "• Uprightness", up_level),
             ("• การยืนและการวางเท้า (Stance)" if is_thai else "• Stance", st_level),
         ]:
-            p = doc.add_paragraph(_square_bullet_text(label))
+            # First-impression bullets use a round "•" (match Irene reference).
+            # Other sections (approachability, relatability, etc.) keep the
+            # square "▪" via _square_bullet_text.
+            p = doc.add_paragraph(label)
             _apply_bullet_layout(p)
             lvl = doc.add_paragraph(f"{texts['scale']} {lv}")
             lvl.runs[0].bold = True
@@ -3135,7 +3139,7 @@ def build_pdf_report(
         write_line(f"Video Duration: {duration_label}", gap=22)  # Single line per reference format
     else:
         write_line(f"{'ความยาววิดีโอ' if is_thai else 'Duration'}: {duration_label}", gap=22)
-    write_line(detailed_analysis_label, size=13, bold=True, gap=20)
+    write_line(detailed_analysis_label, size=13, bold=True, gap=8)
 
     def _first_impression_level(value: float, metric: str = "") -> str:
         return first_impression_level(value, metric=metric)
@@ -3156,19 +3160,19 @@ def build_pdf_report(
         if uses_op_layout:
             if is_thai:
                 write_paragraph_block("1. ความประทับใจแรกพบ (First Impression)", SECTION_STYLE, extra_gap=0)
-                write_paragraph_block(f"▪ {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {eye_label} (Eye Contact)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_UNDER_BULLET_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block(f"▪ {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {upright_label} (Uprightness)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.upright_pct, metric='uprightness')}",
                     LEVEL_UNDER_BULLET_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block(f"▪ {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block(f"• {stance_label} (Stance)", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"ระดับ: {_first_impression_level_th(fi.stance_stability, metric='stance')}",
                     LEVEL_UNDER_BULLET_STYLE,
@@ -3176,19 +3180,19 @@ def build_pdf_report(
                 )
             else:
                 write_paragraph_block("1. First impression", SECTION_STYLE, extra_gap=0)
-                write_paragraph_block("▪ Eye Contact", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Eye Contact", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.eye_contact_pct, metric='eye_contact')}",
                     LEVEL_UNDER_BULLET_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block("▪ Uprightness", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Uprightness", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.upright_pct, metric='uprightness')}",
                     LEVEL_UNDER_BULLET_STYLE,
                     extra_gap=0,
                 )
-                write_paragraph_block("▪ Stance", SUBITEM_STYLE, extra_gap=0)
+                write_paragraph_block("• Stance", SUBITEM_STYLE, extra_gap=0)
                 write_paragraph_block(
                     f"Scale: {_first_impression_level(fi.stance_stability, metric='stance')}",
                     LEVEL_UNDER_BULLET_STYLE,
@@ -3200,11 +3204,11 @@ def build_pdf_report(
             eye_level = _first_impression_level_th(fi.eye_contact_pct, "eye_contact") if is_thai else _first_impression_level(fi.eye_contact_pct, "eye_contact")
             up_level = _first_impression_level_th(fi.upright_pct, "uprightness") if is_thai else _first_impression_level(fi.upright_pct, "uprightness")
             st_level = _first_impression_level_th(fi.stance_stability, "stance") if is_thai else _first_impression_level(fi.stance_stability, "stance")
-            write_line(f"▪ {eye_label}" if is_thai else "▪ Eye Contact", gap=14)
+            write_line(f"• {eye_label}" if is_thai else "• Eye Contact", gap=14)
             write_line(f"{'ระดับ' if is_thai else 'Scale'}: {eye_level}", bold=True, gap=14)
-            write_line(f"▪ {upright_label}" if is_thai else "▪ Uprightness", gap=14)
+            write_line(f"• {upright_label}" if is_thai else "• Uprightness", gap=14)
             write_line(f"{'ระดับ' if is_thai else 'Scale'}: {up_level}", bold=True, gap=14)
-            write_line(f"▪ {stance_label}" if is_thai else "▪ Stance", gap=14)
+            write_line(f"• {stance_label}" if is_thai else "• Stance", gap=14)
             write_line(f"{'ระดับ' if is_thai else 'Scale'}: {st_level}", bold=True, gap=14)
             write_line("หมายเหตุ" if is_thai else "Remark", bold=True, gap=14)
             remark_text = (
