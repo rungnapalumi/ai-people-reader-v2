@@ -2030,8 +2030,10 @@ def build_docx_report(
     if not compact_thai_first_page:
         doc.add_paragraph()
     
-    # Detailed Analysis header. Keep tight against "1. First impression" below
-    # (reference layout places them on consecutive lines).
+    # Detailed Analysis header. Push it down ~2 lines below the Video Duration
+    # block, while still keeping it tight against "1. First impression" below.
+    doc.add_paragraph()
+    doc.add_paragraph()
     detailed = doc.add_paragraph(texts["detailed_analysis"])
     detailed.runs[0].bold = True
     detailed.paragraph_format.space_before = Pt(6)
@@ -3139,6 +3141,8 @@ def build_pdf_report(
         write_line(f"Video Duration: {duration_label}", gap=22)  # Single line per reference format
     else:
         write_line(f"{'ความยาววิดีโอ' if is_thai else 'Duration'}: {duration_label}", gap=22)
+    # Push "Detailed Analysis" down ~2 lines below the Video Duration row.
+    write_line("", gap=28)
     write_line(detailed_analysis_label, size=13, bold=True, gap=8)
 
     def _first_impression_level(value: float, metric: str = "") -> str:
