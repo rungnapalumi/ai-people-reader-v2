@@ -2186,29 +2186,9 @@ def build_docx_report(
         scale_para5.runs[0].bold = True
         _apply_scale_layout(scale_para5, left_indent_pt=28, space_before_pt=4, compact=False)
 
-    mt = getattr(report, "movement_type_info", None) or {}
-    if isinstance(mt, dict) and mt.get("type_name"):
-        mt_head = doc.add_paragraph(texts["movement_type_heading"])
-        mt_head.runs[0].bold = True
-        mt_head.paragraph_format.space_before = Pt(10)
-        mt_head.paragraph_format.space_after = Pt(4)
-        mode_note = (
-            texts["movement_type_mode_selected"]
-            if str(mt.get("mode") or "") == "selected"
-            else texts["movement_type_mode_auto"]
-        )
-        doc.add_paragraph(f"{texts['movement_type_match']} {mt.get('type_name', '')} {mode_note}")
-        _m7 = int(mt.get("seven_match_chosen_matches", 0))
-        _p7 = int(mt.get("confidence_pct", 0))
-        doc.add_paragraph(f"{texts['movement_type_confidence']} {_m7}/7 ({_p7}%)")
-        for _top_line in format_people_reader_movement_top_two(mt, is_thai):
-            doc.add_paragraph(_top_line)
-        doc.add_paragraph(f"{texts['movement_type_summary_label']} {mt.get('summary', '')}")
-        traits_txt = mt.get("traits_line_th" if is_thai else "traits_line_en", mt.get("traits_line_en", ""))
-        doc.add_paragraph(f"{texts['movement_type_traits']} {traits_txt}")
-        nar = mt.get("narrative_th" if is_thai else "narrative_en", mt.get("narrative_en", ""))
-        if nar:
-            doc.add_paragraph(f"{texts['movement_type_narrative_label']} {nar}")
+    # "Movement type profile" section intentionally omitted from the DOCX report.
+    # movement_type_info is still computed and stored on the job for the UI, but
+    # it is no longer rendered on page 3 of the document.
 
     if not is_simple:
         # PAGE BREAK TO PAGE 4
@@ -3058,44 +3038,11 @@ def build_pdf_report(
             write_line(line, size=size, bold=bold, gap=gap)
 
     def append_movement_type_pdf_block() -> None:
-        nonlocal y
-        if not is_people_reader:
-            return
-        mt = getattr(report, "movement_type_info", None) or {}
-        if not isinstance(mt, dict) or not str(mt.get("type_name") or "").strip():
-            return
-        write_line("", gap=10)
-        head = "โปรไฟล์ประเภทการเคลื่อนไหว (Movement type)" if is_thai else "Movement type profile"
-        write_line(head, size=12, bold=True, gap=10)
-        mode_note = str(
-            mt.get("mode_th" if is_thai else "mode_en")
-            or mt.get("mode_en" if not is_thai else "mode_th")
-            or ""
-        ).strip()
-        closest_lbl = "การจับคู่ที่ใกล้เคียงที่สุด:" if is_thai else "Closest match:"
-        conf_lbl = (
-            "การตรงกันของโปรไฟล์นี้ (7 มิติ ต่ำ/กลาง/สูง):"
-            if is_thai
-            else "This profile's 7-dimension match (Low/Moderate/High):"
-        )
-        sum_lbl = "สรุป:" if is_thai else "Summary:"
-        traits_lbl = "ลักษณะจากประเภทนี้:" if is_thai else "Traits from this type:"
-        obs_lbl = "ข้อสังเกต:" if is_thai else "Observation:"
-        match_line = f"{closest_lbl} {mt.get('type_name', '')}"
-        if mode_note:
-            match_line = f"{match_line} {mode_note}"
-        write_line(match_line, gap=8)
-        _m7p = int(mt.get("seven_match_chosen_matches", 0))
-        _p7p = int(mt.get("confidence_pct", 0))
-        write_line(f"{conf_lbl} {_m7p}/7 ({_p7p}%)", gap=8)
-        for _tl in format_people_reader_movement_top_two(mt, is_thai):
-            write_line(_tl, gap=8)
-        write_line(f"{sum_lbl} {mt.get('summary', '')}", gap=8)
-        traits_txt = mt.get("traits_line_th" if is_thai else "traits_line_en", mt.get("traits_line_en", ""))
-        write_line(f"{traits_lbl} {traits_txt}", gap=8)
-        nar = mt.get("narrative_th" if is_thai else "narrative_en", mt.get("narrative_en", ""))
-        if nar:
-            write_line(f"{obs_lbl} {nar}", gap=10)
+        # "Movement type profile" section intentionally omitted from the PDF.
+        # movement_type_info is still stored on the job for the UI and the DOCX
+        # is kept in sync (see block further above), but this section no longer
+        # renders on page 3 of the PDF.
+        return
 
     if uses_op_layout:
         if is_thai:
