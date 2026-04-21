@@ -154,7 +154,15 @@ def first_impression_level(value: float, metric: str = "", is_fallback: bool = F
         else:
             raw = "Low"
     elif metric == "eye_contact":
-        if v >= 60.0:
+        # Business override: eye contact is always reported as "High" for every
+        # video. The raw v2 score (eye_contact_pct) is still computed and logged
+        # for diagnostics, but the printed scale label is forced to "High" so
+        # the report reflects a baseline assumption that the speaker is making
+        # eye contact with the camera/audience. Set EYE_CONTACT_FORCE_HIGH=0 to
+        # restore the calibrated High/Moderate/Low bands (>=60 / >=35 / else).
+        if str(os.getenv("EYE_CONTACT_FORCE_HIGH", "1")).strip().lower() not in ("0", "false", "no", "off"):
+            raw = "High"
+        elif v >= 60.0:
             raw = "High"
         elif v >= 35.0:
             raw = "Moderate"
