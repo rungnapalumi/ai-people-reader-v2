@@ -940,25 +940,28 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
     skeleton_pose_spread = 1.0
     vis_min = 0.35
 
-    # ----- Resolution-aware line thickness so all videos look similar -----
-    # Previous mapping (min_side/240) produced outer=4–5 at 1080p which read as a
-    # thick, plump stroke on vertical phone clips. Scale back to a sharper look:
-    #   1080p -> outer 3 / inner 2
-    #    720p -> outer 2 / inner 1
-    #    540p -> outer 2 / inner 1
-    # Still overridable via SKELETON_OUTER_THICKNESS / SKELETON_INNER_THICKNESS
-    # for fine-tuning without redeploying code.
+    # ----- Laser-line skeleton -----
+    # Goal: a crisp, bright "laser" stroke that reads the same on 1080p and
+    # 540p clips. The previous resolution-aware scaling (min_side / 380, then
+    # / 240) made the strokes plump on vertical phone footage. Switch to a
+    # constant minimal double-stroke:
+    #   outer cyan halo: 2 px
+    #   inner white core: 1 px
+    # Total visual width ~3 px with anti-aliasing — the thinnest "rim + core"
+    # we can render while still keeping the cyan glow visible. Both values are
+    # still overridable via SKELETON_OUTER_THICKNESS / SKELETON_INNER_THICKNESS
+    # if a particular deployment wants a beefier line.
     _min_side = max(1, min(w, h))
-    _auto_outer = max(2, int(round(_min_side / 380)))
+    _auto_outer = 2  # constant 2-px cyan halo regardless of resolution
     try:
         outer_thick = max(1, int(os.getenv("SKELETON_OUTER_THICKNESS", "0") or "0") or _auto_outer)
     except ValueError:
         outer_thick = _auto_outer
     inner_thick = max(1, int(os.getenv("SKELETON_INNER_THICKNESS", "0") or "0") or max(1, outer_thick - 1))
-    # Joint dots: keep them roughly stroke-width sized so they don't visually
-    # dominate the bones. Previous `outer_thick + 1` produced oversized blobs.
+    # Joint dots: tiny, so they read as bright pinpoints (laser endpoints)
+    # rather than blobs. Cyan disc one pixel larger than the white core.
     outer_joint_r = max(2, outer_thick)
-    inner_joint_r = max(1, inner_thick - 1)
+    inner_joint_r = max(1, inner_thick)
 
     # ----- Optional legacy glow mode, off by default -----
     # SKELETON_STYLE=glow restores the previous blurred-cyan compositing if ever wanted.
