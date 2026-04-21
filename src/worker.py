@@ -941,18 +941,24 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
     vis_min = 0.35
 
     # ----- Resolution-aware line thickness so all videos look similar -----
-    # Fixed pixel thickness looked thin on 1080p and chunky on 540p. Scale by the shorter
-    # side of the output so a given person on screen gets visually-consistent strokes.
-    # Overridable via env for fine-tuning without redeploying code.
+    # Previous mapping (min_side/240) produced outer=4–5 at 1080p which read as a
+    # thick, plump stroke on vertical phone clips. Scale back to a sharper look:
+    #   1080p -> outer 3 / inner 2
+    #    720p -> outer 2 / inner 1
+    #    540p -> outer 2 / inner 1
+    # Still overridable via SKELETON_OUTER_THICKNESS / SKELETON_INNER_THICKNESS
+    # for fine-tuning without redeploying code.
     _min_side = max(1, min(w, h))
-    _auto_outer = max(3, int(round(_min_side / 240)))  # 1080p -> 4-5, 720p -> 3, 480p -> 2
+    _auto_outer = max(2, int(round(_min_side / 380)))
     try:
         outer_thick = max(1, int(os.getenv("SKELETON_OUTER_THICKNESS", "0") or "0") or _auto_outer)
     except ValueError:
         outer_thick = _auto_outer
-    inner_thick = max(1, int(os.getenv("SKELETON_INNER_THICKNESS", "0") or "0") or max(1, outer_thick - 2))
-    outer_joint_r = outer_thick + 1
-    inner_joint_r = max(1, inner_thick)
+    inner_thick = max(1, int(os.getenv("SKELETON_INNER_THICKNESS", "0") or "0") or max(1, outer_thick - 1))
+    # Joint dots: keep them roughly stroke-width sized so they don't visually
+    # dominate the bones. Previous `outer_thick + 1` produced oversized blobs.
+    outer_joint_r = max(2, outer_thick)
+    inner_joint_r = max(1, inner_thick - 1)
 
     # ----- Optional legacy glow mode, off by default -----
     # SKELETON_STYLE=glow restores the previous blurred-cyan compositing if ever wanted.
@@ -967,8 +973,8 @@ def generate_skeleton_video(input_path: str, out_path: str) -> None:
     process_every_n = 2 if fps >= 20 else 1
 
     logging.info(
-        "[skeleton] render cfg: style=%s outer_thick=%s inner_thick=%s w=%s h=%s fps=%.1f",
-        skeleton_style, outer_thick, inner_thick, w, h, float(fps or 0.0),
+        "[skeleton] render cfg: style=%s outer_thick=%s inner_thick=%s outer_r=%s inner_r=%s w=%s h=%s fps=%.1f",
+        skeleton_style, outer_thick, inner_thick, outer_joint_r, inner_joint_r, w, h, float(fps or 0.0),
     )
 
     with Pose(
