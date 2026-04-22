@@ -1395,81 +1395,130 @@ def apply_movement_type_classification(
 
     cat_scales = mtc.people_reader_category_scales_from_template(tpl_chosen)
 
-    # === Direct Engaging override from per-video features (professor-feedback
-    # quick fix, calibration-pending). The template rubric lookup above sets
-    # Engaging from the matched Type 1-10 rubric, which means a clip that
-    # visually reads as high-engagement can still show "Low" if the video's
-    # summary features happened to match Type 2 / 8 / 10. Until the full
-    # calibration pass is done against the 12 ground-truth clips, let the raw
-    # per-video features (collected in analyze_video_mediapipe) directly bump
-    # or cap the Engaging label.
+    # === Per-video direct scoring for Engaging / Authority / Confidence /
+    # Adaptability ===
     #
-    # Rules:
-    #   hands_above_share > 0.45 OR hip_advance > 0.02 OR distinct_shapes >= 10
-    #     -> force Engaging = high (strong, varied, or advancing gestures)
-    #   hands_above_share > 0.20 AND hand_block_share < 0.40
-    #     -> bump Engaging up to at least Moderate (open posture, visible hands)
-    #   hand_block_share > 0.55 AND hands_above_share < 0.10
-    #     -> keep template value if already Low, otherwise cap at Moderate
-    #       (hands blocking body, almost never raised above shoulders)
+    # Previously, once the best-matching Type 1-10 template was picked, the
+    # four People Reader category scores were overwritten with the template's
+    # `people_reader_seven` rubric (low / moderate / high) and mapped back to
+    # a 1-7 number. That meant two videos classified into the same Type always
+    # got the same four category labels, regardless of what the speaker was
+    # actually doing in that specific clip.
     #
-    # Disable via ENGAGING_FEATURE_OVERRIDE=0 if a regression appears.
-    try:
-        _eng_override_enabled = str(os.getenv("ENGAGING_FEATURE_OVERRIDE", "1")).strip().lower() not in ("0", "false", "no", "off")
-        cf = dict(result.get("category_features") or {})
-        if _eng_override_enabled and cf:
-            def _rank(level: str) -> int:
-                s = str(level or "").strip().lower()
-                if s == "high":
-                    return 2
-                if s == "moderate":
-                    return 1
-                return 0
-
-            def _from_rank(r: int) -> str:
-                return "high" if r >= 2 else ("moderate" if r == 1 else "low")
-
-            hands_above = float(cf.get("hands_above_share") or 0.0)
-            hand_block = float(cf.get("hand_block_share") or 0.0)
-            hip_advance = float(cf.get("hip_advance") or 0.0)
-            distinct_shapes = int(cf.get("distinct_hand_shapes") or 0)
-
-            before = str(cat_scales.get("engaging") or "low")
-            current_rank = _rank(before)
-            target_rank = current_rank
-
-            if hands_above > 0.45 or hip_advance > 0.02 or distinct_shapes >= 10:
-                target_rank = max(target_rank, 2)  # high
-            elif hands_above > 0.20 and hand_block < 0.40:
-                target_rank = max(target_rank, 1)  # moderate
-            if hand_block > 0.55 and hands_above < 0.10:
-                target_rank = min(target_rank, 1)  # cap at moderate
-
-            after = _from_rank(target_rank)
-            if after != before:
-                logger.info(
-                    "[movement_type] engaging override: template=%s -> features=%s "
-                    "(hands_above=%.2f hand_block=%.2f hip_advance=%.3f distinct=%d)",
-                    before, after, hands_above, hand_block, hip_advance, distinct_shapes,
-                )
-                cat_scales = dict(cat_scales)
-                cat_scales["engaging"] = after
-    except Exception as _eng_exc:
-        logger.warning("[movement_type] engaging override failed: %s", _eng_exc)
+    # The user asked for these four categories to be scored from the real
+    # per-video features instead of the 10-Type lookup. `analyze_video_mediapipe`
+    # already computes `engaging_score`, `convince_score`, `authority_score`,
+    # and `adaptability_score` on a 1-7 scale directly from Laban effort /
+    # shape detections and pose dynamics. We keep those as the base score and
+    # layer on small professor-feedback adjustments from `category_features`
+    # (hand blocking / hand raising / hip sway / hand-shape variety /
+    # hip advance) so the displayed label reflects the specific clip.
+    #
+    # Set PEOPLE_READER_DIRECT_SCORES=0 to revert to the legacy
+    # template-driven overwrite with the Engaging override.
+    _direct_scores_enabled = str(os.getenv("PEOPLE_READER_DIRECT_SCORES", "1")).strip().lower() not in ("0", "false", "no", "off")
 
     result = dict(result)
-    result["engaging_score"] = max(
-        1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["engaging"]))
-    )
-    result["convince_score"] = max(
-        1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["confidence"]))
-    )
-    result["authority_score"] = max(
-        1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["authority"]))
-    )
-    result["adaptability_score"] = max(
-        1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["adaptability"]))
-    )
+    base_eng = int(result.get("engaging_score") or 4)
+    base_con = int(result.get("convince_score") or 4)
+    base_auth = int(result.get("authority_score") or 4)
+    base_adapt = int(result.get("adaptability_score") or 4)
+
+    if _direct_scores_enabled:
+        cf = dict(result.get("category_features") or {})
+        hands_above = float(cf.get("hands_above_share") or 0.0)
+        hand_block = float(cf.get("hand_block_share") or 0.0)
+        hand_low = float(cf.get("hand_low_share") or 0.0)
+        hip_sway = float(cf.get("hip_sway_std") or 0.0)
+        hip_advance = float(cf.get("hip_advance") or 0.0)
+        distinct_shapes = int(cf.get("distinct_hand_shapes") or 0)
+        upright_pct = float(result.get("upright_pct") or 0.0)
+        stance_pct = float(result.get("stance_pct") or 0.0)
+
+        def _clip(score: int) -> int:
+            return max(1, min(7, int(score)))
+
+        eng_adj = 0
+        if hands_above > 0.45 or hip_advance > 0.02 or distinct_shapes >= 10:
+            eng_adj += 2
+        elif hands_above > 0.20 and hand_block < 0.40:
+            eng_adj += 1
+        if hand_block > 0.55 and hands_above < 0.10:
+            eng_adj -= 2
+        if distinct_shapes <= 3 and hands_above < 0.05:
+            eng_adj -= 1
+
+        con_adj = 0
+        if hip_sway < 0.02 and hand_block < 0.30 and upright_pct >= 55.0:
+            con_adj += 2
+        elif hip_sway < 0.03 and hand_block < 0.45:
+            con_adj += 1
+        if hip_sway > 0.05 or hand_block > 0.55:
+            con_adj -= 2
+        elif hip_sway > 0.035 or hand_block > 0.45:
+            con_adj -= 1
+
+        auth_adj = 0
+        grounded = upright_pct >= 55.0 and stance_pct >= 45.0
+        unstable = hip_sway > 0.05 or upright_pct < 25.0
+        if grounded and hip_sway < 0.025 and hand_low < 0.50:
+            auth_adj += 2
+        elif grounded and hip_sway < 0.04:
+            auth_adj += 1
+        if unstable:
+            auth_adj -= 2
+        elif hand_low > 0.70:
+            auth_adj -= 1
+
+        adapt_adj = 0
+        if distinct_shapes >= 10:
+            adapt_adj += 2
+        elif distinct_shapes >= 6:
+            adapt_adj += 1
+        if distinct_shapes <= 3:
+            adapt_adj -= 2
+        elif distinct_shapes <= 5 and hand_block > 0.45:
+            adapt_adj -= 1
+
+        eng_final = _clip(base_eng + eng_adj)
+        con_final = _clip(base_con + con_adj)
+        auth_final = _clip(base_auth + auth_adj)
+        adapt_final = _clip(base_adapt + adapt_adj)
+
+        logger.info(
+            "[people_reader_direct] engaging: %d -> %d (adj=%+d) | "
+            "confidence: %d -> %d (adj=%+d) | authority: %d -> %d (adj=%+d) | "
+            "adaptability: %d -> %d (adj=%+d) | features: hands_above=%.2f "
+            "hand_block=%.2f hand_low=%.2f hip_sway=%.4f hip_advance=%.3f "
+            "distinct=%d upright=%.1f stance=%.1f",
+            base_eng, eng_final, eng_adj,
+            base_con, con_final, con_adj,
+            base_auth, auth_final, auth_adj,
+            base_adapt, adapt_final, adapt_adj,
+            hands_above, hand_block, hand_low, hip_sway, hip_advance,
+            distinct_shapes, upright_pct, stance_pct,
+        )
+
+        result["engaging_score"] = eng_final
+        result["convince_score"] = con_final
+        result["authority_score"] = auth_final
+        result["adaptability_score"] = adapt_final
+    else:
+        # Legacy path (10-Type rubric lookup). Left in place as a fallback
+        # toggle so we can compare quickly if a regression appears.
+        result["engaging_score"] = max(
+            1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["engaging"]))
+        )
+        result["convince_score"] = max(
+            1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["confidence"]))
+        )
+        result["authority_score"] = max(
+            1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["authority"]))
+        )
+        result["adaptability_score"] = max(
+            1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["adaptability"]))
+        )
+
     result["engaging_pos"] = int(result["engaging_score"] / 7 * 450)
     result["convince_pos"] = int(result["convince_score"] / 7 * 475)
     result["authority_pos"] = int(result["authority_score"] / 7 * 445)
