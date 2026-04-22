@@ -1447,8 +1447,13 @@ def apply_movement_type_classification(
     # lands near 3-4 (Moderate); the +2 bump still reaches High for genuine
     # outliers.
     eng_bias = _bias_env("PEOPLE_READER_BIAS_ENGAGING", -3)
-    con_bias = _bias_env("PEOPLE_READER_BIAS_CONFIDENCE", -1)
-    auth_bias = _bias_env("PEOPLE_READER_BIAS_AUTHORITY", -1)
+    # Confidence / Authority bias was -1 but that kept power-stance speakers
+    # (arms folded, steady body, no strong Laban efforts) stuck at Low even
+    # after the grounded-stance +1 path. Moved to 0 so their raw score
+    # survives into the adjustment stage. The closed-posture cap still limits
+    # runaway scores for clearly closed presentations.
+    con_bias = _bias_env("PEOPLE_READER_BIAS_CONFIDENCE", 0)
+    auth_bias = _bias_env("PEOPLE_READER_BIAS_AUTHORITY", 0)
     # Adaptability skews most heavily Low in the 10-clip reference (6/10 Low),
     # so use a stronger downshift than the others.
     adapt_bias = _bias_env("PEOPLE_READER_BIAS_ADAPTABILITY", -3)
