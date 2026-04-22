@@ -1512,14 +1512,19 @@ def apply_movement_type_classification(
         if distinct_shapes <= 3 and hands_above < 0.05:
             eng_adj -= 1
 
+        # Confidence rules (A): hand_block alone no longer triggers the -2
+        # penalty. A "power stance" (arms folded / clasped at chest while the
+        # body is otherwise steady) should not automatically read as low
+        # confidence. We only apply the harsh penalty when blocking is
+        # combined with body sway (i.e. fidgeting), or when sway is very high.
         con_adj = 0
         if hip_sway < 0.02 and hand_block < 0.30 and upright_pct >= 55.0:
             con_adj += 2
         elif hip_sway < 0.03 and hand_block < 0.45:
             con_adj += 1
-        if hip_sway > 0.05 or hand_block > 0.55:
+        if hip_sway > 0.05 or (hand_block > 0.55 and hip_sway > 0.04):
             con_adj -= 2
-        elif hip_sway > 0.035 or hand_block > 0.45:
+        elif hip_sway > 0.035 and hand_block > 0.45:
             con_adj -= 1
 
         # Authority rules (loosened per option B + C + E):
@@ -1551,6 +1556,17 @@ def apply_movement_type_classification(
             auth_adj -= 2
         elif hand_low > 0.70:
             auth_adj -= 1
+
+        # Option B: "grounded stance" +1 path for Confidence and Authority.
+        # A steady, upright speaker with a reasonable stance deserves at least
+        # +1 on both - regardless of hand position - because the body is
+        # communicating presence (Lisa-style power stance with arms folded).
+        grounded_stance = (
+            upright_pct >= 45.0 and hip_sway < 0.04 and stance_pct >= 40.0
+        )
+        if grounded_stance:
+            con_adj = max(con_adj, 1)
+            auth_adj = max(auth_adj, 1)
 
         # Adaptability rules (tightened after K. Sawitree showed up High):
         # the +2 bump now requires *real* gesture variety AND clear visible
@@ -1594,20 +1610,36 @@ def apply_movement_type_classification(
             con_final = min(con_final, 3)     # cap Low/Moderate border
             caps_note = " [very_closed_posture cap]"
 
+        # --- Align Authority to Confidence -----------------------------------
+        # Business rule: Confidence and Authority should report the same
+        # score. The two categories share most of their underlying cues
+        # (body stability, posture, decisive vs. hesitant gesturing), and the
+        # product rubric treats them as a paired pair. If the per-feature
+        # adjustments produce different scores, snap Authority to Confidence.
+        # Disable via PEOPLE_READER_ALIGN_AUTH_TO_CONF=0 if needed.
+        _align_auth = str(os.getenv("PEOPLE_READER_ALIGN_AUTH_TO_CONF", "1")).strip().lower() not in ("0", "false", "no", "off")
+        if _align_auth and auth_final != con_final:
+            auth_final_before_align = auth_final
+            auth_final = con_final
+            caps_note = (caps_note + " [auth<-conf]").strip() if caps_note else " [auth<-conf]"
+        else:
+            auth_final_before_align = auth_final
+
         logger.info(
             "[people_reader_direct] engaging: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
             "confidence: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
-            "authority: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
+            "authority: raw=%d bias=%+d base=%d -> %d (adj=%+d, pre-align=%d) | "
             "adaptability: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
             "features: hands_above=%.2f hand_block=%.2f hand_low=%.2f "
             "hip_sway=%.4f hip_advance=%.3f distinct=%d upright=%.1f "
-            "stance=%.1f strong_mix=%.1f%s",
+            "stance=%.1f strong_mix=%.1f grounded=%s%s",
             raw_eng, eng_bias, base_eng, eng_final, eng_adj,
             raw_con, con_bias, base_con, con_final, con_adj,
-            raw_auth, auth_bias, base_auth, auth_final, auth_adj,
+            raw_auth, auth_bias, base_auth, auth_final, auth_adj, auth_final_before_align,
             raw_adapt, adapt_bias, base_adapt, adapt_final, adapt_adj,
             hands_above, hand_block, hand_low, hip_sway, hip_advance,
-            distinct_shapes, upright_pct, stance_pct, strong_mix, caps_note,
+            distinct_shapes, upright_pct, stance_pct, strong_mix,
+            "yes" if grounded_stance else "no", caps_note,
         )
 
         result["engaging_score"] = eng_final
