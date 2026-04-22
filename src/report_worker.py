@@ -1419,10 +1419,38 @@ def apply_movement_type_classification(
     _direct_scores_enabled = str(os.getenv("PEOPLE_READER_DIRECT_SCORES", "1")).strip().lower() not in ("0", "false", "no", "off")
 
     result = dict(result)
-    base_eng = int(result.get("engaging_score") or 4)
-    base_con = int(result.get("convince_score") or 4)
-    base_auth = int(result.get("authority_score") or 4)
-    base_adapt = int(result.get("adaptability_score") or 4)
+    raw_eng = int(result.get("engaging_score") or 4)
+    raw_con = int(result.get("convince_score") or 4)
+    raw_auth = int(result.get("authority_score") or 4)
+    raw_adapt = int(result.get("adaptability_score") or 4)
+
+    # --- Reference-distribution bias -----------------------------------------
+    # analyze_video_mediapipe's base formulas
+    #   engaging_score = round(engaging_raw / 5.4 + 1.4)
+    #   adaptability_score = round(adaptability_raw / 15 + 1.25)
+    # map any modestly active speaker to 5-6-7 (High). The 10-clip reference
+    # rubric, however, shows only 2/10 High Engaging and 2/10 High Adaptable:
+    #   Engaging: 2H / 5M / 3L (avg 3.8, i.e. just Moderate)
+    #   Adaptability: 2H / 2M / 6L (avg 3.2, i.e. Low-Moderate border)
+    # Confidence / Authority reference distributions skew Moderate-ish too
+    # (both ~3/2/5 High/Moderate/Low across the 10 Types). Apply a constant
+    # downshift so the per-video base lands near the reference mean before
+    # the ±2 feature adjustments run; tune via env vars without a redeploy.
+    def _bias_env(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except Exception:
+            return default
+
+    eng_bias = _bias_env("PEOPLE_READER_BIAS_ENGAGING", -2)
+    con_bias = _bias_env("PEOPLE_READER_BIAS_CONFIDENCE", -1)
+    auth_bias = _bias_env("PEOPLE_READER_BIAS_AUTHORITY", -1)
+    adapt_bias = _bias_env("PEOPLE_READER_BIAS_ADAPTABILITY", -2)
+
+    base_eng = max(1, min(7, raw_eng + eng_bias))
+    base_con = max(1, min(7, raw_con + con_bias))
+    base_auth = max(1, min(7, raw_auth + auth_bias))
+    base_adapt = max(1, min(7, raw_adapt + adapt_bias))
 
     if _direct_scores_enabled:
         cf = dict(result.get("category_features") or {})
@@ -1536,15 +1564,17 @@ def apply_movement_type_classification(
             caps_note = " [very_closed_posture cap]"
 
         logger.info(
-            "[people_reader_direct] engaging: %d -> %d (adj=%+d) | "
-            "confidence: %d -> %d (adj=%+d) | authority: %d -> %d (adj=%+d) | "
-            "adaptability: %d -> %d (adj=%+d) | features: hands_above=%.2f "
-            "hand_block=%.2f hand_low=%.2f hip_sway=%.4f hip_advance=%.3f "
-            "distinct=%d upright=%.1f stance=%.1f%s",
-            base_eng, eng_final, eng_adj,
-            base_con, con_final, con_adj,
-            base_auth, auth_final, auth_adj,
-            base_adapt, adapt_final, adapt_adj,
+            "[people_reader_direct] engaging: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
+            "confidence: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
+            "authority: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
+            "adaptability: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
+            "features: hands_above=%.2f hand_block=%.2f hand_low=%.2f "
+            "hip_sway=%.4f hip_advance=%.3f distinct=%d upright=%.1f "
+            "stance=%.1f%s",
+            raw_eng, eng_bias, base_eng, eng_final, eng_adj,
+            raw_con, con_bias, base_con, con_final, con_adj,
+            raw_auth, auth_bias, base_auth, auth_final, auth_adj,
+            raw_adapt, adapt_bias, base_adapt, adapt_final, adapt_adj,
             hands_above, hand_block, hand_low, hip_sway, hip_advance,
             distinct_shapes, upright_pct, stance_pct, caps_note,
         )
