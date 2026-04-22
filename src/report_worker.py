@@ -1394,6 +1394,69 @@ def apply_movement_type_classification(
     match_pct_chosen = int(chosen_row.get("match_pct") or 0)
 
     cat_scales = mtc.people_reader_category_scales_from_template(tpl_chosen)
+
+    # === Direct Engaging override from per-video features (professor-feedback
+    # quick fix, calibration-pending). The template rubric lookup above sets
+    # Engaging from the matched Type 1-10 rubric, which means a clip that
+    # visually reads as high-engagement can still show "Low" if the video's
+    # summary features happened to match Type 2 / 8 / 10. Until the full
+    # calibration pass is done against the 12 ground-truth clips, let the raw
+    # per-video features (collected in analyze_video_mediapipe) directly bump
+    # or cap the Engaging label.
+    #
+    # Rules:
+    #   hands_above_share > 0.45 OR hip_advance > 0.02 OR distinct_shapes >= 10
+    #     -> force Engaging = high (strong, varied, or advancing gestures)
+    #   hands_above_share > 0.20 AND hand_block_share < 0.40
+    #     -> bump Engaging up to at least Moderate (open posture, visible hands)
+    #   hand_block_share > 0.55 AND hands_above_share < 0.10
+    #     -> keep template value if already Low, otherwise cap at Moderate
+    #       (hands blocking body, almost never raised above shoulders)
+    #
+    # Disable via ENGAGING_FEATURE_OVERRIDE=0 if a regression appears.
+    try:
+        _eng_override_enabled = str(os.getenv("ENGAGING_FEATURE_OVERRIDE", "1")).strip().lower() not in ("0", "false", "no", "off")
+        cf = dict(result.get("category_features") or {})
+        if _eng_override_enabled and cf:
+            def _rank(level: str) -> int:
+                s = str(level or "").strip().lower()
+                if s == "high":
+                    return 2
+                if s == "moderate":
+                    return 1
+                return 0
+
+            def _from_rank(r: int) -> str:
+                return "high" if r >= 2 else ("moderate" if r == 1 else "low")
+
+            hands_above = float(cf.get("hands_above_share") or 0.0)
+            hand_block = float(cf.get("hand_block_share") or 0.0)
+            hip_advance = float(cf.get("hip_advance") or 0.0)
+            distinct_shapes = int(cf.get("distinct_hand_shapes") or 0)
+
+            before = str(cat_scales.get("engaging") or "low")
+            current_rank = _rank(before)
+            target_rank = current_rank
+
+            if hands_above > 0.45 or hip_advance > 0.02 or distinct_shapes >= 10:
+                target_rank = max(target_rank, 2)  # high
+            elif hands_above > 0.20 and hand_block < 0.40:
+                target_rank = max(target_rank, 1)  # moderate
+            if hand_block > 0.55 and hands_above < 0.10:
+                target_rank = min(target_rank, 1)  # cap at moderate
+
+            after = _from_rank(target_rank)
+            if after != before:
+                logger.info(
+                    "[movement_type] engaging override: template=%s -> features=%s "
+                    "(hands_above=%.2f hand_block=%.2f hip_advance=%.3f distinct=%d)",
+                    before, after, hands_above, hand_block, hip_advance, distinct_shapes,
+                )
+                cat_scales = dict(cat_scales)
+                cat_scales["engaging"] = after
+    except Exception as _eng_exc:
+        logger.warning("[movement_type] engaging override failed: %s", _eng_exc)
+
     result = dict(result)
     result["engaging_score"] = max(
         1, min(7, mtc.people_reader_scale_to_category_score(cat_scales["engaging"]))
