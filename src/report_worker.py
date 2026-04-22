@@ -1522,13 +1522,31 @@ def apply_movement_type_classification(
         elif hip_sway > 0.035 or hand_block > 0.45:
             con_adj -= 1
 
+        # Authority rules (loosened per option B + C + E):
+        #   B) +2 bump sway threshold relaxed 0.025 -> 0.035 so naturally
+        #      still-but-not-frozen speakers can earn it.
+        #   C) Alternate +2 path from a strong authority-effort mix
+        #      (Pressing + Directing + Punching share > 28%) combined with
+        #      reasonable stability (hip_sway < 0.04), regardless of stance.
+        #   E) Unstable-penalty bar raised 0.05 -> 0.07 and upright<25 -> <20,
+        #      so mild body movement no longer trips the -2 penalty.
         auth_adj = 0
-        grounded = upright_pct >= 55.0 and stance_pct >= 45.0
-        unstable = hip_sway > 0.05 or upright_pct < 25.0
-        if grounded and hip_sway < 0.025 and hand_low < 0.50:
+        grounded = upright_pct >= 55.0 and stance_pct >= 40.0  # also slightly loosened
+        unstable = hip_sway > 0.07 or upright_pct < 20.0
+        if grounded and hip_sway < 0.035 and hand_low < 0.50:
             auth_adj += 2
-        elif grounded and hip_sway < 0.04:
+        elif grounded and hip_sway < 0.05:
             auth_adj += 1
+
+        # Option C: strong-effort mix alternative path to +2
+        effort_det = dict(result.get("effort_detection") or {})
+        pressing_pct = float(effort_det.get("Pressing", 0) or 0)
+        directing_pct = float(effort_det.get("Directing", 0) or 0)
+        punching_pct = float(effort_det.get("Punching", 0) or 0)
+        strong_mix = pressing_pct + directing_pct + punching_pct
+        if strong_mix > 28.0 and hip_sway < 0.04:
+            auth_adj = max(auth_adj, 2)
+
         if unstable:
             auth_adj -= 2
         elif hand_low > 0.70:
@@ -1583,13 +1601,13 @@ def apply_movement_type_classification(
             "adaptability: raw=%d bias=%+d base=%d -> %d (adj=%+d) | "
             "features: hands_above=%.2f hand_block=%.2f hand_low=%.2f "
             "hip_sway=%.4f hip_advance=%.3f distinct=%d upright=%.1f "
-            "stance=%.1f%s",
+            "stance=%.1f strong_mix=%.1f%s",
             raw_eng, eng_bias, base_eng, eng_final, eng_adj,
             raw_con, con_bias, base_con, con_final, con_adj,
             raw_auth, auth_bias, base_auth, auth_final, auth_adj,
             raw_adapt, adapt_bias, base_adapt, adapt_final, adapt_adj,
             hands_above, hand_block, hand_low, hip_sway, hip_advance,
-            distinct_shapes, upright_pct, stance_pct, caps_note,
+            distinct_shapes, upright_pct, stance_pct, strong_mix, caps_note,
         )
 
         result["engaging_score"] = eng_final
