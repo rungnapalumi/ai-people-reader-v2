@@ -1517,19 +1517,27 @@ def apply_movement_type_classification(
         if distinct_shapes <= 3 and hands_above < 0.05:
             eng_adj -= 1
 
-        # Confidence rules (A): hand_block alone no longer triggers the -2
-        # penalty. A "power stance" (arms folded / clasped at chest while the
-        # body is otherwise steady) should not automatically read as low
-        # confidence. We only apply the harsh penalty when blocking is
-        # combined with body sway (i.e. fidgeting), or when sway is very high.
+        # Confidence rules:
+        #   A) hand_block alone no longer triggers the -2 penalty (power
+        #      stance). Blocking must be combined with body sway (fidgeting)
+        #      or sway must be high on its own.
+        #   F) hip_sway -2 threshold raised 0.05 -> 0.06 so naturally moving
+        #      speakers (like the case where sway=0.056 with otherwise
+        #      excellent upright/hands signals) aren't pushed to Low.
+        #   G) New alternate +1 path for tall, steady speakers:
+        #      upright_pct>=60 AND hip_sway<0.06. Rewards posture-only
+        #      presence even when the stance is narrow (so the main
+        #      grounded_stance check misses).
         con_adj = 0
         if hip_sway < 0.02 and hand_block < 0.30 and upright_pct >= 55.0:
             con_adj += 2
         elif hip_sway < 0.03 and hand_block < 0.45:
             con_adj += 1
-        if hip_sway > 0.05 or (hand_block > 0.55 and hip_sway > 0.04):
+        elif upright_pct >= 60.0 and hip_sway < 0.06:
+            con_adj += 1
+        if hip_sway > 0.06 or (hand_block > 0.55 and hip_sway > 0.04):
             con_adj -= 2
-        elif hip_sway > 0.035 and hand_block > 0.45:
+        elif hip_sway > 0.045 and hand_block > 0.45:
             con_adj -= 1
 
         # Authority rules (loosened per option B + C + E):
