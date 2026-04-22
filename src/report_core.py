@@ -435,6 +435,12 @@ def analyze_first_impression_from_video(
     torso_tilt_list: List[float] = []
     # v2 uprightness signals
     sh_hip_offset_list: List[float] = []
+    # v3 uprightness signals (added per professor feedback, calibration-pending)
+    # - sh_mid_x / hip_mid_x track body sway over time (weight shifting).
+    # - head_above_shoulders captures chin-down / rounded-shoulder slouch.
+    sh_mid_x_list: List[float] = []
+    hip_mid_x_list: List[float] = []
+    head_above_shoulders_list: List[float] = []
     # v2 eye-contact signals
     nose_offset_ratio_list: List[float] = []
     nose_sh_ratio_list: List[float] = []
@@ -492,6 +498,14 @@ def analyze_first_impression_from_video(
         torso_tilt_list.append(float(ang))
         # Horizontal offset between shoulder midline and hip midline — slouch indicator.
         sh_hip_offset_list.append(abs(float(mid_sh[0]) - float(mid_hip[0])))
+        # v3 uprightness signals (calibration-pending).
+        sh_mid_x_list.append(float(mid_sh[0]))
+        hip_mid_x_list.append(float(mid_hip[0]))
+        if sh_w > 1e-4:
+            # Head height above shoulder midline, normalized by shoulder width.
+            # Tall heads (values >= ~0.70) read as upright; slumped / chin-down
+            # heads compress toward the shoulder line (values <= ~0.50).
+            head_above_shoulders_list.append(float((mid_sh[1] - nose[1]) / sh_w))
 
         # Stance (continuous): lower-body stability + center sway + stance width appropriateness.
         if min(float(s["lank_vis"]), float(s["rank_vis"])) >= 0.5:
@@ -572,19 +586,66 @@ def analyze_first_impression_from_video(
             torso_p90_f = _clamp01(1.0 - (torso_p90 - 3.0) / 4.0)
             sh_hip_f    = _clamp01(1.0 - (sh_hip_med - 0.015) / 0.015)
 
-            upright_pct = 100.0 * (
-                0.20 * torso_med_f
-                + 0.40 * torso_p90_f
-                + 0.40 * sh_hip_f
-            )
+            # v3 add-ons (professor-feedback). Two signals the old 3-term v2
+            # formula was blind to:
+            #   1. Body sway across the clip (weight shifting / left-right drift).
+            #   2. Head height above the shoulders (chin-down / rounded posture).
+            # Both are computed only when we have enough samples; otherwise
+            # they default to neutral (0.5) so they can't accidentally drop a
+            # clean clip on a short video with too few frames.
+            upright_v3 = str(os.getenv("UPRIGHT_V3", "1")).strip().lower() not in ("0", "false", "no", "off")
+
+            if upright_v3 and len(sh_mid_x_list) >= 10 and len(hip_mid_x_list) >= 10:
+                sway_series = np.array(sh_mid_x_list + hip_mid_x_list, dtype=float)
+                sway_std = float(np.std(sway_series))
+                # Clean standers sit around 0.005–0.012; visible swaying starts
+                # ~0.025. Map std=0.012 -> 1.0 and std=0.050 -> 0.0.
+                sway_f = _clamp01(1.0 - (sway_std - 0.012) / 0.038)
+            else:
+                sway_std = float("nan")
+                sway_f = 0.5
+
+            if upright_v3 and head_above_shoulders_list:
+                head_h_med = float(np.median(np.array(head_above_shoulders_list)))
+                # Upright speakers land ~0.75–0.90; rounded/chin-down slumps
+                # compress to ~0.45–0.55. Map 0.55 -> 0.0, 0.80 -> 1.0.
+                head_f = _clamp01((head_h_med - 0.55) / 0.25)
+            else:
+                head_h_med = float("nan")
+                head_f = 0.5
+
+            if upright_v3:
+                # Re-weighted mix: the two old signals still dominate but the
+                # sway and head-height components can pull the score down for
+                # clips that look slumped / shifting to a human judge even
+                # when the 2D shoulder-to-hip line is nearly vertical.
+                upright_pct = 100.0 * (
+                    0.15 * torso_med_f
+                    + 0.25 * torso_p90_f
+                    + 0.20 * sh_hip_f
+                    + 0.20 * sway_f
+                    + 0.20 * head_f
+                )
+            else:
+                upright_pct = 100.0 * (
+                    0.20 * torso_med_f
+                    + 0.40 * torso_p90_f
+                    + 0.40 * sh_hip_f
+                )
+
             upright_pct = max(0.0, min(100.0, upright_pct))
             logger.info(
-                "[first_impression] upright v2: score=%.1f  torso_med=%.2f(f=%.2f) torso_p90=%.2f(f=%.2f) sh_hip_off=%.3f(f=%.2f)",
-                upright_pct, torso_med, torso_med_f, torso_p90, torso_p90_f, sh_hip_med, sh_hip_f,
+                "[first_impression] upright v%s: score=%.1f  torso_med=%.2f(f=%.2f) torso_p90=%.2f(f=%.2f) "
+                "sh_hip_off=%.3f(f=%.2f) sway_std=%.3f(f=%.2f) head_above=%.2f(f=%.2f)",
+                "3" if upright_v3 else "2",
+                upright_pct, torso_med, torso_med_f, torso_p90, torso_p90_f,
+                sh_hip_med, sh_hip_f,
+                sway_std if sway_std == sway_std else -1.0, sway_f,
+                head_h_med if head_h_med == head_h_med else -1.0, head_f,
             )
         else:
             upright_pct = 50.0
-            logger.info("[first_impression] upright v2: no torso samples, using 50.0")
+            logger.info("[first_impression] upright v2/v3: no torso samples, using 50.0")
 
     # Stance scoring.
     # v2 (default) — geometry-based: stance width + knee straightness + knee symmetry + torso upright.
@@ -638,12 +699,34 @@ def analyze_first_impression_from_video(
                 + 0.15 * torso_upright
             )
             stability = max(0.0, min(100.0, stability))
+
+            # v2 professor-feedback overrides (calibration-pending).
+            # Two specific patterns appear repeatedly in the ground-truth
+            # table and aren't well handled by the weighted average alone:
+            #   a) Feet-together stance (Aon / Ann / Candy). If the median
+            #      ankle distance is below ~25% of shoulder width for the
+            #      whole clip, the speaker effectively has no stance —
+            #      cap the score into the Low band.
+            #   b) Wide, stable stance (Ches / Lisa 2nd clip). A consistently
+            #      wide base with minimal variation is a strong High signal.
+            stance_overrides = str(os.getenv("STANCE_V2_OVERRIDES", "1")).strip().lower() not in ("0", "false", "no", "off")
+            override_note = ""
+            width_ratio_std = float(np.std(np.array(stance_width_ratios)))
+            if stance_overrides and width_ratio_med < 0.25:
+                stability = min(stability, 18.0)
+                override_note = " feet_together_cap"
+            elif stance_overrides and width_ratio_med > 0.80 and width_ratio_std < 0.05:
+                stability = min(100.0, stability + 10.0)
+                override_note = " wide_stable_boost"
+
             logger.info(
-                "[first_impression] stance v2: score=%.1f  width_ratio=%.3f(f=%.2f) knee_avg=%.2f(f=%.2f) knee_sym=%.2f(f=%.2f) torso=%.2f(f=%.2f)",
-                stability, width_ratio_med, width_factor,
+                "[first_impression] stance v2: score=%.1f  width_ratio=%.3f±%.3f(f=%.2f) "
+                "knee_avg=%.2f(f=%.2f) knee_sym=%.2f(f=%.2f) torso=%.2f(f=%.2f)%s",
+                stability, width_ratio_med, width_ratio_std, width_factor,
                 knee_avg if knee_avg == knee_avg else -1.0, knee_straight,
                 (kL_med - kR_med) if (kL_med == kL_med and kR_med == kR_med) else 0.0, knee_symmetry,
                 torso_med if torso_med == torso_med else -1.0, torso_upright,
+                override_note,
             )
         else:
             stability = 50.0
@@ -1208,7 +1291,25 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         "Flicking": 0, "Advancing": 0, "Retreating": 0
     }
     shape_counts = {"Directing": 0, "Enclosing": 0, "Spreading": 0, "Indirecting": 0, "Advancing": 0, "Retreating": 0}
-    
+
+    # Category-level per-frame collectors (professor-feedback, calibration-pending).
+    # These are extracted and logged but NOT yet wired into the final scores —
+    # they will be used once we re-run calibration against the 12 ground-truth
+    # clips (Lea, Payu, Sawitree, Sarinee, Lisa, Chutima, Aon, Ann, Ches, Candy...).
+    #   hand_block_frames: both wrists in the chest box (inside shoulder span,
+    #                      above hip line, below shoulder line). Lowers Engaging.
+    #   hand_low_frames:   both wrists below hip line. Lowers Authority/Confidence.
+    #   hands_above_sh_frames: at least one wrist above shoulder line.
+    #   hip_y_series / hip_x_series: track hip midpoint trajectory (advance toward
+    #                      audience and body sway).
+    #   wrist_shape_signatures: coarse hand-shape cluster ids for gesture variety.
+    hand_block_frames = 0
+    hand_low_frames = 0
+    hands_above_sh_frames = 0
+    hip_y_series: List[float] = []
+    hip_x_series: List[float] = []
+    wrist_shape_signatures: List[Tuple[int, int, int, int]] = []
+
     analyzed = 0
     sampled = 0
     prev_landmarks = None
@@ -1383,7 +1484,63 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                             if backward_movement and avg_velocity > 0.07 and is_sustained:
                                 effort_counts["Retreating"] += 1
                                 shape_counts["Retreating"] += 1
-                    
+
+                            # === Category-level feature collectors (professor-feedback,
+                            # calibration-pending). These influence logging only; scoring
+                            # will be updated once we have the 12 ground-truth clips.
+                            try:
+                                left_hip = lms[PoseLandmark.LEFT_HIP]
+                                right_hip = lms[PoseLandmark.RIGHT_HIP]
+                                hip_mid_x = (left_hip.x + right_hip.x) / 2.0
+                                hip_mid_y = (left_hip.y + right_hip.y) / 2.0
+                                sh_mid_y = avg_shoulder_y
+                                shoulder_min_x = min(left_shoulder.x, right_shoulder.x)
+                                shoulder_max_x = max(left_shoulder.x, right_shoulder.x)
+                                # hand-blocking: both wrists inside the chest box
+                                lw_in_box = (
+                                    shoulder_min_x <= left_wrist.x <= shoulder_max_x
+                                    and sh_mid_y <= left_wrist.y <= hip_mid_y
+                                )
+                                rw_in_box = (
+                                    shoulder_min_x <= right_wrist.x <= shoulder_max_x
+                                    and sh_mid_y <= right_wrist.y <= hip_mid_y
+                                )
+                                if lw_in_box and rw_in_box:
+                                    hand_block_frames += 1
+                                # hand-low: both wrists below hip line
+                                if left_wrist.y > hip_mid_y and right_wrist.y > hip_mid_y:
+                                    hand_low_frames += 1
+                                # hands-above-shoulders: at least one wrist above shoulder line
+                                if left_wrist.y < sh_mid_y or right_wrist.y < sh_mid_y:
+                                    hands_above_sh_frames += 1
+                                hip_x_series.append(float(hip_mid_x))
+                                hip_y_series.append(float(hip_mid_y))
+                                # Coarse wrist-shape signature for hand-shape variety counting.
+                                # Quantize each wrist's (x,y) into a 4-bin grid relative to shoulders.
+                                def _qx(x_val: float) -> int:
+                                    if x_val < shoulder_min_x:
+                                        return 0
+                                    if x_val > shoulder_max_x:
+                                        return 3
+                                    midline = (shoulder_min_x + shoulder_max_x) / 2.0
+                                    return 1 if x_val <= midline else 2
+
+                                def _qy(y_val: float) -> int:
+                                    if y_val < sh_mid_y - 0.05:
+                                        return 0  # well above shoulders
+                                    if y_val < sh_mid_y + 0.05:
+                                        return 1  # around shoulders
+                                    if y_val < hip_mid_y:
+                                        return 2  # chest / belly
+                                    return 3  # below hips
+
+                                wrist_shape_signatures.append(
+                                    (_qx(left_wrist.x), _qy(left_wrist.y), _qx(right_wrist.x), _qy(right_wrist.y))
+                                )
+                            except Exception:
+                                # Defensive: never fail the main loop over feature collection.
+                                pass
+
                         # Store current landmarks for next iteration
                         prev_landmarks = lms
                         analyzed += 1
@@ -1544,6 +1701,35 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     adaptability_score = min(7, max(1, round(adaptability_raw / 15.0 + 1.25)))
     adaptability_pos = int(adaptability_score / 7 * 445)
 
+    # === Category-level professor-feedback features (calibration-pending) ===
+    # Computed only from the per-frame counters above. Exposed in logs and in
+    # the return dict so we can re-fit the Engaging / Confidence / Authority /
+    # Adaptability weights once the 12 ground-truth clips are available.
+    denom = max(1, analyzed)
+    hand_block_share = hand_block_frames / denom
+    hand_low_share = hand_low_frames / denom
+    hands_above_share = hands_above_sh_frames / denom
+    hip_sway_std = float(np.std(np.array(hip_x_series))) if len(hip_x_series) >= 10 else 0.0
+    # Forward advance: compare median hip Y in the last quartile vs the first
+    # quartile (Y grows downward in normalized coords, so a smaller final Y
+    # means the speaker advanced upward/forward toward the camera).
+    if len(hip_y_series) >= 8:
+        q = max(2, len(hip_y_series) // 4)
+        first_q = float(np.median(np.array(hip_y_series[:q])))
+        last_q = float(np.median(np.array(hip_y_series[-q:])))
+        hip_advance = first_q - last_q
+    else:
+        hip_advance = 0.0
+    # Hand-shape variety: distinct coarse (left_x, left_y, right_x, right_y) bins.
+    distinct_shapes = len(set(wrist_shape_signatures)) if wrist_shape_signatures else 0
+
+    logger.info(
+        "[category_features] hand_block=%.3f hand_low=%.3f hands_above=%.3f "
+        "hip_sway_std=%.4f hip_advance=%.4f distinct_shapes=%d",
+        hand_block_share, hand_low_share, hands_above_share,
+        hip_sway_std, hip_advance, distinct_shapes,
+    )
+
     return {
         "analysis_engine": "mediapipe_real_enhanced",
         "duration_seconds": duration,
@@ -1561,6 +1747,16 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         "shape_detection": shape_detection,
         "effort_counts": dict(effort_counts),
         "shape_counts": dict(shape_counts),
+        # Professor-feedback features (calibration-pending; not yet wired into
+        # engaging/confidence/authority/adaptability scores).
+        "category_features": {
+            "hand_block_share": round(hand_block_share, 3),
+            "hand_low_share": round(hand_low_share, 3),
+            "hands_above_share": round(hands_above_share, 3),
+            "hip_sway_std": round(hip_sway_std, 4),
+            "hip_advance": round(hip_advance, 4),
+            "distinct_hand_shapes": int(distinct_shapes),
+        },
     }
 
 def analyze_video_placeholder(video_path: str, seed: int = None, job_id: str = None) -> Dict[str, Any]:
