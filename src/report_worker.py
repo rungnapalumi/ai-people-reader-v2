@@ -1442,7 +1442,11 @@ def apply_movement_type_classification(
         except Exception:
             return default
 
-    eng_bias = _bias_env("PEOPLE_READER_BIAS_ENGAGING", -2)
+    # Engaging reference is 2H / 5M / 3L (avg 3.8), but analyze_video_mediapipe
+    # easily pushes raw to 5-6 for any active speaker. Using -3 so the default
+    # lands near 3-4 (Moderate); the +2 bump still reaches High for genuine
+    # outliers.
+    eng_bias = _bias_env("PEOPLE_READER_BIAS_ENGAGING", -3)
     con_bias = _bias_env("PEOPLE_READER_BIAS_CONFIDENCE", -1)
     auth_bias = _bias_env("PEOPLE_READER_BIAS_AUTHORITY", -1)
     # Adaptability skews most heavily Low in the 10-clip reference (6/10 Low),
@@ -1494,8 +1498,12 @@ def apply_movement_type_classification(
         closed_posture = (hand_block > 0.60 and hands_above < 0.10)
         very_closed_posture = (hand_block > 0.75 and hands_above < 0.05)
 
+        # Engaging rules (tightened): to earn the +2 bump, the speaker must
+        # combine *raised hands*, *no torso blocking*, and *real gesture
+        # variety*. Any single signal alone no longer pushes the score up
+        # by 2. The +1 bump still recognizes moderate open posture.
         eng_adj = 0
-        if hands_above > 0.35 or (hip_advance > 0.02 and hand_block < 0.45) or distinct_shapes >= 12:
+        if hands_above > 0.45 and hand_block < 0.35 and distinct_shapes >= 10:
             eng_adj += 2
         elif hands_above > 0.20 and hand_block < 0.40:
             eng_adj += 1
