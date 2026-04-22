@@ -1432,14 +1432,40 @@ def apply_movement_type_classification(
         hip_sway = float(cf.get("hip_sway_std") or 0.0)
         hip_advance = float(cf.get("hip_advance") or 0.0)
         distinct_shapes = int(cf.get("distinct_hand_shapes") or 0)
-        upright_pct = float(result.get("upright_pct") or 0.0)
-        stance_pct = float(result.get("stance_pct") or 0.0)
+        # Pull upright / stance from the first-impression object (which is
+        # computed from the same video earlier in the pipeline); the result
+        # dict from analyze_video_mediapipe does not carry these keys, so
+        # reading them from `result` silently produced 0.0 before.
+        try:
+            upright_pct = float(getattr(first_impression, "upright_pct", 0.0) or 0.0)
+        except Exception:
+            upright_pct = 0.0
+        try:
+            # FirstImpressionData stores stance as `stance_stability`; fall
+            # back to `stance_pct` for older callers if present.
+            stance_pct = float(
+                getattr(first_impression, "stance_stability",
+                        getattr(first_impression, "stance_pct", 0.0)) or 0.0
+            )
+        except Exception:
+            stance_pct = 0.0
 
         def _clip(score: int) -> int:
             return max(1, min(7, int(score)))
 
+        # --- Global "closed posture" gate ------------------------------------
+        # If the hands block the body heavily AND almost never rise above the
+        # shoulders, the speaker is presenting in a closed posture. In that
+        # situation, any variety in hand position (distinct_shapes) is just
+        # small wiggles inside the blocked zone, and forward hip advance is
+        # not real engagement. Cap the upward-looking categories so they can
+        # never land in the "High" band (>= 5) no matter how strong the raw
+        # effort/shape base scores were.
+        closed_posture = (hand_block > 0.60 and hands_above < 0.10)
+        very_closed_posture = (hand_block > 0.75 and hands_above < 0.05)
+
         eng_adj = 0
-        if hands_above > 0.45 or hip_advance > 0.02 or distinct_shapes >= 10:
+        if hands_above > 0.35 or (hip_advance > 0.02 and hand_block < 0.45) or distinct_shapes >= 12:
             eng_adj += 2
         elif hands_above > 0.20 and hand_block < 0.40:
             eng_adj += 1
@@ -1470,11 +1496,19 @@ def apply_movement_type_classification(
         elif hand_low > 0.70:
             auth_adj -= 1
 
+        # Adaptability now requires the hand-shape variety to come with at
+        # least some open-posture evidence. Bare distinct_shapes >= 10 inside
+        # a blocking stance no longer gets the +2 bump (prevents K. Lea-style
+        # "14 distinct shapes but hands never leave the torso" false high).
         adapt_adj = 0
-        if distinct_shapes >= 10:
+        open_posture = hands_above > 0.15 or hand_block < 0.45
+        if distinct_shapes >= 10 and open_posture:
             adapt_adj += 2
-        elif distinct_shapes >= 6:
+        elif distinct_shapes >= 6 and open_posture:
             adapt_adj += 1
+        elif distinct_shapes >= 10 and not open_posture:
+            # Variety exists but all inside closed zone - no bump.
+            adapt_adj += 0
         if distinct_shapes <= 3:
             adapt_adj -= 2
         elif distinct_shapes <= 5 and hand_block > 0.45:
@@ -1485,18 +1519,34 @@ def apply_movement_type_classification(
         auth_final = _clip(base_auth + auth_adj)
         adapt_final = _clip(base_adapt + adapt_adj)
 
+        # --- Apply closed-posture cap -----------------------------------------
+        # After base + adjustment, enforce hard caps for closed postures so
+        # the printed band matches human perception (closed body = not
+        # Engaging / Adaptable / Confident, regardless of base score).
+        caps_note = ""
+        if closed_posture:
+            eng_final = min(eng_final, 4)     # cap Moderate
+            adapt_final = min(adapt_final, 3) # cap Low
+            con_final = min(con_final, 4)     # cap Moderate
+            caps_note = " [closed_posture cap]"
+        if very_closed_posture:
+            eng_final = min(eng_final, 3)     # cap Low/Moderate border
+            adapt_final = min(adapt_final, 2) # cap Low
+            con_final = min(con_final, 3)     # cap Low/Moderate border
+            caps_note = " [very_closed_posture cap]"
+
         logger.info(
             "[people_reader_direct] engaging: %d -> %d (adj=%+d) | "
             "confidence: %d -> %d (adj=%+d) | authority: %d -> %d (adj=%+d) | "
             "adaptability: %d -> %d (adj=%+d) | features: hands_above=%.2f "
             "hand_block=%.2f hand_low=%.2f hip_sway=%.4f hip_advance=%.3f "
-            "distinct=%d upright=%.1f stance=%.1f",
+            "distinct=%d upright=%.1f stance=%.1f%s",
             base_eng, eng_final, eng_adj,
             base_con, con_final, con_adj,
             base_auth, auth_final, auth_adj,
             base_adapt, adapt_final, adapt_adj,
             hands_above, hand_block, hand_low, hip_sway, hip_advance,
-            distinct_shapes, upright_pct, stance_pct,
+            distinct_shapes, upright_pct, stance_pct, caps_note,
         )
 
         result["engaging_score"] = eng_final
