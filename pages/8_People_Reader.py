@@ -1123,11 +1123,6 @@ audience_mode = st.radio(
     key="people_reader_audience_mode",
 )
 
-_combo_img = combination_10_types_image_path()
-if _combo_img:
-    with st.expander("Movement type reference — 10 types (product table)", expanded=True):
-        st.image(_combo_img, use_container_width=True)
-
 movement_type_mode = st.selectbox(
     "Movement type (report profile)",
     options=[c[1] for c in PEOPLE_READER_MOVEMENT_TYPE_CHOICES],
