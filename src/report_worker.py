@@ -1445,7 +1445,9 @@ def apply_movement_type_classification(
     eng_bias = _bias_env("PEOPLE_READER_BIAS_ENGAGING", -2)
     con_bias = _bias_env("PEOPLE_READER_BIAS_CONFIDENCE", -1)
     auth_bias = _bias_env("PEOPLE_READER_BIAS_AUTHORITY", -1)
-    adapt_bias = _bias_env("PEOPLE_READER_BIAS_ADAPTABILITY", -2)
+    # Adaptability skews most heavily Low in the 10-clip reference (6/10 Low),
+    # so use a stronger downshift than the others.
+    adapt_bias = _bias_env("PEOPLE_READER_BIAS_ADAPTABILITY", -3)
 
     base_eng = max(1, min(7, raw_eng + eng_bias))
     base_con = max(1, min(7, raw_con + con_bias))
@@ -1524,22 +1526,25 @@ def apply_movement_type_classification(
         elif hand_low > 0.70:
             auth_adj -= 1
 
-        # Adaptability now requires the hand-shape variety to come with at
-        # least some open-posture evidence. Bare distinct_shapes >= 10 inside
-        # a blocking stance no longer gets the +2 bump (prevents K. Lea-style
-        # "14 distinct shapes but hands never leave the torso" false high).
+        # Adaptability rules (tightened after K. Sawitree showed up High):
+        # the +2 bump now requires *real* gesture variety AND clear visible
+        # hand activity (raised above shoulders) AND no torso blocking.
+        # The +1 bump still requires variety + open posture, but with
+        # higher distinct-shape threshold than before. Bare distinct_shapes
+        # in a closed posture earns nothing (cap also applies above).
         adapt_adj = 0
         open_posture = hands_above > 0.15 or hand_block < 0.45
-        if distinct_shapes >= 10 and open_posture:
+        very_open = hands_above > 0.20 and hand_block < 0.30
+        if distinct_shapes >= 12 and very_open:
             adapt_adj += 2
-        elif distinct_shapes >= 6 and open_posture:
+        elif distinct_shapes >= 8 and open_posture:
             adapt_adj += 1
-        elif distinct_shapes >= 10 and not open_posture:
-            # Variety exists but all inside closed zone - no bump.
-            adapt_adj += 0
-        if distinct_shapes <= 3:
+        if distinct_shapes <= 4:
             adapt_adj -= 2
-        elif distinct_shapes <= 5 and hand_block > 0.45:
+        elif distinct_shapes <= 6 and hand_block > 0.45:
+            adapt_adj -= 1
+        elif hand_block > 0.50 and hands_above < 0.10:
+            # Closed presentation, regardless of distinct count
             adapt_adj -= 1
 
         eng_final = _clip(base_eng + eng_adj)
