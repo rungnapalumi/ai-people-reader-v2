@@ -783,16 +783,6 @@ def build_html_report_file(
 
     people_reader_page2_extra = ""
     if is_people_reader:
-        people_reader_page2_extra = (
-            f'''
-      <b>{"5. ความยืดหยุ่นในการปรับตัว (Adaptability)" if is_th else "5. Adaptability"}</b>
-      <ul>
-        <li>{"ความยืดหยุ่น — ความสามารถในการปรับตัวตามสภาวะใหม่ ๆ และรับมือกับการเปลี่ยนแปลง" if is_th else "Flexibility — Ability to adjust to new conditions, handle changes."}</li>
-        <li>{"ความคล่องแคล่ว — ความสามารถในการคิดและสรุปได้อย่างรวดเร็วเพื่อปรับตัว" if is_th else "Agility — Ability to think and draw conclusions quickly in order to adjust."}</li>
-      </ul>
-      <div class="scale">{escape(scale_label)}: {escape(cat_scale(3))}</div>
-'''
-        )
         mt_html = getattr(report, "movement_type_info", None) or {}
         if isinstance(mt_html, dict) and str(mt_html.get("type_name") or "").strip():
             mt_head = "โปรไฟล์ประเภทการเคลื่อนไหว" if is_th else "Movement type profile"
@@ -835,6 +825,109 @@ def build_html_report_file(
                 people_reader_page2_extra += f'''
       <div style="margin-top:6px;">{escape(mt_obs)} {nar}</div>
 '''
+
+    # Page-3 category sections. Order depends on mode:
+    #   - Operation Test (non-People-Reader):
+    #       2. Engaging → 3. Confidence → 4. Authority  (no Adaptability)
+    #   - People Reader:
+    #       2. Engaging → 3. Adaptability → 4. Confidence → 5. Authority
+    def _cat_block(title_html: str, bullets_html: list, scale_idx: int) -> str:
+        bullets_joined = "\n".join(f"        <li>{b}</li>" for b in bullets_html)
+        return (
+            f"      <b>{title_html}</b>\n"
+            f"      <ul>\n{bullets_joined}\n      </ul>\n"
+            f"      <div class=\"scale\">{escape(scale_label)}: {escape(cat_scale(scale_idx))}</div>\n"
+        )
+
+    _eng_bullets = (
+        [
+            "ความเป็นกันเอง",
+            "ความเข้าถึงได้",
+            "การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว",
+        ]
+        if is_th
+        else [
+            "Approachability",
+            "Relatability",
+            "Engagement, connect and build instant rapport with team",
+        ]
+    )
+    _conf_bullets = (
+        [
+            "บุคลิกภาพเชิงบวก",
+            "ความมีสมาธิ",
+            "ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม",
+        ]
+        if is_th
+        else [
+            "Optimistic Presence",
+            "Focus",
+            "Ability to persuade and stand one's ground, in order to convince others.",
+        ]
+    )
+    _auth_bullets = (
+        [
+            "แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น",
+            "ผลักดันให้เกิดการลงมือทำ",
+        ]
+        if is_th
+        else [
+            "Showing sense of importance and urgency in subject matter",
+            "Pressing for action",
+        ]
+    )
+    _adapt_bullets = (
+        [
+            "ความยืดหยุ่น — ความสามารถในการปรับตัวตามสภาวะใหม่ ๆ และรับมือกับการเปลี่ยนแปลง",
+            "ความคล่องแคล่ว — ความสามารถในการคิดและสรุปได้อย่างรวดเร็วเพื่อปรับตัว",
+        ]
+        if is_th
+        else [
+            "Flexibility — Ability to adjust to new conditions, handle changes.",
+            "Agility — Ability to think and draw conclusions quickly in order to adjust.",
+        ]
+    )
+    if is_people_reader:
+        page3_categories_html = (
+            _cat_block(
+                "2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_th else "2. Engaging & Connecting",
+                _eng_bullets,
+                0,
+            )
+            + _cat_block(
+                "3. ความยืดหยุ่นในการปรับตัว (Adaptability)" if is_th else "3. Adaptability",
+                _adapt_bullets,
+                3,
+            )
+            + _cat_block(
+                "4. ความมั่นใจ" if is_th else "4. Confidence",
+                _conf_bullets,
+                1,
+            )
+            + _cat_block(
+                "5. ความเป็นผู้นำและความดูมีอำนาจ" if is_th else "5. Authority",
+                _auth_bullets,
+                2,
+            )
+        )
+    else:
+        page3_categories_html = (
+            _cat_block(
+                "2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_th else "2. Engaging & Connecting",
+                _eng_bullets,
+                0,
+            )
+            + _cat_block(
+                "3. ความมั่นใจ" if is_th else "3. Confidence",
+                _conf_bullets,
+                1,
+            )
+            + _cat_block(
+                "4. ความเป็นผู้นำและความดูมีอำนาจ" if is_th else "4. Authority",
+                _auth_bullets,
+                2,
+            )
+        )
 
     header_img = _brand_asset_data_uri("Header.png")
     footer_img = _brand_asset_data_uri("Footer.png")
@@ -930,26 +1023,7 @@ def build_html_report_file(
   <div class="page">
     <div class="section">
       {remark_extra_page2}
-      <b>{"2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_th else "2. Engaging & Connecting"}</b>
-      <ul>
-        <li>{"ความเป็นกันเอง" if is_th else "Approachability"}</li>
-        <li>{"ความเข้าถึงได้" if is_th else "Relatability"}</li>
-        <li>{"การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว" if is_th else "Engagement, connect and build instant rapport with team"}</li>
-      </ul>
-      <div class="scale">{escape(scale_label)}: {escape(cat_scale(0))}</div>
-      <b>{"3. ความมั่นใจ" if is_th else "3. Confidence"}</b>
-      <ul>
-        <li>{"บุคลิกภาพเชิงบวก" if is_th else "Optimistic Presence"}</li>
-        <li>{"ความมีสมาธิ" if is_th else "Focus"}</li>
-        <li>{"ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม" if is_th else "Ability to persuade and stand one's ground, in order to convince others."}</li>
-      </ul>
-      <div class="scale">{escape(scale_label)}: {escape(cat_scale(1))}</div>
-      <b>{"4. ความเป็นผู้นำและความดูมีอำนาจ" if is_th else "4. Authority"}</b>
-      <ul>
-        <li>{"แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น" if is_th else "Showing sense of importance and urgency in subject matter"}</li>
-        <li>{"ผลักดันให้เกิดการลงมือทำ" if is_th else "Pressing for action"}</li>
-      </ul>
-      <div class="scale">{escape(scale_label)}: {escape(cat_scale(2))}</div>
+      {page3_categories_html}
       {people_reader_page2_extra}
     </div>
   </div>

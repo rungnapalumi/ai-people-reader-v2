@@ -2317,11 +2317,32 @@ def build_docx_report(
     # Page 3: skill sections — page_break_before forces new page
 
     # ============================================================
-    # PAGE 3: Engaging + Confidence + Authority (+ Adaptability for People Reader page only)
+    # PAGE 3: Categories
+    #   People Reader:  2. Engaging → 3. Adaptability → 4. Confidence → 5. Authority
+    #   Operation Test: 2. Engaging → 3. Confidence     → 4. Authority  (no Adaptability)
     # ============================================================
+    # For People Reader, we override the section number prefixes in `texts[...]`
+    # so Adaptability=3, Confidence=4, Authority=5.
+    if is_people_reader:
+        engaging_heading = (
+            "2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ" if is_thai else "2. Engaging & Connecting:"
+        )
+        adaptability_heading = (
+            "3. ความยืดหยุ่นในการปรับตัว (Adaptability):" if is_thai else "3. Adaptability:"
+        )
+        confidence_heading = "4. ความมั่นใจ:" if is_thai else "4. Confidence:"
+        authority_heading = (
+            "5.  ความเป็นผู้นำ (Authority):" if is_thai else "5. Authority:"
+        )
+    else:
+        engaging_heading = texts["engaging"]
+        confidence_heading = texts["confidence"]
+        authority_heading = texts["authority"]
+        adaptability_heading = texts["adaptability"]  # unused in this branch
+
     # Section 2: Engaging & Connecting — start page 3
     engaging_cat = report.categories[0]
-    section2 = doc.add_paragraph(texts["engaging"])
+    section2 = doc.add_paragraph(engaging_heading)
     section2.runs[0].bold = True
     section2.paragraph_format.page_break_before = True  # Force page 3
     section2.paragraph_format.space_before = Pt(8)
@@ -2341,9 +2362,32 @@ def build_docx_report(
     _apply_scale_layout(scale_para1, left_indent_pt=28, space_before_pt=4, compact=False)
     scale_para1.paragraph_format.keep_with_next = True
 
-    # Section 3: Confidence
+    # Section 3: Adaptability (People Reader only — inserted here per report layout)
+    if is_people_reader:
+        if len(report.categories) < 4:
+            raise ValueError("people_reader report requires Adaptability as 4th category")
+        adaptability_cat = report.categories[3]
+        section_adapt = doc.add_paragraph(adaptability_heading)
+        section_adapt.runs[0].bold = True
+        section_adapt.paragraph_format.space_before = Pt(8)
+        section_adapt.paragraph_format.space_after = Pt(2)
+        section_adapt.paragraph_format.keep_with_next = True
+        p_flex = doc.add_paragraph(_square_bullet_text(texts["adapt_flexibility"]))
+        _apply_bullet_layout(p_flex, compact=False)
+        p_flex.paragraph_format.keep_with_next = True
+        p_ag = doc.add_paragraph(_square_bullet_text(texts["adapt_agility"]))
+        _apply_bullet_layout(p_ag, compact=False)
+        p_ag.paragraph_format.keep_with_next = True
+        scale_para_adapt = doc.add_paragraph(
+            f"{texts['scale']} {_display_scale(adaptability_cat.scale, is_thai)}"
+        )
+        scale_para_adapt.runs[0].bold = True
+        _apply_scale_layout(scale_para_adapt, left_indent_pt=28, space_before_pt=4, compact=False)
+        scale_para_adapt.paragraph_format.keep_with_next = True
+
+    # Section 3 (non-PR) or Section 4 (PR): Confidence
     confidence_cat = report.categories[1]
-    section3 = doc.add_paragraph(texts["confidence"])
+    section3 = doc.add_paragraph(confidence_heading)
     section3.runs[0].bold = True
     section3.paragraph_format.space_before = Pt(8)
     section3.paragraph_format.space_after = Pt(2)
@@ -2362,9 +2406,9 @@ def build_docx_report(
     _apply_scale_layout(scale_para2, left_indent_pt=28, space_before_pt=4, compact=False)
     scale_para2.paragraph_format.keep_with_next = True
 
-    # Section 4: Authority
+    # Section 4 (non-PR) or Section 5 (PR): Authority
     authority_cat = report.categories[2]
-    section4 = doc.add_paragraph(texts["authority"])
+    section4 = doc.add_paragraph(authority_heading)
     section4.runs[0].bold = True
     section4.paragraph_format.space_before = Pt(8)
     section4.paragraph_format.space_after = Pt(2)
@@ -2377,24 +2421,6 @@ def build_docx_report(
     scale_para3 = doc.add_paragraph(f"{texts['scale']} {_display_scale(authority_cat.scale, is_thai)}")
     scale_para3.runs[0].bold = True
     _apply_scale_layout(scale_para3, left_indent_pt=28, space_before_pt=4, compact=False)
-
-    if is_people_reader:
-        if len(report.categories) < 4:
-            raise ValueError("people_reader report requires Adaptability as 4th category")
-        adaptability_cat = report.categories[3]
-        section5 = doc.add_paragraph(texts["adaptability"])
-        section5.runs[0].bold = True
-        section5.paragraph_format.space_before = Pt(8)
-        section5.paragraph_format.space_after = Pt(2)
-        section5.paragraph_format.keep_with_next = True
-        p_flex = doc.add_paragraph(_square_bullet_text(texts["adapt_flexibility"]))
-        _apply_bullet_layout(p_flex, compact=False)
-        p_flex.paragraph_format.keep_with_next = True
-        p_ag = doc.add_paragraph(_square_bullet_text(texts["adapt_agility"]))
-        _apply_bullet_layout(p_ag, compact=False)
-        scale_para5 = doc.add_paragraph(f"{texts['scale']} {_display_scale(adaptability_cat.scale, is_thai)}")
-        scale_para5.runs[0].bold = True
-        _apply_scale_layout(scale_para5, left_indent_pt=28, space_before_pt=4, compact=False)
 
     # "Movement type profile" section intentionally omitted from the DOCX report.
     # movement_type_info is still computed and stored on the job for the UI, but
@@ -3481,33 +3507,34 @@ def build_pdf_report(
             draw_header_footer()
             y = top_content_y
 
-            write_paragraph_block("2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ", SECTION_STYLE, extra_gap=0)
-            write_bullet("ความเป็นกันเอง", indent=28, space_after=4, bullet_text="▪")
-            write_bullet("ความเข้าถึงได้", indent=28, space_after=4, bullet_text="▪")
-            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=4, bullet_text="▪")
-
             engaging_scale = _scale_th(report.categories[0].scale) if len(report.categories) > 0 else "-"
             confidence_scale = _scale_th(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_th(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
+            # Headings (numbering differs by mode)
+            if is_people_reader:
+                _h_eng = "2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ"
+                _h_adapt = "3. ความยืดหยุ่นในการปรับตัว (Adaptability):"
+                _h_conf = "4. ความมั่นใจ:"
+                _h_auth = "5. ความเป็นผู้นำและความดูมีอำนาจ:"
+            else:
+                _h_eng = "2. การสร้างความเป็นมิตรและสร้างสัมพันธภาพ"
+                _h_conf = "3. ความมั่นใจ:"
+                _h_auth = "4. ความเป็นผู้นำและความดูมีอำนาจ:"
+
+            # 2. Engaging
+            write_paragraph_block(_h_eng, SECTION_STYLE, extra_gap=0)
+            write_bullet("ความเป็นกันเอง", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ความเข้าถึงได้", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("การมีส่วนร่วม เชื่อมโยง และสร้างความคุ้นเคยกับทีมอย่างรวดเร็ว", indent=28, space_after=4, bullet_text="▪")
             write_line_indented(f"ระดับ: {engaging_scale}", indent=28, bold=True, gap=6)
 
-            write_paragraph_block("3. ความมั่นใจ:", SECTION_STYLE, extra_gap=0)
-            write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=4, bullet_text="▪")
-            write_bullet("ความมีสมาธิ", indent=28, space_after=4, bullet_text="▪")
-            write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=4, bullet_text="▪")
-            write_line_indented(f"ระดับ: {confidence_scale}", indent=28, bold=True, gap=6)
-
-            write_paragraph_block("4. ความเป็นผู้นำและความดูมีอำนาจ:", SECTION_STYLE, extra_gap=0)
-            write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=4, bullet_text="▪")
-            write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=4, bullet_text="▪")
-            write_line_indented(f"ระดับ: {authority_scale}", indent=28, bold=True, gap=6)
-
+            # 3. Adaptability (People Reader only)
             if is_people_reader:
                 if len(report.categories) < 4:
                     raise ValueError("people_reader PDF requires Adaptability as 4th category")
                 adapt_scale = _scale_th(report.categories[3].scale)
-                write_paragraph_block("5. ความยืดหยุ่นในการปรับตัว (Adaptability):", SECTION_STYLE, extra_gap=0)
+                write_paragraph_block(_h_adapt, SECTION_STYLE, extra_gap=0)
                 write_bullet(
                     "ความยืดหยุ่น — ความสามารถในการปรับตัวตามสภาวะใหม่ ๆ และรับมือกับการเปลี่ยนแปลง",
                     indent=28,
@@ -3521,6 +3548,21 @@ def build_pdf_report(
                     bullet_text="▪",
                 )
                 write_line_indented(f"ระดับ: {adapt_scale}", indent=28, bold=True, gap=6)
+
+            # 3. / 4. Confidence
+            write_paragraph_block(_h_conf, SECTION_STYLE, extra_gap=0)
+            write_bullet("บุคลิกภาพเชิงบวก", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ความมีสมาธิ", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ความสามารถในการโน้มน้าวและยืนหยัดในจุดยืนเพื่อให้ผู้อื่นคล้อยตาม", indent=28, space_after=4, bullet_text="▪")
+            write_line_indented(f"ระดับ: {confidence_scale}", indent=28, bold=True, gap=6)
+
+            # 4. / 5. Authority
+            write_paragraph_block(_h_auth, SECTION_STYLE, extra_gap=0)
+            write_bullet("แสดงให้เห็นถึงความสำคัญและความเร่งด่วนของประเด็น", indent=28, space_after=4, bullet_text="▪")
+            write_bullet("ผลักดันให้เกิดการลงมือทำ", indent=28, space_after=4, bullet_text="▪")
+            write_line_indented(f"ระดับ: {authority_scale}", indent=28, bold=True, gap=6)
+
+            if is_people_reader:
                 append_movement_type_pdf_block()
         else:
             if thai_font_fallback and lang_name == "th":
@@ -3563,28 +3605,36 @@ def build_pdf_report(
             confidence_scale = _scale_en(report.categories[1].scale) if len(report.categories) > 1 else "-"
             authority_scale = _scale_en(report.categories[2].scale) if len(report.categories) > 2 else "-"
 
-            write_line("2. Engaging & Connecting:", size=12, bold=True, gap=en_section_gap)
+            # Page-3 layout:
+            #   People Reader:  2. Engaging → 3. Adaptability → 4. Confidence → 5. Authority
+            #   Operation Test: 2. Engaging → 3. Confidence → 4. Authority
+            if is_people_reader:
+                _eng_h, _adapt_h, _conf_h, _auth_h = (
+                    "2. Engaging & Connecting:",
+                    "3. Adaptability:",
+                    "4. Confidence:",
+                    "5. Authority:",
+                )
+            else:
+                _eng_h, _conf_h, _auth_h = (
+                    "2. Engaging & Connecting:",
+                    "3. Confidence:",
+                    "4. Authority:",
+                )
+
+            # 2. Engaging
+            write_line(_eng_h, size=12, bold=True, gap=en_section_gap)
             write_line_indented("▪ Approachability.", indent=28, gap=en_section2_item_gap)
             write_line_indented("▪ Relatability.", indent=28, gap=en_section2_item_gap)
             write_line_indented("▪ Engagement, connect and build instant rapport with team.", indent=28, gap=en_section2_item_gap)
             write_line_indented(f"Scale: {engaging_scale}", indent=28, bold=True, gap=en_section2_scale_gap)
 
-            write_line("3. Confidence:", size=12, bold=True, gap=en_section_gap)
-            write_line_indented("▪ Optimistic Presence.", indent=28, gap=en_section34_item_gap)
-            write_line_indented("▪ Focus.", indent=28, gap=en_section34_item_gap)
-            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_section34_item_gap)
-            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
-
-            write_line("4. Authority:", size=12, bold=True, gap=en_section_gap)
-            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
-            write_line_indented("▪ Pressing for action.", indent=28, gap=en_section34_item_gap)
-            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
-
+            # 3. Adaptability (People Reader only)
             if is_people_reader:
                 if len(report.categories) < 4:
                     raise ValueError("people_reader PDF requires Adaptability as 4th category")
                 adapt_scale = _scale_en(report.categories[3].scale)
-                write_line("5. Adaptability:", size=12, bold=True, gap=en_section_gap)
+                write_line(_adapt_h, size=12, bold=True, gap=en_section_gap)
                 write_line_indented(
                     "▪ Flexibility — Ability to adjust to new conditions, handle changes.",
                     indent=28,
@@ -3596,6 +3646,21 @@ def build_pdf_report(
                     gap=en_section34_item_gap,
                 )
                 write_line_indented(f"Scale: {adapt_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+
+            # 3. / 4. Confidence
+            write_line(_conf_h, size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Optimistic Presence.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("▪ Focus.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("▪ Ability to persuade and stand one's ground, in order to convince others.", indent=28, gap=en_section34_item_gap)
+            write_line_indented(f"Scale: {confidence_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+
+            # 4. / 5. Authority
+            write_line(_auth_h, size=12, bold=True, gap=en_section_gap)
+            write_line_indented("▪ Showing sense of importance and urgency in subject matter.", indent=28, gap=en_section34_item_gap)
+            write_line_indented("▪ Pressing for action.", indent=28, gap=en_section34_item_gap)
+            write_line_indented(f"Scale: {authority_scale}", indent=28, bold=True, gap=en_section34_scale_gap)
+
+            if is_people_reader:
                 append_movement_type_pdf_block()
         append_graph_pages_for_operation_test()
         c.save()
