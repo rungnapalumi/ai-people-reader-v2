@@ -1449,59 +1449,6 @@ if current_group_id:
     )
     _report_hint_line = str(job_hints.get("report") or "").strip()
     _report_status_says_finished = _report_hint_line.startswith("Finished")
-    if overall_pct < 100:
-        st.caption(
-            "**Video worker** (`worker.py`) สร้าง dots + skeleton แยกงาน — แต่ละรายการจะขึ้น **Ready** เมื่อไฟล์ขึ้น S3 แล้ว "
-            "**Report worker** (`src/report_worker.py`) สร้างรายงานตามภาษาที่เลือก — เป็น **บริการ Render แยก** ต้อง **Live**. "
-            "เมื่อครบ **100%** ระบบจะส่ง **อีเมลเดียว** (รายงาน + dots + skeleton) ไปที่อีเมลที่กรอกไว้"
-        )
-        with st.expander("Job status from S3 (same day as Group ID)", expanded=True):
-            st.write(
-                f"**Dots:** {job_hints.get('dots', '— no matching job JSON found under jobs/pending|processing|finished|failed for this group —')}"
-            )
-            st.write(
-                f"**Skeleton:** {job_hints.get('skeleton', '— same —')}"
-            )
-            st.write(
-                f"**Report (PDF):** {job_hints.get('report', '— no report job JSON found — If you just submitted, wait; otherwise the report job may use a different date prefix or bucket.')}"
-            )
-            _rid = _session_report_job_id
-            if _rid:
-                st.caption(
-                    f"Report **job_id** (stored when you submitted in this browser): `{_rid}` "
-                    f"→ look on S3 for `jobs/pending/{_rid}.json` (or processing/finished/failed)."
-                )
-        if job_hints.get("dots", "").startswith("Failed") or job_hints.get("skeleton", "").startswith("Failed"):
-            st.error(
-                "At least one video job failed. Fix the error (often ffmpeg/MediaPipe on the worker), then upload again."
-            )
-        if job_hints.get("report", "").startswith("Failed"):
-            st.error(
-                "Report job failed — no PDF and no email. Read the error above, check **jobs/failed/** for this job_id, "
-                "and report worker logs on Render."
-            )
-            _rh = report_failure_user_hint(job_hints.get("report", ""))
-            if _rh:
-                st.info(_rh)
-        # Full reruns while waiting break st.file_uploader (HTTP 400 on /_stcore/upload_file) — keep polling opt-in.
-        st.checkbox(
-            "Auto-refresh every 15s while waiting for dots/skeleton/report (turn **off** before uploading videos)",
-            value=False,
-            key="people_reader_enable_s3_poll",
-        )
-        if st.session_state.get("people_reader_enable_s3_poll"):
-            try:
-
-                @st.fragment(run_every=timedelta(seconds=15))
-                def _people_reader_auto_refresh():
-                    st.rerun()
-
-                _people_reader_auto_refresh()
-            except Exception:
-                st.caption("Polling unavailable in this Streamlit version — use **Refresh**.")
-        else:
-            st.caption("Tip: click **Refresh** to poll S3, or enable auto-refresh above (disable it before file upload).")
-
     for label, ready in status_items:
         if ready:
             bar_pct, bar_txt = 100, f"{label}: Ready to download"
