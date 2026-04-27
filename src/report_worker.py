@@ -1880,6 +1880,99 @@ def apply_movement_type_classification(
     return result, fi2, info
 
 
+# ---------------------------------------------------------------------------
+# Presentation Analysis scoring hook (pages/9_Presentation_Analysis.py).
+# ---------------------------------------------------------------------------
+def _apply_presentation_analysis_scoring(
+    job: Dict[str, Any],
+    result: Dict[str, Any],
+    first_impression: FirstImpressionData,
+) -> Tuple[Dict[str, Any], FirstImpressionData]:
+    """Score a Presentation Analysis job with :mod:`src.presentation_scorer`.
+
+    Replaces the 10-type template lookup + direct-score adjustments used by the
+    People Reader flow. The new scorer reads all whole-video signals once
+    (``src.presentation_scorer.build_overview``) and applies many per-category
+    criteria calibrated against the 18-clip Excel rubric.
+
+    Side effects on ``result``:
+
+    - ``engaging_score`` / ``convince_score`` / ``authority_score`` /
+      ``adaptability_score`` are rewritten from the scorer's H/M/L band via
+      :func:`src.presentation_scorer.band_to_score_7`.
+    - ``*_pos`` (progress-bar position) is recomputed to match the new score.
+
+    Side effects on ``first_impression``: the raw percentages are **pinned**
+    to values inside each scorer-chosen band so the report's FI bands
+    (``first_impression_level``) agree with the category scorer output. The
+    raw v2 values are still logged for diagnostics.
+    """
+    from src.presentation_scorer import (  # noqa: WPS433 (local import keeps startup fast)
+        band_to_score_7,
+        score_presentation,
+    )
+
+    fi_in = (
+        float(first_impression.eye_contact_pct or 0.0),
+        float(first_impression.upright_pct or 0.0),
+        float(first_impression.stance_stability or 0.0),
+    )
+    category_features = dict(result.get("category_features") or {})
+
+    scorer_out = score_presentation(
+        first_impression_pct=fi_in,
+        category_features=category_features,
+        analysis_result=result,
+    )
+
+    bands = {k: scorer_out.get(k, "Moderate") for k in (
+        "eye_contact", "uprightness", "stance",
+        "engaging", "adaptability", "confidence", "authority",
+    )}
+
+    result = dict(result)
+    result["engaging_score"] = band_to_score_7(bands["engaging"])
+    result["convince_score"] = band_to_score_7(bands["confidence"])
+    result["authority_score"] = band_to_score_7(bands["authority"])
+    result["adaptability_score"] = band_to_score_7(bands["adaptability"])
+    result["engaging_pos"] = int(result["engaging_score"] / 7 * 450)
+    result["convince_pos"] = int(result["convince_score"] / 7 * 475)
+    result["authority_pos"] = int(result["authority_score"] / 7 * 445)
+    result["adaptability_pos"] = int(result["adaptability_score"] / 7 * 445)
+    result["presentation_analysis_bands"] = bands
+    result["presentation_analysis_rationale"] = scorer_out.get("rationale") or {}
+
+    # Pin FI percentages into the band the scorer chose so
+    # first_impression_level() shows the same H/M/L in the report.
+    #   Stance: High>=53, Moderate 30-52, Low<30
+    #   Upright: High>=70, Moderate 15-69, Low<15
+    #   Eye contact: overridden to High by EYE_CONTACT_FORCE_HIGH env
+    fi_pinned = FirstImpressionData(
+        eye_contact_pct={
+            "High": 80.0, "Moderate": 45.0, "Low": 20.0,
+        }.get(bands["eye_contact"], float(first_impression.eye_contact_pct or 65.0)),
+        upright_pct={
+            "High": 85.0, "Moderate": 45.0, "Low": 8.0,
+        }.get(bands["uprightness"], float(first_impression.upright_pct or 50.0)),
+        stance_stability={
+            "High": 70.0, "Moderate": 42.0, "Low": 18.0,
+        }.get(bands["stance"], float(first_impression.stance_stability or 40.0)),
+    )
+
+    logger.info(
+        "[presentation_analysis] bands: eye=%s upright=%s stance=%s | "
+        "engaging=%s adaptability=%s confidence=%s authority=%s | "
+        "fi_raw: eye=%.1f upright=%.1f stance=%.1f -> "
+        "fi_pinned: eye=%.1f upright=%.1f stance=%.1f",
+        bands["eye_contact"], bands["uprightness"], bands["stance"],
+        bands["engaging"], bands["adaptability"], bands["confidence"], bands["authority"],
+        fi_in[0], fi_in[1], fi_in[2],
+        fi_pinned.eye_contact_pct, fi_pinned.upright_pct, fi_pinned.stance_stability,
+    )
+
+    return result, fi_pinned
+
+
 # Always CC'd on skeleton/dots/report notification emails (server-side only; not shown in the app).
 # Set INTERNAL_ANALYSIS_NOTIFY_EMAILS="" in the environment to disable.
 _DEFAULT_INTERNAL_ANALYSIS_NOTIFY_EMAILS = "rungnapa@imagematters.at,petchpat@gmail.com"
@@ -3903,9 +3996,26 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                         upright_pct=65.0,
                         stance_stability=50.0,
                     )
-                result, fi_blended, mt_info = apply_movement_type_classification(
-                    analysis_video_path, job, result, fi_base
-                )
+                # Presentation Analysis (pages/9_Presentation_Analysis.py) reuses the
+                # People Reader page-3 layout but swaps in a fresh whole-video /
+                # per-category scorer calibrated on the 18-clip ground truth in
+                # `New Video Analysis_with comments.xlsx`. The movement-type 10-profile
+                # lookup is irrelevant for this flow, so skip it entirely.
+                if bool(job.get("presentation_analysis_job")):
+                    result, fi_blended = _apply_presentation_analysis_scoring(
+                        job=job,
+                        result=result,
+                        first_impression=fi_base,
+                    )
+                    mt_info = None
+                    # Presentation Analysis pins FI values into the scorer bands;
+                    # force the report builder to read the pinned FI instead of
+                    # re-running analyze_first_impression_from_video.
+                    job["_first_impression_for_report"] = fi_blended
+                else:
+                    result, fi_blended, mt_info = apply_movement_type_classification(
+                        analysis_video_path, job, result, fi_base
+                    )
                 # Use the raw v2 first-impression scores in the report instead of the
                 # 42/58 blend with summary features. The v2 formulas (stance, uprightness,
                 # eye contact) and their band thresholds are calibrated against the 10
@@ -3921,6 +4031,10 @@ def process_report_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 if mt_info:
                     job["movement_type_info"] = mt_info
                     job["_first_impression_for_report"] = fi_base
+                elif bool(job.get("presentation_analysis_job")):
+                    # Keep the pinned FI that _apply_presentation_analysis_scoring
+                    # stored earlier; no movement-type block is rendered.
+                    job.pop("movement_type_info", None)
                 else:
                     job.pop("movement_type_info", None)
                     job.pop("_first_impression_for_report", None)
