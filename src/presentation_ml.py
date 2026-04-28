@@ -114,6 +114,16 @@ FEATURE_NAMES: List[str] = [
     "center_presence",
     "body_sway",
     "stance_stability_norm",
+    # Holistic (face + hand) features
+    "gaze_forward_ratio",
+    "head_yaw_std",
+    "head_pitch_mean",
+    "face_detection_ratio",
+    "left_hand_openness",
+    "right_hand_openness",
+    "hand_detection_ratio",
+    "pointing_ratio",
+    "finger_variation",
 ]
 
 CATEGORIES: List[str] = [
@@ -197,6 +207,15 @@ def build_feature_vector(
         _cf("center_presence"),
         _cf("body_sway", _cf("hip_sway_std")),
         float(stance_stab) / 100.0,
+        _cf("gaze_forward_ratio"),
+        _cf("head_yaw_std"),
+        _cf("head_pitch_mean"),
+        _cf("face_detection_ratio"),
+        _cf("left_hand_openness"),
+        _cf("right_hand_openness"),
+        _cf("hand_detection_ratio"),
+        _cf("pointing_ratio"),
+        _cf("finger_variation"),
     ]
     assert len(values) == len(FEATURE_NAMES), (
         f"feature vector length mismatch: {len(values)} vs {len(FEATURE_NAMES)}"

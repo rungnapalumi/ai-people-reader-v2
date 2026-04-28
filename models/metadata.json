@@ -34,7 +34,16 @@
     "energy_level",
     "center_presence",
     "body_sway",
-    "stance_stability_norm"
+    "stance_stability_norm",
+    "gaze_forward_ratio",
+    "head_yaw_std",
+    "head_pitch_mean",
+    "face_detection_ratio",
+    "left_hand_openness",
+    "right_hand_openness",
+    "hand_detection_ratio",
+    "pointing_ratio",
+    "finger_variation"
   ],
   "n_samples": 18,
   "categories": {
@@ -58,24 +67,24 @@
       },
       "top_features": [
         {
-          "name": "retreating_share",
-          "importance": 0.1081
+          "name": "gaze_forward_ratio",
+          "importance": 0.0951
         },
         {
-          "name": "shoulder_openness",
-          "importance": 0.0819
+          "name": "head_pitch_mean",
+          "importance": 0.0903
         },
         {
-          "name": "dabbing_share",
-          "importance": 0.0748
+          "name": "finger_variation",
+          "importance": 0.0825
         },
         {
-          "name": "flicking_share",
-          "importance": 0.0625
+          "name": "face_detection_ratio",
+          "importance": 0.075
         },
         {
-          "name": "hand_openness",
-          "importance": 0.0589
+          "name": "head_yaw_std",
+          "importance": 0.0721
         }
       ]
     },
@@ -88,9 +97,9 @@
       },
       "rf_loocv": {
         "exact": 11,
-        "adj": 16,
+        "adj": 15,
         "exact_pct": 61.11,
-        "adj_pct": 88.89
+        "adj_pct": 83.33
       },
       "rule_based": {
         "exact": 8,
@@ -100,24 +109,24 @@
       },
       "top_features": [
         {
-          "name": "distinct_hand_shapes",
-          "importance": 0.0801
+          "name": "body_sway",
+          "importance": 0.0704
         },
         {
           "name": "torso_stability",
-          "importance": 0.0743
+          "importance": 0.0585
+        },
+        {
+          "name": "distinct_hand_shapes",
+          "importance": 0.0585
+        },
+        {
+          "name": "head_yaw_std",
+          "importance": 0.0566
         },
         {
           "name": "hip_sway_std",
-          "importance": 0.0722
-        },
-        {
-          "name": "body_sway",
-          "importance": 0.0663
-        },
-        {
-          "name": "movement_intentionality",
-          "importance": 0.0588
+          "importance": 0.0533
         }
       ]
     },
@@ -142,24 +151,24 @@
       },
       "top_features": [
         {
+          "name": "shoulder_openness",
+          "importance": 0.0804
+        },
+        {
           "name": "stance_stability",
-          "importance": 0.0975
+          "importance": 0.0757
         },
         {
           "name": "stance_stability_norm",
-          "importance": 0.0822
-        },
-        {
-          "name": "shoulder_openness",
-          "importance": 0.0732
+          "importance": 0.0585
         },
         {
           "name": "energy_level",
-          "importance": 0.0591
+          "importance": 0.0491
         },
         {
-          "name": "dabbing_share",
-          "importance": 0.0396
+          "name": "gliding_share",
+          "importance": 0.0391
         }
       ]
     },
@@ -184,24 +193,24 @@
       },
       "top_features": [
         {
-          "name": "stance_stability",
-          "importance": 0.0595
-        },
-        {
-          "name": "stance_stability_norm",
-          "importance": 0.0543
-        },
-        {
-          "name": "hand_block_share",
-          "importance": 0.0529
-        },
-        {
           "name": "center_presence",
-          "importance": 0.0514
+          "importance": 0.0505
         },
         {
           "name": "rhythm_consistency",
-          "importance": 0.0504
+          "importance": 0.0482
+        },
+        {
+          "name": "stance_stability",
+          "importance": 0.0428
+        },
+        {
+          "name": "stance_stability_norm",
+          "importance": 0.0416
+        },
+        {
+          "name": "distinct_hand_shapes",
+          "importance": 0.0403
         }
       ]
     },
@@ -226,24 +235,24 @@
       },
       "top_features": [
         {
+          "name": "left_hand_openness",
+          "importance": 0.0673
+        },
+        {
+          "name": "right_hand_openness",
+          "importance": 0.0665
+        },
+        {
           "name": "stance_stability_norm",
-          "importance": 0.0612
+          "importance": 0.061
         },
         {
           "name": "stance_stability",
-          "importance": 0.0574
-        },
-        {
-          "name": "gesture_range",
-          "importance": 0.0546
+          "importance": 0.0439
         },
         {
           "name": "posture_uprightness",
-          "importance": 0.0513
-        },
-        {
-          "name": "eye_direction_proxy",
-          "importance": 0.0467
+          "importance": 0.0439
         }
       ]
     },
@@ -255,9 +264,9 @@
         "High": 5
       },
       "rf_loocv": {
-        "exact": 5,
+        "exact": 4,
         "adj": 12,
-        "exact_pct": 27.78,
+        "exact_pct": 22.22,
         "adj_pct": 66.67
       },
       "rule_based": {
@@ -268,24 +277,24 @@
       },
       "top_features": [
         {
-          "name": "stance_stability",
-          "importance": 0.0557
-        },
-        {
-          "name": "shoulder_openness",
-          "importance": 0.0545
-        },
-        {
           "name": "directing_share",
-          "importance": 0.0509
+          "importance": 0.0434
         },
         {
           "name": "stance_stability_norm",
-          "importance": 0.0496
+          "importance": 0.042
+        },
+        {
+          "name": "head_yaw_std",
+          "importance": 0.039
+        },
+        {
+          "name": "shoulder_openness",
+          "importance": 0.0386
         },
         {
           "name": "energy_level",
-          "importance": 0.0454
+          "importance": 0.0378
         }
       ]
     },
@@ -298,9 +307,9 @@
       },
       "rf_loocv": {
         "exact": 6,
-        "adj": 11,
+        "adj": 12,
         "exact_pct": 33.33,
-        "adj_pct": 61.11
+        "adj_pct": 66.67
       },
       "rule_based": {
         "exact": 3,
@@ -311,23 +320,23 @@
       "top_features": [
         {
           "name": "energy_level",
-          "importance": 0.0714
+          "importance": 0.0577
         },
         {
-          "name": "eye_direction_proxy",
-          "importance": 0.0554
+          "name": "center_presence",
+          "importance": 0.048
         },
         {
           "name": "movement_intentionality",
-          "importance": 0.053
+          "importance": 0.0441
         },
         {
           "name": "upright_pct",
-          "importance": 0.0494
+          "importance": 0.0437
         },
         {
-          "name": "posture_uprightness",
-          "importance": 0.0487
+          "name": "eye_direction_proxy",
+          "importance": 0.0429
         }
       ]
     }
@@ -340,7 +349,7 @@
     "random_state": 42
   },
   "total": {
-    "rf_loocv_exact": 65,
+    "rf_loocv_exact": 64,
     "rf_loocv_adj": 108,
     "rule_based_exact": 50,
     "rule_based_adj": 106,

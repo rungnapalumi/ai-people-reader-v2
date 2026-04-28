@@ -1258,6 +1258,230 @@ def generate_stance_text_th(stability: float) -> list:
         ]
 
 # Analysis functions
+def extract_holistic_features(
+    video_path: str,
+    sample_fps: float = 3.0,
+    max_frames: int = 120,
+) -> Dict[str, float]:
+    """Run MediaPipe Holistic on ``video_path`` and compute richer features
+    that ``analyze_video_mediapipe``'s Pose-only pass can't see:
+
+      ``gaze_forward_ratio``       — fraction of frames whose head faces camera
+      ``head_yaw_std``             — variability of head yaw (side-to-side)
+      ``head_pitch_mean``          — average vertical head angle (up/down)
+      ``face_detection_ratio``     — fraction of frames with a face detected
+      ``left_hand_openness``       — mean finger extension (left), 0 = fist, 1 = open palm
+      ``right_hand_openness``      — same for right hand
+      ``hand_detection_ratio``     — fraction of frames with ≥1 hand detected
+      ``pointing_ratio``           — fraction of frames with an index-point gesture
+      ``finger_variation``         — std of hand_openness across time (pose variety)
+
+    Returns a dict with all nine keys (zeros if Holistic is unavailable or the
+    video fails to open). Never raises — the caller always gets a usable dict.
+    """
+    out: Dict[str, float] = {
+        "gaze_forward_ratio": 0.0,
+        "head_yaw_std": 0.0,
+        "head_pitch_mean": 0.0,
+        "face_detection_ratio": 0.0,
+        "left_hand_openness": 0.0,
+        "right_hand_openness": 0.0,
+        "hand_detection_ratio": 0.0,
+        "pointing_ratio": 0.0,
+        "finger_variation": 0.0,
+    }
+
+    try:
+        import mediapipe as mp  # type: ignore
+        Holistic = mp.solutions.holistic.Holistic
+    except Exception as exc:
+        logger.warning("[holistic] MediaPipe Holistic unavailable: %s", exc)
+        return out
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        logger.warning("[holistic] cannot open video %s", video_path)
+        return out
+
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        frame_interval = max(1, int(fps / sample_fps))
+
+        # Face landmark indices (FaceMesh 468-point topology).
+        NOSE_TIP = 1
+        LEFT_EYE_OUTER = 33
+        RIGHT_EYE_OUTER = 263
+        CHIN = 152
+        FOREHEAD = 10
+        # Hand landmark indices (MediaPipe Hands topology).
+        WRIST = 0
+        KNUCKLES = [5, 9, 13, 17]   # MCP for index / middle / ring / pinky
+        FINGER_TIPS = [8, 12, 16, 20]
+
+        yaw_series: List[float] = []
+        pitch_series: List[float] = []
+        forward_frames = 0
+        face_frames = 0
+        total_sampled = 0
+        hand_frames = 0
+        pointing_frames = 0
+        l_open_series: List[float] = []
+        r_open_series: List[float] = []
+        openness_series: List[float] = []
+
+        def _finger_ratios(hand_lm) -> List[float]:
+            """Per-finger extension: dist(wrist → tip) / dist(wrist → MCP).
+
+            Open palm gives ratios ~2.5–3.5, fist gives ~1.0–1.5. We clip to
+            [0.5, 4.0] and normalize to 0..1 where 1 = fully extended.
+            """
+            try:
+                wrist = hand_lm.landmark[WRIST]
+                ratios = []
+                for mcp_idx, tip_idx in zip(KNUCKLES, FINGER_TIPS):
+                    mcp = hand_lm.landmark[mcp_idx]
+                    tip = hand_lm.landmark[tip_idx]
+                    d_mcp = math.hypot(mcp.x - wrist.x, mcp.y - wrist.y) + 1e-6
+                    d_tip = math.hypot(tip.x - wrist.x, tip.y - wrist.y)
+                    raw = d_tip / d_mcp
+                    norm = max(0.0, min(1.0, (raw - 1.0) / 2.5))  # 1.0→0, 3.5→1
+                    ratios.append(norm)
+                return ratios
+            except Exception:
+                return []
+
+        with Holistic(
+            static_image_mode=False,
+            model_complexity=1,
+            refine_face_landmarks=False,
+            enable_segmentation=False,
+        ) as holistic:
+            frame_idx = 0
+            processed = 0
+            while processed < max_frames:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx % frame_interval != 0:
+                    frame_idx += 1
+                    continue
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = holistic.process(rgb)
+                processed += 1
+                total_sampled += 1
+
+                # ---- Face / gaze features ----
+                face = results.face_landmarks
+                if face is not None:
+                    face_frames += 1
+                    try:
+                        nose = face.landmark[NOSE_TIP]
+                        le = face.landmark[LEFT_EYE_OUTER]
+                        re_ = face.landmark[RIGHT_EYE_OUTER]
+                        chin = face.landmark[CHIN]
+                        fh = face.landmark[FOREHEAD]
+
+                        eye_mid_x = (le.x + re_.x) / 2.0
+                        eye_mid_y = (le.y + re_.y) / 2.0
+                        face_width = abs(re_.x - le.x) + 1e-6
+                        face_height = abs(chin.y - fh.y) + 1e-6
+
+                        # Yaw proxy: nose offset from eye midline / face width.
+                        # 0 = nose between eyes (facing forward); |y|>0.2 = turning.
+                        yaw = (nose.x - eye_mid_x) / face_width
+                        # Pitch proxy: nose-y vs eye midline / face height.
+                        # Positive = chin up (head tilted back), neg = chin down.
+                        pitch = (eye_mid_y - nose.y) / face_height
+                        yaw_series.append(yaw)
+                        pitch_series.append(pitch)
+
+                        if abs(yaw) < 0.20:
+                            forward_frames += 1
+                    except Exception:
+                        pass
+
+                # ---- Hand features ----
+                lh = results.left_hand_landmarks
+                rh = results.right_hand_landmarks
+                frame_l_open = None
+                frame_r_open = None
+                frame_has_hand = False
+
+                if lh is not None:
+                    frame_has_hand = True
+                    ratios = _finger_ratios(lh)
+                    if ratios:
+                        frame_l_open = float(sum(ratios) / len(ratios))
+                        l_open_series.append(frame_l_open)
+
+                if rh is not None:
+                    frame_has_hand = True
+                    ratios = _finger_ratios(rh)
+                    if ratios:
+                        frame_r_open = float(sum(ratios) / len(ratios))
+                        r_open_series.append(frame_r_open)
+
+                if frame_has_hand:
+                    hand_frames += 1
+
+                # Pointing detection: index extended AND middle/ring/pinky curled.
+                for hand_lm in (lh, rh):
+                    if hand_lm is None:
+                        continue
+                    r = _finger_ratios(hand_lm)
+                    if len(r) == 4 and r[0] > 0.70 and r[1] < 0.45 and r[2] < 0.45:
+                        pointing_frames += 1
+                        break
+
+                # Overall openness per frame (for finger_variation).
+                if frame_l_open is not None and frame_r_open is not None:
+                    openness_series.append((frame_l_open + frame_r_open) / 2.0)
+                elif frame_l_open is not None:
+                    openness_series.append(frame_l_open)
+                elif frame_r_open is not None:
+                    openness_series.append(frame_r_open)
+
+                frame_idx += 1
+
+        if total_sampled == 0:
+            return out
+
+        out["face_detection_ratio"] = face_frames / total_sampled
+        out["hand_detection_ratio"] = hand_frames / total_sampled
+        out["gaze_forward_ratio"] = forward_frames / total_sampled
+        out["pointing_ratio"] = pointing_frames / total_sampled
+
+        if yaw_series:
+            out["head_yaw_std"] = float(np.std(np.array(yaw_series)))
+        if pitch_series:
+            out["head_pitch_mean"] = float(np.mean(np.array(pitch_series)))
+        if l_open_series:
+            out["left_hand_openness"] = float(np.mean(np.array(l_open_series)))
+        if r_open_series:
+            out["right_hand_openness"] = float(np.mean(np.array(r_open_series)))
+        if len(openness_series) >= 3:
+            out["finger_variation"] = float(np.std(np.array(openness_series)))
+
+    except Exception as exc:
+        logger.warning("[holistic] extraction failed: %s", exc)
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
+
+    logger.info(
+        "[holistic] gaze_fwd=%.2f yaw_std=%.3f pitch=%.3f face=%.2f hand=%.2f "
+        "l_open=%.2f r_open=%.2f pointing=%.2f finger_var=%.3f",
+        out["gaze_forward_ratio"], out["head_yaw_std"], out["head_pitch_mean"],
+        out["face_detection_ratio"], out["hand_detection_ratio"],
+        out["left_hand_openness"], out["right_hand_openness"],
+        out["pointing_ratio"], out["finger_variation"],
+    )
+    return out
+
+
 def _compute_enriched_presentation_features(
     *,
     nose_x_series: List[float],
@@ -1968,6 +2192,22 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         enriched.get("energy_level", 0.0),
         enriched.get("center_presence", 0.0),
     )
+
+    # === Holistic pass: face + hand landmarks for richer Eye / Hand features ===
+    # Runs as a second MediaPipe pass (Pose-only ran above). Features are
+    # merged into the same ``enriched`` dict so ML models can use them. Cost
+    # is ~3-8s per video at max_frames=120; disable with
+    # PRESENTATION_HOLISTIC=0 if needed.
+    if str(os.getenv("PRESENTATION_HOLISTIC", "1")).strip().lower() not in ("0", "false", "off"):
+        try:
+            holistic = extract_holistic_features(
+                video_path,
+                sample_fps=3.0,
+                max_frames=120,
+            )
+            enriched.update({k: float(v) for k, v in holistic.items()})
+        except Exception as exc:
+            logger.warning("[holistic] skipping holistic pass: %s", exc)
 
     return {
         "analysis_engine": "mediapipe_real_enhanced",
