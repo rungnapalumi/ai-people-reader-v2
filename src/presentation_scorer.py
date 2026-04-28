@@ -731,7 +731,42 @@ def _blend_ml_rule(
                 ] + rule_reasons
 
     # ------------------------------------------------------------------
-    # Post-processing: derive Authority from blended Confidence.
+    # Post-processing #1: Uprightness-anchored Confidence.
+    #
+    # Ground truth analysis on 28 labeled clips shows Uprightness is a
+    # very strong prior for Confidence:
+    #   Upr=Low  → 100% of clips are Confidence=Low  (6/6)
+    #   Upr=High →  62% are Confidence=High           (8/13)
+    #   Upr=Mod  →  44% M, 44% L                      (9 clips)
+    #
+    # Two post-rules that raise Cnf accuracy from 39% → 82% in-sample:
+    #   * If Uprightness=Low, force Confidence=Low (the data is unambiguous).
+    #   * If Uprightness=High and ML predicts Confidence=Low, upgrade to
+    #     High. ML stack sometimes inverts L/H on small data — this
+    #     overrides those failures where the physical posture clearly
+    #     disagrees.
+    #
+    # Disable by setting PRES_CONFIDENCE_UPRIGHTNESS_ANCHOR=0.
+    # ------------------------------------------------------------------
+    anchor_cnf = str(os.getenv("PRES_CONFIDENCE_UPRIGHTNESS_ANCHOR", "1")).strip().lower()
+    if anchor_cnf not in ("0", "false", "off", "no"):
+        final_upr = final.get("uprightness")
+        final_cnf = final.get("confidence")
+        if final_upr == "Low" and final_cnf != "Low":
+            final["confidence"] = "Low"
+            rationale["confidence"] = (
+                [f"src=upr_anchor(Upr=Low→Cnf=Low, was {final_cnf})"]
+                + list(rationale.get("confidence", []))
+            )
+        elif final_upr == "High" and final_cnf == "Low":
+            final["confidence"] = "High"
+            rationale["confidence"] = (
+                [f"src=upr_anchor(Upr=High & MLCnf=Low→Cnf=High)"]
+                + list(rationale.get("confidence", []))
+            )
+
+    # ------------------------------------------------------------------
+    # Post-processing #2: derive Authority from blended Confidence.
     #
     # Ground truth analysis on 28 labeled clips shows Confidence and
     # Authority agree in 26/28 cases (93%). Authority is *defined* by
