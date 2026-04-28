@@ -72,10 +72,11 @@
       "n": 28
     },
     "stance": {
-      "best_model": "gbm",
-      "exact": 10,
-      "adj": 26,
-      "n": 28
+      "best_model": "rule",
+      "exact": 14,
+      "adj": 27,
+      "n": 28,
+      "note": "ML model intentionally omitted — rule-based (14/28) outperformed every ML variant (rf=10, gbm=10, stack=9, tuned=10). Hybrid scorer auto-falls-back to rule when the .joblib file is missing."
     },
     "engaging": {
       "best_model": "gbm",
