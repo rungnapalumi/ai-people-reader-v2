@@ -1258,6 +1258,157 @@ def generate_stance_text_th(stability: float) -> list:
         ]
 
 # Analysis functions
+def _compute_enriched_presentation_features(
+    *,
+    nose_x_series: List[float],
+    nose_y_series: List[float],
+    nose_z_series: List[float],
+    shoulder_mid_x_series: List[float],
+    shoulder_mid_y_series: List[float],
+    trunk_angle_series: List[float],
+    shoulder_width_series: List[float],
+    hip_width_series: List[float],
+    body_expansion_series: List[float],
+    wrist_avg_x_series: List[float],
+    wrist_avg_y_series: List[float],
+    wrist_velocity_series: List[float],
+    left_wrist_xy_series: List[Tuple[float, float]],
+    right_wrist_xy_series: List[Tuple[float, float]],
+    hip_sway_std: float,
+) -> Dict[str, float]:
+    """Post-process per-frame series into the 15 enriched presentation features.
+
+    All features are scale-normalized so a Random Forest trained on them can
+    compare across clips. Returns zeros if the series is too short.
+    """
+    out: Dict[str, float] = {
+        "posture_uprightness": 0.0,
+        "torso_stability": 0.0,
+        "head_stability": 0.0,
+        "eye_direction_proxy": 0.0,
+        "shoulder_openness": 0.0,
+        "hand_openness": 0.0,
+        "gesture_range": 0.0,
+        "gesture_smoothness": 0.0,
+        "movement_intentionality": 0.0,
+        "hesitation_score": 0.0,
+        "rhythm_consistency": 0.0,
+        "energy_level": 0.0,
+        "center_presence": 0.0,
+        # body_sway + stance_stability are passed through from existing signals
+        # (see score_presentation_ml) so the feature list stays complete.
+        "body_sway": float(hip_sway_std),
+    }
+
+    n = len(trunk_angle_series)
+    if n < 5:
+        return out
+
+    nx = np.array(nose_x_series, dtype=float)
+    ny = np.array(nose_y_series, dtype=float)
+    nz = np.array(nose_z_series, dtype=float)
+    smx = np.array(shoulder_mid_x_series, dtype=float)
+    smy = np.array(shoulder_mid_y_series, dtype=float)
+    trunk = np.array(trunk_angle_series, dtype=float)
+    sw = np.array(shoulder_width_series, dtype=float)
+    hw = np.array(hip_width_series, dtype=float)
+    be = np.array(body_expansion_series, dtype=float)
+    wx = np.array(wrist_avg_x_series, dtype=float)
+    wy = np.array(wrist_avg_y_series, dtype=float)
+    wv = np.array(wrist_velocity_series, dtype=float)
+
+    # 1. posture_uprightness: 1.0 = perfectly upright, 0.0 = bent 45°+.
+    mean_trunk = float(np.mean(trunk))
+    out["posture_uprightness"] = max(0.0, 1.0 - mean_trunk / 45.0)
+
+    # 2. torso_stability: 1 - std(shoulder midpoint) / typical-scale (0.1).
+    torso_drift = float(np.sqrt(np.var(smx) + np.var(smy)))
+    out["torso_stability"] = max(0.0, 1.0 - torso_drift / 0.10)
+
+    # 3. head_stability: 1 - std(nose xyz) / typical-scale (0.08).
+    head_drift = float(np.sqrt(np.var(nx) + np.var(ny) + np.var(nz)))
+    out["head_stability"] = max(0.0, 1.0 - head_drift / 0.10)
+
+    # 4. eye_direction_proxy: how much head rotates side-to-side relative to
+    #    shoulders (high = lots of head turning, lower perceived eye contact).
+    #    Scale so 0.0 = perfectly facing forward, 1.0 = heavy turning.
+    nose_offset = nx - smx
+    out["eye_direction_proxy"] = min(1.0, float(np.std(nose_offset)) / 0.06)
+
+    # 5. shoulder_openness: mean(shoulder_width / hip_width). ~1.0 = neutral,
+    #    >1.2 = shoulders wider than hips (open), <0.9 = hunched.
+    denom_hw = np.where(hw > 1e-4, hw, 1e-4)
+    sh_open = float(np.mean(sw / denom_hw))
+    out["shoulder_openness"] = max(0.0, min(2.0, sh_open))
+
+    # 6. hand_openness: mean body_expansion = wrist_dist / shoulder_width.
+    out["hand_openness"] = float(np.clip(np.mean(be), 0.0, 3.0))
+
+    # 7. gesture_range: max span of wrists (L2 of x-range + y-range) normalized.
+    lx = np.array([p[0] for p in left_wrist_xy_series], dtype=float)
+    ly = np.array([p[1] for p in left_wrist_xy_series], dtype=float)
+    rx = np.array([p[0] for p in right_wrist_xy_series], dtype=float)
+    ry = np.array([p[1] for p in right_wrist_xy_series], dtype=float)
+    span_x = max(float(lx.max() - lx.min()), float(rx.max() - rx.min()))
+    span_y = max(float(ly.max() - ly.min()), float(ry.max() - ry.min()))
+    out["gesture_range"] = min(1.5, math.sqrt(span_x ** 2 + span_y ** 2))
+
+    # 8. gesture_smoothness: low jerk = smooth. Compute relative jerk
+    #    (std of velocity change) vs mean velocity; invert so 1.0 = smooth.
+    if wv.size >= 3 and float(np.mean(wv)) > 1e-4:
+        diff = np.diff(wv)
+        rel_jerk = float(np.std(diff)) / (float(np.mean(wv)) + 1e-4)
+        out["gesture_smoothness"] = max(0.0, 1.0 - min(rel_jerk / 2.0, 1.0))
+    else:
+        out["gesture_smoothness"] = 1.0
+
+    # 9. movement_intentionality: ratio of frames whose velocity is above a
+    #    meaningful threshold (0.03) vs frames with micro-jitter (>0.005).
+    meaningful = float(np.sum(wv >= 0.03))
+    jitter = float(np.sum(wv >= 0.005))
+    out["movement_intentionality"] = meaningful / max(jitter, 1.0)
+
+    # 10. hesitation_score: fraction of frames where velocity dips below 0.01
+    #     after a peak >= 0.04 in the immediately preceding window.
+    if wv.size >= 5:
+        peaks = wv >= 0.04
+        dips = wv <= 0.01
+        hesitation = 0
+        for i in range(2, wv.size):
+            if dips[i] and (peaks[i - 1] or peaks[i - 2]):
+                hesitation += 1
+        out["hesitation_score"] = hesitation / max(1, wv.size)
+    else:
+        out["hesitation_score"] = 0.0
+
+    # 11. rhythm_consistency: std of inter-burst intervals. A "burst" is a
+    #     frame with velocity crossing 0.04 upward. Low std = steady rhythm.
+    burst_idx: List[int] = []
+    for i in range(1, wv.size):
+        if wv[i] >= 0.04 and wv[i - 1] < 0.04:
+            burst_idx.append(i)
+    if len(burst_idx) >= 3:
+        intervals = np.diff(np.array(burst_idx, dtype=float))
+        m = float(np.mean(intervals))
+        if m > 1e-6:
+            cv = float(np.std(intervals)) / m   # coefficient of variation
+            out["rhythm_consistency"] = max(0.0, 1.0 - min(cv, 1.0))
+        else:
+            out["rhythm_consistency"] = 0.0
+    else:
+        out["rhythm_consistency"] = 0.0
+
+    # 12. energy_level: mean wrist velocity (already a meaningful scalar).
+    out["energy_level"] = float(np.mean(wv))
+
+    # 13. center_presence: how close the nose stays to horizontal frame center
+    #     (0.5). Map mean(|nose_x - 0.5|) into 1.0 (centered) → 0.0 (edge).
+    mean_off = float(np.mean(np.abs(nx - 0.5)))
+    out["center_presence"] = max(0.0, 1.0 - mean_off / 0.30)
+
+    return out
+
+
 def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: int = 300, **kwargs) -> Dict[str, Any]:
     """Real MediaPipe analysis with proper Laban Movement Analysis"""
     enclosing_max_expansion = float(os.getenv("ENCLOSING_MAX_EXPANSION", "0.8"))
@@ -1309,6 +1460,28 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
     hip_y_series: List[float] = []
     hip_x_series: List[float] = []
     wrist_shape_signatures: List[Tuple[int, int, int, int]] = []
+
+    # Enriched-feature collectors (used by the Presentation Analysis ML scorer).
+    # These are per-frame time-series we post-process into 15 scalar features
+    # (posture_uprightness, torso_stability, head_stability, eye_direction_proxy,
+    #  shoulder_openness, hand_openness, gesture_range, gesture_smoothness,
+    #  movement_intentionality, hesitation_score, rhythm_consistency,
+    #  energy_level, center_presence, + stance_stability + body_sway from
+    #  first-impression / hip_sway).
+    nose_x_series: List[float] = []
+    nose_y_series: List[float] = []
+    nose_z_series: List[float] = []
+    shoulder_mid_x_series: List[float] = []
+    shoulder_mid_y_series: List[float] = []
+    trunk_angle_series: List[float] = []           # deg from vertical (0 = upright)
+    shoulder_width_series: List[float] = []
+    hip_width_series: List[float] = []
+    body_expansion_series: List[float] = []        # wrist_dist / shoulder_width
+    wrist_avg_x_series: List[float] = []           # midpoint of wrists
+    wrist_avg_y_series: List[float] = []
+    wrist_velocity_series: List[float] = []        # avg of L+R wrist velocity
+    left_wrist_xy_series: List[Tuple[float, float]] = []
+    right_wrist_xy_series: List[Tuple[float, float]] = []
 
     analyzed = 0
     sampled = 0
@@ -1537,6 +1710,33 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
                                 wrist_shape_signatures.append(
                                     (_qx(left_wrist.x), _qy(left_wrist.y), _qx(right_wrist.x), _qy(right_wrist.y))
                                 )
+
+                                # === Enriched-feature time-series collection ===
+                                # All values are in MediaPipe's normalized 0-1 coords.
+                                sh_mid_x = (left_shoulder.x + right_shoulder.x) / 2.0
+                                nose_x_series.append(float(nose.x))
+                                nose_y_series.append(float(nose.y))
+                                nose_z_series.append(float(nose.z))
+                                shoulder_mid_x_series.append(float(sh_mid_x))
+                                shoulder_mid_y_series.append(float(sh_mid_y))
+                                # Trunk angle: angle between (shoulder_mid → hip_mid)
+                                # and the downward vertical axis, in degrees.
+                                dy = hip_mid_y - sh_mid_y
+                                dx = hip_mid_x - sh_mid_x
+                                trunk_angle = math.degrees(math.atan2(abs(dx), max(abs(dy), 1e-6)))
+                                trunk_angle_series.append(float(trunk_angle))
+                                sw = abs(left_shoulder.x - right_shoulder.x)
+                                hw = abs(left_hip.x - right_hip.x)
+                                shoulder_width_series.append(float(sw))
+                                hip_width_series.append(float(hw))
+                                body_expansion_series.append(float(body_expansion))
+                                wrist_mid_x = (left_wrist.x + right_wrist.x) / 2.0
+                                wrist_mid_y = (left_wrist.y + right_wrist.y) / 2.0
+                                wrist_avg_x_series.append(float(wrist_mid_x))
+                                wrist_avg_y_series.append(float(wrist_mid_y))
+                                wrist_velocity_series.append(float(avg_velocity))
+                                left_wrist_xy_series.append((float(left_wrist.x), float(left_wrist.y)))
+                                right_wrist_xy_series.append((float(right_wrist.x), float(right_wrist.y)))
                             except Exception:
                                 # Defensive: never fail the main loop over feature collection.
                                 pass
@@ -1730,6 +1930,45 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         hip_sway_std, hip_advance, distinct_shapes,
     )
 
+    # === Enriched features for Presentation Analysis ML scorer ============
+    # All output values normalized to human-readable scales so downstream
+    # feature-importance logs are interpretable.
+    enriched: Dict[str, float] = _compute_enriched_presentation_features(
+        nose_x_series=nose_x_series,
+        nose_y_series=nose_y_series,
+        nose_z_series=nose_z_series,
+        shoulder_mid_x_series=shoulder_mid_x_series,
+        shoulder_mid_y_series=shoulder_mid_y_series,
+        trunk_angle_series=trunk_angle_series,
+        shoulder_width_series=shoulder_width_series,
+        hip_width_series=hip_width_series,
+        body_expansion_series=body_expansion_series,
+        wrist_avg_x_series=wrist_avg_x_series,
+        wrist_avg_y_series=wrist_avg_y_series,
+        wrist_velocity_series=wrist_velocity_series,
+        left_wrist_xy_series=left_wrist_xy_series,
+        right_wrist_xy_series=right_wrist_xy_series,
+        hip_sway_std=hip_sway_std,
+    )
+    logger.info(
+        "[enriched_features] posture=%.2f torso_stab=%.2f head_stab=%.2f "
+        "eye_dir=%.3f sh_open=%.2f hand_open=%.2f g_range=%.2f g_smooth=%.2f "
+        "intent=%.2f hesitation=%.2f rhythm=%.2f energy=%.4f center=%.2f",
+        enriched.get("posture_uprightness", 0.0),
+        enriched.get("torso_stability", 0.0),
+        enriched.get("head_stability", 0.0),
+        enriched.get("eye_direction_proxy", 0.0),
+        enriched.get("shoulder_openness", 0.0),
+        enriched.get("hand_openness", 0.0),
+        enriched.get("gesture_range", 0.0),
+        enriched.get("gesture_smoothness", 0.0),
+        enriched.get("movement_intentionality", 0.0),
+        enriched.get("hesitation_score", 0.0),
+        enriched.get("rhythm_consistency", 0.0),
+        enriched.get("energy_level", 0.0),
+        enriched.get("center_presence", 0.0),
+    )
+
     return {
         "analysis_engine": "mediapipe_real_enhanced",
         "duration_seconds": duration,
@@ -1756,6 +1995,8 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
             "hip_sway_std": round(hip_sway_std, 4),
             "hip_advance": round(hip_advance, 4),
             "distinct_hand_shapes": int(distinct_shapes),
+            # Enriched presentation features (used by the ML scorer).
+            **{k: round(float(v), 5) for k, v in enriched.items()},
         },
     }
 

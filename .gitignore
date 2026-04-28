@@ -47,3 +47,6 @@ jobs/finished/
 .vscode/
 .idea/
 
+# ---- Presentation Analysis calibration (local cache only; models/ is tracked) ----
+scripts/.presentation_features_cache.json
+

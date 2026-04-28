@@ -1,0 +1,349 @@
+{
+  "feature_names": [
+    "eye_contact_pct",
+    "upright_pct",
+    "stance_stability",
+    "hand_block_share",
+    "hand_low_share",
+    "hands_above_share",
+    "hip_sway_std",
+    "hip_advance",
+    "distinct_hand_shapes",
+    "spreading_share",
+    "enclosing_share",
+    "gliding_share",
+    "indirecting_share",
+    "advancing_share",
+    "pressing_share",
+    "punching_share",
+    "directing_share",
+    "retreating_share",
+    "dabbing_share",
+    "flicking_share",
+    "posture_uprightness",
+    "torso_stability",
+    "head_stability",
+    "eye_direction_proxy",
+    "shoulder_openness",
+    "hand_openness",
+    "gesture_range",
+    "gesture_smoothness",
+    "movement_intentionality",
+    "hesitation_score",
+    "rhythm_consistency",
+    "energy_level",
+    "center_presence",
+    "body_sway",
+    "stance_stability_norm"
+  ],
+  "n_samples": 18,
+  "categories": {
+    "eye_contact": {
+      "n": 18,
+      "class_distribution": {
+        "High": 16,
+        "Moderate": 2
+      },
+      "rf_loocv": {
+        "exact": 16,
+        "adj": 18,
+        "exact_pct": 88.89,
+        "adj_pct": 100.0
+      },
+      "rule_based": {
+        "exact": 12,
+        "adj": 14,
+        "exact_pct": 66.67,
+        "adj_pct": 77.78
+      },
+      "top_features": [
+        {
+          "name": "retreating_share",
+          "importance": 0.1081
+        },
+        {
+          "name": "shoulder_openness",
+          "importance": 0.0819
+        },
+        {
+          "name": "dabbing_share",
+          "importance": 0.0748
+        },
+        {
+          "name": "flicking_share",
+          "importance": 0.0625
+        },
+        {
+          "name": "hand_openness",
+          "importance": 0.0589
+        }
+      ]
+    },
+    "uprightness": {
+      "n": 18,
+      "class_distribution": {
+        "Low": 4,
+        "High": 9,
+        "Moderate": 5
+      },
+      "rf_loocv": {
+        "exact": 11,
+        "adj": 16,
+        "exact_pct": 61.11,
+        "adj_pct": 88.89
+      },
+      "rule_based": {
+        "exact": 8,
+        "adj": 16,
+        "exact_pct": 44.44,
+        "adj_pct": 88.89
+      },
+      "top_features": [
+        {
+          "name": "distinct_hand_shapes",
+          "importance": 0.0801
+        },
+        {
+          "name": "torso_stability",
+          "importance": 0.0743
+        },
+        {
+          "name": "hip_sway_std",
+          "importance": 0.0722
+        },
+        {
+          "name": "body_sway",
+          "importance": 0.0663
+        },
+        {
+          "name": "movement_intentionality",
+          "importance": 0.0588
+        }
+      ]
+    },
+    "stance": {
+      "n": 18,
+      "class_distribution": {
+        "High": 5,
+        "Moderate": 9,
+        "Low": 4
+      },
+      "rf_loocv": {
+        "exact": 7,
+        "adj": 17,
+        "exact_pct": 38.89,
+        "adj_pct": 94.44
+      },
+      "rule_based": {
+        "exact": 9,
+        "adj": 17,
+        "exact_pct": 50.0,
+        "adj_pct": 94.44
+      },
+      "top_features": [
+        {
+          "name": "stance_stability",
+          "importance": 0.0975
+        },
+        {
+          "name": "stance_stability_norm",
+          "importance": 0.0822
+        },
+        {
+          "name": "shoulder_openness",
+          "importance": 0.0732
+        },
+        {
+          "name": "energy_level",
+          "importance": 0.0591
+        },
+        {
+          "name": "dabbing_share",
+          "importance": 0.0396
+        }
+      ]
+    },
+    "engaging": {
+      "n": 18,
+      "class_distribution": {
+        "Moderate": 9,
+        "High": 6,
+        "Low": 3
+      },
+      "rf_loocv": {
+        "exact": 7,
+        "adj": 18,
+        "exact_pct": 38.89,
+        "adj_pct": 100.0
+      },
+      "rule_based": {
+        "exact": 8,
+        "adj": 18,
+        "exact_pct": 44.44,
+        "adj_pct": 100.0
+      },
+      "top_features": [
+        {
+          "name": "stance_stability",
+          "importance": 0.0595
+        },
+        {
+          "name": "stance_stability_norm",
+          "importance": 0.0543
+        },
+        {
+          "name": "hand_block_share",
+          "importance": 0.0529
+        },
+        {
+          "name": "center_presence",
+          "importance": 0.0514
+        },
+        {
+          "name": "rhythm_consistency",
+          "importance": 0.0504
+        }
+      ]
+    },
+    "adaptability": {
+      "n": 18,
+      "class_distribution": {
+        "Low": 11,
+        "High": 2,
+        "Moderate": 5
+      },
+      "rf_loocv": {
+        "exact": 13,
+        "adj": 16,
+        "exact_pct": 72.22,
+        "adj_pct": 88.89
+      },
+      "rule_based": {
+        "exact": 6,
+        "adj": 15,
+        "exact_pct": 33.33,
+        "adj_pct": 83.33
+      },
+      "top_features": [
+        {
+          "name": "stance_stability_norm",
+          "importance": 0.0612
+        },
+        {
+          "name": "stance_stability",
+          "importance": 0.0574
+        },
+        {
+          "name": "gesture_range",
+          "importance": 0.0546
+        },
+        {
+          "name": "posture_uprightness",
+          "importance": 0.0513
+        },
+        {
+          "name": "eye_direction_proxy",
+          "importance": 0.0467
+        }
+      ]
+    },
+    "confidence": {
+      "n": 18,
+      "class_distribution": {
+        "Low": 6,
+        "Moderate": 7,
+        "High": 5
+      },
+      "rf_loocv": {
+        "exact": 5,
+        "adj": 12,
+        "exact_pct": 27.78,
+        "adj_pct": 66.67
+      },
+      "rule_based": {
+        "exact": 4,
+        "adj": 14,
+        "exact_pct": 22.22,
+        "adj_pct": 77.78
+      },
+      "top_features": [
+        {
+          "name": "stance_stability",
+          "importance": 0.0557
+        },
+        {
+          "name": "shoulder_openness",
+          "importance": 0.0545
+        },
+        {
+          "name": "directing_share",
+          "importance": 0.0509
+        },
+        {
+          "name": "stance_stability_norm",
+          "importance": 0.0496
+        },
+        {
+          "name": "energy_level",
+          "importance": 0.0454
+        }
+      ]
+    },
+    "authority": {
+      "n": 18,
+      "class_distribution": {
+        "Low": 8,
+        "Moderate": 5,
+        "High": 5
+      },
+      "rf_loocv": {
+        "exact": 6,
+        "adj": 11,
+        "exact_pct": 33.33,
+        "adj_pct": 61.11
+      },
+      "rule_based": {
+        "exact": 3,
+        "adj": 12,
+        "exact_pct": 16.67,
+        "adj_pct": 66.67
+      },
+      "top_features": [
+        {
+          "name": "energy_level",
+          "importance": 0.0714
+        },
+        {
+          "name": "eye_direction_proxy",
+          "importance": 0.0554
+        },
+        {
+          "name": "movement_intentionality",
+          "importance": 0.053
+        },
+        {
+          "name": "upright_pct",
+          "importance": 0.0494
+        },
+        {
+          "name": "posture_uprightness",
+          "importance": 0.0487
+        }
+      ]
+    }
+  },
+  "hyperparams": {
+    "n_estimators": 400,
+    "max_depth": 6,
+    "min_samples_leaf": 1,
+    "class_weight": "balanced",
+    "random_state": 42
+  },
+  "total": {
+    "rf_loocv_exact": 65,
+    "rf_loocv_adj": 108,
+    "rule_based_exact": 50,
+    "rule_based_adj": 106,
+    "n": 126
+  }
+}

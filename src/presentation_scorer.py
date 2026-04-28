@@ -525,6 +525,12 @@ def score_authority(
 # Top-level entrypoint
 # ---------------------------------------------------------------------------
 
+_RULE_CATEGORIES = (
+    "eye_contact", "uprightness", "stance",
+    "engaging", "adaptability", "confidence", "authority",
+)
+
+
 def score_presentation(
     first_impression_pct: Tuple[float, float, float],
     category_features: Dict[str, Any],
@@ -532,8 +538,22 @@ def score_presentation(
 ) -> Dict[str, Any]:
     """Run the full presentation-analysis scorer.
 
+    Selection of scoring engine (controlled by env vars, ML is preferred
+    when models are available):
+
+      ``PRES_SCORER_MODE``
+        ``"ml"``       — pure ML (RandomForest). Falls back to rule if models
+                         missing or an error occurs.
+        ``"rule"``     — pure rule-based (this module).
+        ``"hybrid"``   — default. Use ML; if ML's class probability for a
+                         category is low (< ``PRES_ML_MIN_CONFIDENCE``, default
+                         0.40), fall back to rule-based for that category.
+        ``"ensemble"`` — run both scorers; if they disagree, prefer the one
+                         with the higher confidence. Rule-based confidence is
+                         treated as 0.55 (slightly-certain).
+
     Returns a dict with 7 category bands, the overview, and per-category
-    rationale (which criteria fired).
+    rationale (which criteria fired or which classifier decided).
     """
     overview = build_overview(
         first_impression_pct=first_impression_pct,
@@ -541,6 +561,43 @@ def score_presentation(
         analysis_result=analysis_result,
     )
 
+    rule_result = _score_rule_based(overview)
+
+    mode = (os.getenv("PRES_SCORER_MODE", "hybrid").strip().lower() or "hybrid")
+    if mode == "rule":
+        return _log_and_return(rule_result, overview, engine="rule")
+
+    ml_result = _try_score_ml(first_impression_pct, category_features, analysis_result)
+    if not ml_result:
+        return _log_and_return(rule_result, overview, engine="rule(fallback)")
+
+    if mode == "ml":
+        return _log_and_return(
+            _blend_ml_rule(ml_result, rule_result, mode="ml"),
+            overview,
+            engine="ml",
+        )
+
+    if mode == "ensemble":
+        return _log_and_return(
+            _blend_ml_rule(ml_result, rule_result, mode="ensemble"),
+            overview,
+            engine="ensemble",
+        )
+
+    # Default: hybrid.
+    return _log_and_return(
+        _blend_ml_rule(ml_result, rule_result, mode="hybrid"),
+        overview,
+        engine="hybrid",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers: rule-based scoring + ML blending.
+# ---------------------------------------------------------------------------
+
+def _score_rule_based(overview: PresentationOverview) -> Dict[str, Any]:
     eye_band, eye_reasons = score_eye_contact(overview)
     up_band, up_reasons = score_uprightness(overview)
     st_band, st_reasons = score_stance(overview)
@@ -548,20 +605,6 @@ def score_presentation(
     adp_band, adp_reasons = score_adaptability(overview)
     con_band, con_reasons = score_confidence(overview)
     aut_band, aut_reasons = score_authority(overview, con_band)
-
-    logger.info(
-        "[presentation_scorer] eye=%s upright=%s stance=%s | "
-        "engaging=%s adaptability=%s confidence=%s authority=%s | "
-        "overview: upright=%.1f sway=%.4f stance=%.1f "
-        "gesture=%.3f hand_block=%.3f hands_above=%.3f hand_low=%.3f "
-        "distinct=%d variety=%d strong=%.3f",
-        eye_band, up_band, st_band,
-        eng_band, adp_band, con_band, aut_band,
-        overview.upright_pct, overview.hip_sway_std, overview.stance_stability,
-        overview.gesture_share, overview.hand_block_share, overview.hands_above_share,
-        overview.hand_low_share, overview.distinct_hand_shapes, overview.effort_variety,
-        overview.strong_effort_share,
-    )
 
     return {
         "eye_contact": eye_band,
@@ -571,7 +614,6 @@ def score_presentation(
         "adaptability": adp_band,
         "confidence": con_band,
         "authority": aut_band,
-        "overview": overview,
         "rationale": {
             "eye_contact": eye_reasons,
             "uprightness": up_reasons,
@@ -581,6 +623,129 @@ def score_presentation(
             "confidence": con_reasons,
             "authority": aut_reasons,
         },
+    }
+
+
+def _try_score_ml(
+    first_impression_pct: Tuple[float, float, float],
+    category_features: Dict[str, Any],
+    analysis_result: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Run the ML scorer. Returns ``None`` if models aren't available."""
+    try:
+        from src.presentation_ml import (
+            build_feature_vector, predict_bands_with_proba,
+        )
+    except Exception as exc:
+        logger.warning("[presentation_scorer] ML module unavailable: %s", exc)
+        return None
+
+    try:
+        vec = build_feature_vector(
+            first_impression_pct, category_features, analysis_result
+        )
+        results = predict_bands_with_proba(vec)
+    except Exception as exc:
+        logger.warning("[presentation_scorer] ML scoring error: %s", exc)
+        return None
+
+    if not results:
+        return None
+
+    return results
+
+
+def _blend_ml_rule(
+    ml_result: Dict[str, Dict[str, Any]],
+    rule_result: Dict[str, Any],
+    mode: str,
+) -> Dict[str, Any]:
+    """Combine ML predictions with the rule-based scorer.
+
+    * ``mode == "ml"`` — pick ML for all categories where the model exists.
+    * ``mode == "hybrid"`` — pick ML unless its top-class probability is below
+      ``PRES_ML_MIN_CONFIDENCE`` (default 0.40), in which case use rule.
+    * ``mode == "ensemble"`` — when they disagree, pick the higher-confidence
+      one (rule treated as 0.55 confidence).
+    """
+    min_conf = _env_float("PRES_ML_MIN_CONFIDENCE", 0.40)
+    rule_conf = _env_float("PRES_RULE_CONFIDENCE", 0.55)
+
+    final: Dict[str, Any] = {}
+    rationale: Dict[str, List[str]] = {}
+
+    for cat in _RULE_CATEGORIES:
+        rule_band = rule_result.get(cat, "Moderate")
+        rule_reasons = list(rule_result.get("rationale", {}).get(cat, []))
+
+        if cat not in ml_result:
+            final[cat] = rule_band
+            rationale[cat] = ["src=rule_no_model"] + rule_reasons
+            continue
+
+        entry = ml_result[cat]
+        ml_band = entry.get("band", rule_band)
+        proba = entry.get("proba", {}) or {}
+        ml_top = float(proba.get(ml_band, 1.0)) if proba else 1.0
+
+        if mode == "ml":
+            final[cat] = ml_band
+            rationale[cat] = [f"src=ml(prob={ml_top:.2f})"] + rule_reasons
+        elif mode == "hybrid":
+            if ml_top >= min_conf:
+                final[cat] = ml_band
+                rationale[cat] = [f"src=ml(prob={ml_top:.2f})"] + rule_reasons
+            else:
+                final[cat] = rule_band
+                rationale[cat] = [f"src=rule(ml_low={ml_top:.2f})"] + rule_reasons
+        else:  # ensemble
+            if ml_band == rule_band:
+                final[cat] = ml_band
+                rationale[cat] = [f"src=agree(ml={ml_top:.2f})"] + rule_reasons
+            elif ml_top >= rule_conf:
+                final[cat] = ml_band
+                rationale[cat] = [
+                    f"src=ml_wins({ml_band} ml={ml_top:.2f} > rule={rule_conf:.2f})"
+                ] + rule_reasons
+            else:
+                final[cat] = rule_band
+                rationale[cat] = [
+                    f"src=rule_wins({rule_band} rule={rule_conf:.2f} >= ml={ml_top:.2f})"
+                ] + rule_reasons
+
+    final["rationale"] = rationale
+    return final
+
+
+def _log_and_return(
+    scores: Dict[str, Any],
+    overview: PresentationOverview,
+    engine: str,
+) -> Dict[str, Any]:
+    logger.info(
+        "[presentation_scorer:%s] eye=%s upright=%s stance=%s | "
+        "engaging=%s adaptability=%s confidence=%s authority=%s | "
+        "overview: upright=%.1f sway=%.4f stance=%.1f "
+        "gesture=%.3f hand_block=%.3f distinct=%d strong=%.3f",
+        engine,
+        scores.get("eye_contact"), scores.get("uprightness"), scores.get("stance"),
+        scores.get("engaging"), scores.get("adaptability"),
+        scores.get("confidence"), scores.get("authority"),
+        overview.upright_pct, overview.hip_sway_std, overview.stance_stability,
+        overview.gesture_share, overview.hand_block_share,
+        overview.distinct_hand_shapes, overview.strong_effort_share,
+    )
+    return {
+        "eye_contact": scores.get("eye_contact"),
+        "uprightness": scores.get("uprightness"),
+        "stance": scores.get("stance"),
+        "engaging": scores.get("engaging"),
+        "adaptability": scores.get("adaptability"),
+        "confidence": scores.get("confidence"),
+        "authority": scores.get("authority"),
+        "overview": overview,
+        "rationale": scores.get("rationale", {}),
+        "engine": engine,
     }
 
 
