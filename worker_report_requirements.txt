@@ -22,6 +22,18 @@ reportlab==4.0.9
 Pillow==10.2.0
 PyMuPDF==1.24.10
 
+# MoviePy (needed for audio feature extraction in presentation analysis)
+moviepy>=1.0.3,<2.0
+
+# ML models for Presentation Analysis (page 9)
+# Pinned to the same minor as the training env so joblib can deserialize.
+scikit-learn>=1.7,<1.8
+joblib>=1.3,<2.0
+
+# Audio features for Presentation Analysis (language-agnostic: pitch / volume / pauses)
+librosa>=0.10,<0.12
+soundfile>=0.12,<0.14
+
 # Build tools
 setuptools>=65.0.0
 wheel>=0.38.0
