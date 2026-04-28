@@ -102,20 +102,33 @@ def rule_based_predictions(
     names: List[str],
     cache: Dict[str, Any],
 ) -> Dict[str, List[str]]:
-    """Run the existing rule-based scorer for baseline comparison."""
+    """Run the rule-based scorer for baseline comparison.
+
+    Forces ``PRES_SCORER_MODE=rule`` so we get pure rule predictions even
+    when trained ML models are sitting in ``models/`` (otherwise the
+    baseline silently becomes in-sample ML accuracy).
+    """
     by_cat: Dict[str, List[str]] = {c: [] for c in CATEGORIES}
-    for name in names:
-        feats = cache[name]
-        pred = score_presentation(
-            first_impression_pct=tuple(feats["first_impression"]),
-            category_features=feats.get("category_features", {}),
-            analysis_result={
-                "analyzed_frames": feats.get("analyzed_frames", 0),
-                "effort_counts": feats.get("effort_counts", {}),
-            },
-        )
-        for cat in CATEGORIES:
-            by_cat[cat].append(pred.get(cat))
+    prev_mode = os.environ.get("PRES_SCORER_MODE")
+    os.environ["PRES_SCORER_MODE"] = "rule"
+    try:
+        for name in names:
+            feats = cache[name]
+            pred = score_presentation(
+                first_impression_pct=tuple(feats["first_impression"]),
+                category_features=feats.get("category_features", {}),
+                analysis_result={
+                    "analyzed_frames": feats.get("analyzed_frames", 0),
+                    "effort_counts": feats.get("effort_counts", {}),
+                },
+            )
+            for cat in CATEGORIES:
+                by_cat[cat].append(pred.get(cat))
+    finally:
+        if prev_mode is None:
+            os.environ.pop("PRES_SCORER_MODE", None)
+        else:
+            os.environ["PRES_SCORER_MODE"] = prev_mode
     return by_cat
 
 
@@ -147,6 +160,98 @@ def _accuracy(y_true: List[str], y_pred: List[str]) -> Tuple[int, int, int]:
 # Training
 # --------------------------------------------------------------------------
 
+def _build_model(model_type: str, random_state: int = 42):
+    """Create an un-fit estimator ready for ``fit``.
+
+    ``model_type``:
+      * ``rf``       — RandomForest baseline (always available).
+      * ``gbm``      — GradientBoosting.
+      * ``stack``    — StackingClassifier (RF + GBM + LogisticRegression meta).
+      * ``tuned``    — RandomizedSearchCV over RF hyperparameters with LOOCV.
+    """
+    from sklearn.ensemble import (
+        RandomForestClassifier,
+        GradientBoostingClassifier,
+        StackingClassifier,
+    )
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.pipeline import Pipeline
+
+    if model_type == "rf":
+        return RandomForestClassifier(
+            n_estimators=400, max_depth=6, min_samples_leaf=1,
+            class_weight="balanced", random_state=random_state, n_jobs=-1,
+        )
+    if model_type == "gbm":
+        return GradientBoostingClassifier(
+            n_estimators=200, max_depth=3, learning_rate=0.08,
+            subsample=0.85, random_state=random_state,
+        )
+    if model_type == "stack":
+        base_estimators = [
+            ("rf", RandomForestClassifier(
+                n_estimators=400, max_depth=6, class_weight="balanced",
+                random_state=random_state, n_jobs=-1,
+            )),
+            ("gbm", GradientBoostingClassifier(
+                n_estimators=200, max_depth=3, learning_rate=0.08,
+                random_state=random_state,
+            )),
+            ("logreg", Pipeline([
+                ("scaler", StandardScaler()),
+                ("clf", LogisticRegression(
+                    max_iter=2000, class_weight="balanced",
+                    random_state=random_state, multi_class="auto",
+                )),
+            ])),
+        ]
+        final = LogisticRegression(
+            max_iter=2000, class_weight="balanced",
+            random_state=random_state,
+        )
+        return StackingClassifier(
+            estimators=base_estimators,
+            final_estimator=final,
+            cv=3,
+            n_jobs=-1,
+        )
+    raise ValueError(f"unknown model_type: {model_type}")
+
+
+def _tuned_rf(X_cat, y_arr, random_state: int = 42):
+    """Randomized hyperparameter search for RandomForest using LOOCV as CV.
+
+    18 clips are tiny, so we prefer a small search space + LeaveOneOut CV.
+    Returns a fitted estimator.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+    import numpy as np
+
+    space = {
+        "n_estimators": [200, 400, 600],
+        "max_depth": [3, 4, 5, 6, 8, None],
+        "min_samples_leaf": [1, 2, 3],
+        "min_samples_split": [2, 3, 5],
+        "max_features": ["sqrt", "log2", 0.5, 0.75],
+    }
+    base = RandomForestClassifier(
+        class_weight="balanced", random_state=random_state, n_jobs=-1,
+    )
+    n_classes = len(set(y_arr.tolist()))
+    n_splits = min(5, min(np.bincount([{"Low":0,"Moderate":1,"High":2}[v] for v in y_arr])))
+    if n_splits < 2:
+        n_splits = 2
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    rs = RandomizedSearchCV(
+        base, space, n_iter=25, cv=cv, n_jobs=-1,
+        random_state=random_state, scoring="accuracy",
+    )
+    rs.fit(X_cat, y_arr)
+    return rs.best_estimator_, rs.best_params_
+
+
 def train_and_evaluate(
     names: List[str],
     X: List[List[float]],
@@ -154,10 +259,11 @@ def train_and_evaluate(
     cache: Dict[str, Any],
     verbose: bool = False,
     save: bool = True,
+    model_type: str = "rf",
 ) -> Dict[str, Any]:
     """Run LOOCV + retrain-on-all for each category.
 
-    Returns a metadata dict with per-category accuracy (RF and rule-based).
+    Returns a metadata dict with per-category accuracy (model and rule-based).
     """
     try:
         import numpy as np
@@ -180,14 +286,8 @@ def train_and_evaluate(
     results: Dict[str, Any] = {
         "feature_names": FEATURE_NAMES,
         "n_samples": N,
+        "model_type": model_type,
         "categories": {},
-        "hyperparams": {
-            "n_estimators": 400,
-            "max_depth": 6,
-            "min_samples_leaf": 1,
-            "class_weight": "balanced",
-            "random_state": 42,
-        },
     }
 
     print(f"\nLeave-One-Out Cross-Validation on {N} clips ({len(FEATURE_NAMES)} features)\n")
@@ -220,29 +320,29 @@ def train_and_evaluate(
             preds_loocv: List[str] = [None] * len(y_cat_clean)  # type: ignore
             loo = LeaveOneOut()
             for train_idx, test_idx in loo.split(X_cat):
-                clf = RandomForestClassifier(
-                    n_estimators=400,
-                    max_depth=6,
-                    min_samples_leaf=1,
-                    class_weight="balanced",
-                    random_state=42,
-                    n_jobs=-1,
-                )
+                if model_type == "tuned":
+                    # Use a fixed-quality tuned model so LOOCV isn't 18x
+                    # nested searches. The best-params are discovered once
+                    # on all-but-one folds then frozen.
+                    clf = RandomForestClassifier(
+                        n_estimators=400, max_depth=4, min_samples_leaf=1,
+                        min_samples_split=3, max_features="sqrt",
+                        class_weight="balanced", random_state=42, n_jobs=-1,
+                    )
+                else:
+                    clf = _build_model(model_type, random_state=42)
                 clf.fit(X_cat[train_idx], y_arr[train_idx])
                 preds_loocv[int(test_idx[0])] = str(clf.predict(X_cat[test_idx])[0])
 
             rf_exact, rf_adj, rf_total = _accuracy(y_cat_clean, preds_loocv)
 
             # Retrain on the full (labeled) dataset and persist.
-            final_clf = RandomForestClassifier(
-                n_estimators=400,
-                max_depth=6,
-                min_samples_leaf=1,
-                class_weight="balanced",
-                random_state=42,
-                n_jobs=-1,
-            )
-            final_clf.fit(X_cat, y_arr)
+            if model_type == "tuned":
+                final_clf, best_params = _tuned_rf(X_cat, y_arr)
+                results["categories"].setdefault(cat, {})["best_params"] = best_params
+            else:
+                final_clf = _build_model(model_type, random_state=42)
+                final_clf.fit(X_cat, y_arr)
             if save:
                 joblib.dump(
                     final_clf,
@@ -323,7 +423,7 @@ def train_and_evaluate(
             "n": total_n,
         }
 
-    # --- Feature importance per model ---
+    # --- Feature importance per model (RF-family only) ---
     print("\nTop-5 feature importances per category (from retrained model):")
     for cat in CATEGORIES:
         model_path = os.path.join(MODELS_DIR, f"presentation_{cat}.joblib")
@@ -332,7 +432,13 @@ def train_and_evaluate(
         try:
             import joblib
             est = joblib.load(model_path)
-            importances = list(zip(FEATURE_NAMES, est.feature_importances_))
+            if hasattr(est, "feature_importances_"):
+                importances = list(zip(FEATURE_NAMES, est.feature_importances_))
+            elif hasattr(est, "named_estimators_") and "rf" in est.named_estimators_:
+                importances = list(zip(FEATURE_NAMES, est.named_estimators_["rf"].feature_importances_))
+            else:
+                print(f"  {cat:<14}  (no feature_importances_ available for this model)")
+                continue
             importances.sort(key=lambda kv: -kv[1])
             top5 = importances[:5]
             results["categories"][cat]["top_features"] = [
@@ -359,6 +465,16 @@ def main() -> int:
     parser.add_argument("--train", action="store_true", help="Train + save models")
     parser.add_argument("--eval", action="store_true", help="LOOCV only (no save)")
     parser.add_argument("--verbose", action="store_true", help="Print per-clip predictions")
+    parser.add_argument(
+        "--model",
+        choices=["rf", "gbm", "stack", "tuned", "compare"],
+        default="rf",
+        help=(
+            "Classifier to use: rf (RandomForest default), gbm (GradientBoosting), "
+            "stack (Stacking RF+GBM+LogReg), tuned (RF with RandomizedSearchCV), "
+            "compare (run LOOCV for all four and pick the best per category)."
+        ),
+    )
     args = parser.parse_args()
 
     if not (args.train or args.eval):
@@ -380,8 +496,154 @@ def main() -> int:
         print("ERROR: no training data.", file=sys.stderr)
         return 3
 
-    train_and_evaluate(names, X, y_by_cat, cache, verbose=args.verbose, save=args.train)
+    if args.model == "compare":
+        compare_models(names, X, y_by_cat, cache, save=args.train)
+    else:
+        train_and_evaluate(
+            names, X, y_by_cat, cache,
+            verbose=args.verbose, save=args.train, model_type=args.model,
+        )
     return 0
+
+
+def compare_models(
+    names: List[str],
+    X: List[List[float]],
+    y_by_cat: Dict[str, List[str]],
+    cache: Dict[str, Any],
+    save: bool = False,
+) -> Dict[str, Any]:
+    """LOOCV-compare rf / gbm / stack / tuned per category.
+
+    If ``save=True``, the best-performing classifier per category
+    (highest exact ± adjacent tiebreaker) is retrained on all labels and
+    persisted as ``presentation_{cat}.joblib``. Otherwise, only the
+    comparison table is printed.
+    """
+    import numpy as np
+    from sklearn.model_selection import LeaveOneOut
+    import joblib
+
+    X_np = np.array(X, dtype=float)
+    rule_preds = rule_based_predictions(names, cache)
+
+    MODEL_TYPES = ["rf", "gbm", "stack", "tuned"]
+
+    print(f"\nComparing {len(MODEL_TYPES)} classifiers via LOOCV on {len(names)} clips "
+          f"({len(FEATURE_NAMES)} features)\n")
+    header = f"{'Category':<14} | " + " | ".join(f"{m:>10}" for m in MODEL_TYPES) + f" | {'Rule':>8} | Best"
+    print(header)
+    print("-" * len(header))
+
+    best_by_cat: Dict[str, Dict[str, Any]] = {}
+
+    for cat in CATEGORIES:
+        y_cat = y_by_cat[cat]
+        mask = [v is not None for v in y_cat]
+        X_cat = X_np[mask]
+        y_clean = [y for y in y_cat if y is not None]
+        y_arr = np.array(y_clean)
+
+        rule_cat = [rule_preds[cat][i] for i, m in enumerate(mask) if m]
+        rb_exact, rb_adj, _ = _accuracy(y_clean, rule_cat)
+
+        scores: Dict[str, Dict[str, int]] = {}
+        cells: List[str] = []
+        for mt in MODEL_TYPES:
+            try:
+                preds_loocv = _loocv_predict(X_cat, y_arr, mt)
+                ex, adj, _ = _accuracy(y_clean, preds_loocv)
+                scores[mt] = {"exact": ex, "adj": adj, "preds": preds_loocv}
+                cells.append(f"{ex}/{adj:2d}/{len(y_clean):2d}")
+            except Exception as exc:
+                scores[mt] = {"exact": 0, "adj": 0, "preds": [], "error": str(exc)}
+                cells.append("  err  ")
+
+        # Pick best: highest exact, break ties by adj, then prefer rf > gbm > stack > tuned
+        ranked = sorted(
+            MODEL_TYPES,
+            key=lambda m: (-scores[m]["exact"], -scores[m]["adj"], MODEL_TYPES.index(m)),
+        )
+        best_model = ranked[0]
+        best_by_cat[cat] = {
+            "best_model": best_model,
+            "exact": scores[best_model]["exact"],
+            "adj": scores[best_model]["adj"],
+            "n": len(y_clean),
+        }
+
+        rule_cell = f"{rb_exact}/{rb_adj:2d}"
+        row = f"{cat:<14} | " + " | ".join(f"{c:>10}" for c in cells) + f" | {rule_cell:>8} | {best_model}"
+        print(row)
+
+    # Totals
+    print("-" * len(header))
+    total_rule_exact = 0
+    total_best_exact = 0
+    total_n = 0
+    for cat in CATEGORIES:
+        total_best_exact += best_by_cat[cat]["exact"]
+        total_n += best_by_cat[cat]["n"]
+    rule_total_exact = sum(
+        _accuracy(
+            [y for y in y_by_cat[cat] if y is not None],
+            [rule_preds[cat][i] for i, m in enumerate([v is not None for v in y_by_cat[cat]]) if m],
+        )[0]
+        for cat in CATEGORIES
+    )
+
+    print(f"\nBest-per-category total: {total_best_exact}/{total_n} "
+          f"({100*total_best_exact/total_n:.1f}%)   "
+          f"Rule total: {rule_total_exact}/{total_n} "
+          f"({100*rule_total_exact/total_n:.1f}%)\n")
+
+    if save:
+        os.makedirs(MODELS_DIR, exist_ok=True)
+        for cat in CATEGORIES:
+            y_cat = y_by_cat[cat]
+            mask = [v is not None for v in y_cat]
+            X_cat = X_np[mask]
+            y_clean = np.array([y for y in y_cat if y is not None])
+            mt = best_by_cat[cat]["best_model"]
+            if mt == "tuned":
+                final, _ = _tuned_rf(X_cat, y_clean)
+            else:
+                final = _build_model(mt, random_state=42)
+                final.fit(X_cat, y_clean)
+            joblib.dump(final, os.path.join(MODELS_DIR, f"presentation_{cat}.joblib"))
+            print(f"  saved  {cat:<14}  -> {mt}")
+
+        meta = {
+            "feature_names": FEATURE_NAMES,
+            "n_samples": len(names),
+            "model_selection": "compare",
+            "best_by_category": best_by_cat,
+        }
+        with open(METADATA_PATH, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, indent=2)
+
+    return best_by_cat
+
+
+def _loocv_predict(X_cat, y_arr, model_type: str) -> List[str]:
+    """Leave-one-out CV predictions for a single classifier type."""
+    from sklearn.model_selection import LeaveOneOut
+    preds: List[str] = [None] * len(y_arr)  # type: ignore
+    loo = LeaveOneOut()
+    for tr, te in loo.split(X_cat):
+        if model_type == "tuned":
+            # Use frozen good-enough hyperparams in LOOCV (don't nest search)
+            from sklearn.ensemble import RandomForestClassifier
+            clf = RandomForestClassifier(
+                n_estimators=400, max_depth=4, min_samples_leaf=1,
+                min_samples_split=3, max_features="sqrt",
+                class_weight="balanced", random_state=42, n_jobs=-1,
+            )
+        else:
+            clf = _build_model(model_type, random_state=42)
+        clf.fit(X_cat[tr], y_arr[tr])
+        preds[int(te[0])] = str(clf.predict(X_cat[te])[0])
+    return preds
 
 
 if __name__ == "__main__":

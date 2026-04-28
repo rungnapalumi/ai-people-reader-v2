@@ -2209,6 +2209,17 @@ def analyze_video_mediapipe(video_path: str, sample_fps: float = 5, max_frames: 
         except Exception as exc:
             logger.warning("[holistic] skipping holistic pass: %s", exc)
 
+    # === Audio pass: pitch / volume / pauses (language-agnostic) ===
+    # librosa + moviepy. Cost is ~1s per video (after first call's JIT warmup).
+    # Disable with PRESENTATION_AUDIO=0.
+    if str(os.getenv("PRESENTATION_AUDIO", "1")).strip().lower() not in ("0", "false", "off"):
+        try:
+            from src.audio_features import extract_audio_features
+            audio = extract_audio_features(video_path)
+            enriched.update({k: float(v) for k, v in audio.items()})
+        except Exception as exc:
+            logger.warning("[audio] skipping audio pass: %s", exc)
+
     return {
         "analysis_engine": "mediapipe_real_enhanced",
         "duration_seconds": duration,

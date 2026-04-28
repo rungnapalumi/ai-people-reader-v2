@@ -124,6 +124,18 @@ FEATURE_NAMES: List[str] = [
     "hand_detection_ratio",
     "pointing_ratio",
     "finger_variation",
+    # Audio features (librosa; language-agnostic)
+    "audio_voiced_ratio",
+    "audio_speech_ratio",
+    "audio_pause_count_per_min",
+    "audio_pause_mean_duration",
+    "audio_longest_pause",
+    "audio_pitch_mean",
+    "audio_pitch_std",
+    "audio_pitch_range",
+    "audio_volume_mean",
+    "audio_volume_std",
+    "audio_volume_dynamic_range",
 ]
 
 CATEGORIES: List[str] = [
@@ -216,6 +228,17 @@ def build_feature_vector(
         _cf("hand_detection_ratio"),
         _cf("pointing_ratio"),
         _cf("finger_variation"),
+        _cf("audio_voiced_ratio"),
+        _cf("audio_speech_ratio"),
+        _cf("audio_pause_count_per_min"),
+        _cf("audio_pause_mean_duration"),
+        _cf("audio_longest_pause"),
+        _cf("audio_pitch_mean"),
+        _cf("audio_pitch_std"),
+        _cf("audio_pitch_range"),
+        _cf("audio_volume_mean"),
+        _cf("audio_volume_std"),
+        _cf("audio_volume_dynamic_range"),
     ]
     assert len(values) == len(FEATURE_NAMES), (
         f"feature vector length mismatch: {len(values)} vs {len(FEATURE_NAMES)}"

@@ -43,316 +43,63 @@
     "right_hand_openness",
     "hand_detection_ratio",
     "pointing_ratio",
-    "finger_variation"
+    "finger_variation",
+    "audio_voiced_ratio",
+    "audio_speech_ratio",
+    "audio_pause_count_per_min",
+    "audio_pause_mean_duration",
+    "audio_longest_pause",
+    "audio_pitch_mean",
+    "audio_pitch_std",
+    "audio_pitch_range",
+    "audio_volume_mean",
+    "audio_volume_std",
+    "audio_volume_dynamic_range"
   ],
   "n_samples": 18,
-  "categories": {
+  "model_selection": "compare",
+  "best_by_category": {
     "eye_contact": {
-      "n": 18,
-      "class_distribution": {
-        "High": 16,
-        "Moderate": 2
-      },
-      "rf_loocv": {
-        "exact": 16,
-        "adj": 18,
-        "exact_pct": 88.89,
-        "adj_pct": 100.0
-      },
-      "rule_based": {
-        "exact": 12,
-        "adj": 14,
-        "exact_pct": 66.67,
-        "adj_pct": 77.78
-      },
-      "top_features": [
-        {
-          "name": "gaze_forward_ratio",
-          "importance": 0.0951
-        },
-        {
-          "name": "head_pitch_mean",
-          "importance": 0.0903
-        },
-        {
-          "name": "finger_variation",
-          "importance": 0.0825
-        },
-        {
-          "name": "face_detection_ratio",
-          "importance": 0.075
-        },
-        {
-          "name": "head_yaw_std",
-          "importance": 0.0721
-        }
-      ]
+      "best_model": "rf",
+      "exact": 16,
+      "adj": 18,
+      "n": 18
     },
     "uprightness": {
-      "n": 18,
-      "class_distribution": {
-        "Low": 4,
-        "High": 9,
-        "Moderate": 5
-      },
-      "rf_loocv": {
-        "exact": 11,
-        "adj": 15,
-        "exact_pct": 61.11,
-        "adj_pct": 83.33
-      },
-      "rule_based": {
-        "exact": 8,
-        "adj": 16,
-        "exact_pct": 44.44,
-        "adj_pct": 88.89
-      },
-      "top_features": [
-        {
-          "name": "body_sway",
-          "importance": 0.0704
-        },
-        {
-          "name": "torso_stability",
-          "importance": 0.0585
-        },
-        {
-          "name": "distinct_hand_shapes",
-          "importance": 0.0585
-        },
-        {
-          "name": "head_yaw_std",
-          "importance": 0.0566
-        },
-        {
-          "name": "hip_sway_std",
-          "importance": 0.0533
-        }
-      ]
+      "best_model": "rf",
+      "exact": 11,
+      "adj": 15,
+      "n": 18
     },
     "stance": {
-      "n": 18,
-      "class_distribution": {
-        "High": 5,
-        "Moderate": 9,
-        "Low": 4
-      },
-      "rf_loocv": {
-        "exact": 7,
-        "adj": 17,
-        "exact_pct": 38.89,
-        "adj_pct": 94.44
-      },
-      "rule_based": {
-        "exact": 9,
-        "adj": 17,
-        "exact_pct": 50.0,
-        "adj_pct": 94.44
-      },
-      "top_features": [
-        {
-          "name": "shoulder_openness",
-          "importance": 0.0804
-        },
-        {
-          "name": "stance_stability",
-          "importance": 0.0757
-        },
-        {
-          "name": "stance_stability_norm",
-          "importance": 0.0585
-        },
-        {
-          "name": "energy_level",
-          "importance": 0.0491
-        },
-        {
-          "name": "gliding_share",
-          "importance": 0.0391
-        }
-      ]
+      "best_model": "rf",
+      "exact": 7,
+      "adj": 18,
+      "n": 18
     },
     "engaging": {
-      "n": 18,
-      "class_distribution": {
-        "Moderate": 9,
-        "High": 6,
-        "Low": 3
-      },
-      "rf_loocv": {
-        "exact": 7,
-        "adj": 18,
-        "exact_pct": 38.89,
-        "adj_pct": 100.0
-      },
-      "rule_based": {
-        "exact": 8,
-        "adj": 18,
-        "exact_pct": 44.44,
-        "adj_pct": 100.0
-      },
-      "top_features": [
-        {
-          "name": "center_presence",
-          "importance": 0.0505
-        },
-        {
-          "name": "rhythm_consistency",
-          "importance": 0.0482
-        },
-        {
-          "name": "stance_stability",
-          "importance": 0.0428
-        },
-        {
-          "name": "stance_stability_norm",
-          "importance": 0.0416
-        },
-        {
-          "name": "distinct_hand_shapes",
-          "importance": 0.0403
-        }
-      ]
+      "best_model": "tuned",
+      "exact": 8,
+      "adj": 18,
+      "n": 18
     },
     "adaptability": {
-      "n": 18,
-      "class_distribution": {
-        "Low": 11,
-        "High": 2,
-        "Moderate": 5
-      },
-      "rf_loocv": {
-        "exact": 13,
-        "adj": 16,
-        "exact_pct": 72.22,
-        "adj_pct": 88.89
-      },
-      "rule_based": {
-        "exact": 6,
-        "adj": 15,
-        "exact_pct": 33.33,
-        "adj_pct": 83.33
-      },
-      "top_features": [
-        {
-          "name": "left_hand_openness",
-          "importance": 0.0673
-        },
-        {
-          "name": "right_hand_openness",
-          "importance": 0.0665
-        },
-        {
-          "name": "stance_stability_norm",
-          "importance": 0.061
-        },
-        {
-          "name": "stance_stability",
-          "importance": 0.0439
-        },
-        {
-          "name": "posture_uprightness",
-          "importance": 0.0439
-        }
-      ]
+      "best_model": "rf",
+      "exact": 14,
+      "adj": 16,
+      "n": 18
     },
     "confidence": {
-      "n": 18,
-      "class_distribution": {
-        "Low": 6,
-        "Moderate": 7,
-        "High": 5
-      },
-      "rf_loocv": {
-        "exact": 4,
-        "adj": 12,
-        "exact_pct": 22.22,
-        "adj_pct": 66.67
-      },
-      "rule_based": {
-        "exact": 4,
-        "adj": 14,
-        "exact_pct": 22.22,
-        "adj_pct": 77.78
-      },
-      "top_features": [
-        {
-          "name": "directing_share",
-          "importance": 0.0434
-        },
-        {
-          "name": "stance_stability_norm",
-          "importance": 0.042
-        },
-        {
-          "name": "head_yaw_std",
-          "importance": 0.039
-        },
-        {
-          "name": "shoulder_openness",
-          "importance": 0.0386
-        },
-        {
-          "name": "energy_level",
-          "importance": 0.0378
-        }
-      ]
+      "best_model": "stack",
+      "exact": 6,
+      "adj": 16,
+      "n": 18
     },
     "authority": {
-      "n": 18,
-      "class_distribution": {
-        "Low": 8,
-        "Moderate": 5,
-        "High": 5
-      },
-      "rf_loocv": {
-        "exact": 6,
-        "adj": 12,
-        "exact_pct": 33.33,
-        "adj_pct": 66.67
-      },
-      "rule_based": {
-        "exact": 3,
-        "adj": 12,
-        "exact_pct": 16.67,
-        "adj_pct": 66.67
-      },
-      "top_features": [
-        {
-          "name": "energy_level",
-          "importance": 0.0577
-        },
-        {
-          "name": "center_presence",
-          "importance": 0.048
-        },
-        {
-          "name": "movement_intentionality",
-          "importance": 0.0441
-        },
-        {
-          "name": "upright_pct",
-          "importance": 0.0437
-        },
-        {
-          "name": "eye_direction_proxy",
-          "importance": 0.0429
-        }
-      ]
+      "best_model": "stack",
+      "exact": 6,
+      "adj": 15,
+      "n": 18
     }
-  },
-  "hyperparams": {
-    "n_estimators": 400,
-    "max_depth": 6,
-    "min_samples_leaf": 1,
-    "class_weight": "balanced",
-    "random_state": 42
-  },
-  "total": {
-    "rf_loocv_exact": 64,
-    "rf_loocv_adj": 108,
-    "rule_based_exact": 50,
-    "rule_based_adj": 106,
-    "n": 126
   }
 }
