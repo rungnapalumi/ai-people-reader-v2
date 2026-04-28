@@ -56,50 +56,50 @@
     "audio_volume_std",
     "audio_volume_dynamic_range"
   ],
-  "n_samples": 18,
+  "n_samples": 28,
   "model_selection": "compare",
   "best_by_category": {
     "eye_contact": {
       "best_model": "rf",
-      "exact": 16,
-      "adj": 18,
-      "n": 18
+      "exact": 24,
+      "adj": 28,
+      "n": 28
     },
     "uprightness": {
-      "best_model": "rf",
-      "exact": 11,
-      "adj": 15,
-      "n": 18
+      "best_model": "gbm",
+      "exact": 16,
+      "adj": 23,
+      "n": 28
     },
     "stance": {
-      "best_model": "rf",
-      "exact": 7,
-      "adj": 18,
-      "n": 18
+      "best_model": "gbm",
+      "exact": 10,
+      "adj": 26,
+      "n": 28
     },
     "engaging": {
-      "best_model": "tuned",
-      "exact": 8,
-      "adj": 18,
-      "n": 18
+      "best_model": "gbm",
+      "exact": 14,
+      "adj": 28,
+      "n": 28
     },
     "adaptability": {
       "best_model": "rf",
-      "exact": 14,
-      "adj": 16,
-      "n": 18
+      "exact": 18,
+      "adj": 23,
+      "n": 28
     },
     "confidence": {
       "best_model": "stack",
-      "exact": 6,
-      "adj": 16,
-      "n": 18
+      "exact": 14,
+      "adj": 24,
+      "n": 28
     },
     "authority": {
       "best_model": "stack",
-      "exact": 6,
-      "adj": 15,
-      "n": 18
+      "exact": 12,
+      "adj": 22,
+      "n": 28
     }
   }
 }

@@ -44,6 +44,7 @@ if REPO_ROOT not in sys.path:
 from src.presentation_scorer import score_presentation  # noqa: E402
 
 GROUND_TRUTH_XLSX = os.path.join(REPO_ROOT, "New Video Analysis_with comments.xlsx")
+GROUND_TRUTH_XLSX_10TYPES = os.path.join(REPO_ROOT, "Movement Combinations for Report 10 types.xlsx")
 FEATURE_CACHE = os.path.join(HERE, ".presentation_features_cache.json")
 
 CATEGORIES = [
@@ -85,11 +86,38 @@ def _norm_band(val: Any) -> Optional[str]:
 
 
 def load_ground_truth() -> List[Dict[str, Any]]:
-    """Parse the Excel into a list of {name, categories={cat:band}} records.
+    """Parse both ground-truth Excel files into a merged record list.
 
-    The sheet has a three-row header plus multi-line comment rows below each
-    record. Records are identified by a non-empty Name cell.
+    Sources:
+      - ``New Video Analysis_with comments.xlsx`` — the original 18-clip set
+        (Andre / Aom / Meiji / ...). Free-form Name column. Labels use H/M/L.
+      - ``Movement Combinations for Report 10 types.xlsx`` Sheet2 —
+        10 archetypes keyed by ``Type N`` with full-word bands (High/Moderate/Low).
+
+    Records are identified by a non-empty Name cell. Later sources can override
+    earlier ones by slug, but in practice the Type 1..10 names don't clash with
+    the original set.
     """
+    records: List[Dict[str, Any]] = []
+    seen_slugs: set = set()
+
+    # --- Source 1: original 18-clip spreadsheet ---------------------------
+    if os.path.exists(GROUND_TRUTH_XLSX):
+        records.extend(_load_primary_xlsx())
+        seen_slugs.update(r["slug"] for r in records)
+
+    # --- Source 2: 10-types archetype spreadsheet -------------------------
+    if os.path.exists(GROUND_TRUTH_XLSX_10TYPES):
+        for rec in _load_10types_xlsx():
+            if rec["slug"] in seen_slugs:
+                continue
+            records.append(rec)
+            seen_slugs.add(rec["slug"])
+
+    return records
+
+
+def _load_primary_xlsx() -> List[Dict[str, Any]]:
     import openpyxl  # local import so the rest of the script runs without it
 
     wb = openpyxl.load_workbook(GROUND_TRUTH_XLSX, data_only=True)
@@ -114,6 +142,59 @@ def load_ground_truth() -> List[Dict[str, Any]]:
             "name": name_str,
             "slug": _slug(name_str),
             "categories": cats,
+            "source": "primary",
+        })
+    return records
+
+
+# Column order in Sheet2 of the 10-types workbook.
+#   Type | Name | Eye contact | Stance | Uprightness | Engaging | Authority | Confidence | Adaptability
+_TYPES_COLS: List[Tuple[int, str]] = [
+    (2, "eye_contact"),
+    (3, "stance"),
+    (4, "uprightness"),
+    (5, "engaging"),
+    (6, "authority"),
+    (7, "confidence"),
+    (8, "adaptability"),
+]
+
+
+def _load_10types_xlsx() -> List[Dict[str, Any]]:
+    """Parse Sheet2 of ``Movement Combinations for Report 10 types.xlsx``.
+
+    Each row is one archetype keyed by Type 1..10. Record ``name`` is
+    ``"Type N"`` so video matching lands on ``Type N.mov``.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(GROUND_TRUTH_XLSX_10TYPES, data_only=True)
+    if "Sheet2" not in wb.sheetnames:
+        return []
+    ws = wb["Sheet2"]
+    records: List[Dict[str, Any]] = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        type_id = row[0]
+        if type_id is None:
+            continue
+        try:
+            n = int(type_id)
+        except (TypeError, ValueError):
+            continue
+        name_str = f"Type {n}"
+        cats: Dict[str, str] = {}
+        for idx, key in _TYPES_COLS:
+            band = _norm_band(row[idx] if idx < len(row) else None)
+            if band:
+                cats[key] = band
+        if not cats:
+            continue
+        records.append({
+            "name": name_str,
+            "slug": _slug(name_str),
+            "categories": cats,
+            "source": "10types",
+            "display_name": str(row[1]).strip() if row[1] else name_str,
         })
     return records
 
