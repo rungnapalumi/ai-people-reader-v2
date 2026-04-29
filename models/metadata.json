@@ -72,11 +72,9 @@
       "n": 28
     },
     "stance": {
-      "best_model": "rule",
-      "exact": 14,
-      "adj": 27,
+      "best_model": "rf",
       "n": 28,
-      "note": "ML model intentionally omitted — rule-based (14/28) outperformed every ML variant (rf=10, gbm=10, stack=9, tuned=10). Hybrid scorer auto-falls-back to rule when the .joblib file is missing."
+      "note": "Re-added as RandomForest so the (Upr, Stn) lookup table can use ML-driven Stance on Render. Rule-based stance still wins LOOCV but ML pushes more clips into the unanimous lookup cells, which matters more for downstream Confidence accuracy."
     },
     "engaging": {
       "best_model": "gbm",
@@ -91,10 +89,9 @@
       "n": 28
     },
     "confidence": {
-      "best_model": "stack",
-      "exact": 14,
-      "adj": 24,
-      "n": 28
+      "best_model": "rf",
+      "n": 28,
+      "note": "Downgraded from StackingClassifier to RandomForest because StackingClassifier pickles do not deserialize cleanly across the local/Render numpy/sklearn split. RF is slightly less accurate in LOOCV but actually loads on the report-worker."
     },
     "authority": {
       "best_model": "derived_from_confidence",

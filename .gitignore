@@ -14,6 +14,7 @@ __pycache__/
 # ---- Virtual env ----
 .venv/
 .venv-*/
+.venv-train-numpy126/
 venv/
 env/
 
