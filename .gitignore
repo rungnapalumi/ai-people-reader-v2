@@ -51,4 +51,9 @@ jobs/finished/
 
 # ---- Presentation Analysis calibration (local cache only; models/ is tracked) ----
 scripts/.presentation_features_cache.json
+scripts/.batch_cache.json
+
+# ---- Local batch-analysis folder ----
+batch_videos/
+*_results.csv
 

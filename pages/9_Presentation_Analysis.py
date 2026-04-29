@@ -1275,7 +1275,10 @@ if run:
             "output_prefix": f"{JOBS_GROUP_PREFIX}{group_id}",
             "analysis_mode": "real",
             "sample_fps": 3,
-            "max_frames": 150,
+            # NOTE: keep max_frames aligned with (1) scripts/calibrate_presentation_analysis.py
+            # and (2) scripts/batch_analyze.py so the feature distribution fed to the ML
+            # models on Render matches exactly what was used during LOOCV training.
+            "max_frames": 200,
             # Report layout reuses the People Reader 7-category page-3 template; the
             # presentation_analysis_job flag switches category/scale scoring to
             # src.presentation_scorer in the report worker.
