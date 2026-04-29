@@ -56,4 +56,6 @@ scripts/.batch_cache.json
 # ---- Local batch-analysis folder ----
 batch_videos/
 *_results.csv
+batch_render_queue.csv
+batch_render_results.csv
 

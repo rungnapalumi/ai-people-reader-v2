@@ -1942,6 +1942,18 @@ def _apply_presentation_analysis_scoring(
     result["presentation_analysis_bands"] = bands
     result["presentation_analysis_rationale"] = scorer_out.get("rationale") or {}
 
+    # Persist the final bands + raw first-impression values into the job JSON so
+    # jobs/finished/<job_id>.json exposes them without having to crack open the
+    # PDF/DOCX. scripts/batch_upload_render.py relies on these fields to build
+    # the 7-band comparison table after a batch run.
+    job["presentation_analysis_bands"] = dict(bands)
+    job["presentation_analysis_rationale"] = dict(result["presentation_analysis_rationale"])
+    job["presentation_analysis_first_impression_raw"] = {
+        "eye_contact_pct": float(fi_in[0]),
+        "upright_pct": float(fi_in[1]),
+        "stance_stability": float(fi_in[2]),
+    }
+
     # Pin FI percentages into the band the scorer chose so
     # first_impression_level() shows the same H/M/L in the report.
     #   Stance: High>=53, Moderate 30-52, Low<30
