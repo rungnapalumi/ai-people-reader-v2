@@ -1371,19 +1371,8 @@ current_group_id = _sanitize_group_id(
     or ""
 )
 
-manual_group_id = _sanitize_group_id(
-    st.text_input(
-        "Group ID",
-        value=current_group_id,
-        placeholder="Paste your Group ID here (e.g. 20240319_075553_1a1b29__Name)",
-        key="presentation_analysis_download_id",
-    )
-)
-
-if manual_group_id:
-    current_group_id = manual_group_id
-    st.session_state["presentation_analysis_submission_id_override"] = manual_group_id
-    st.session_state["presentation_analysis_last_group_id"] = manual_group_id
+if not current_group_id:
+    st.caption("Upload a video above to start a new analysis. The Group ID will appear here automatically once it's queued.")
 
 col1, col2 = st.columns(2)
 
