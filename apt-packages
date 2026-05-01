@@ -11,4 +11,6 @@ chromium
 fonts-noto-core
 fonts-noto-ui-core
 fonts-thai-tlwg
+xvfb
+xauth
 
