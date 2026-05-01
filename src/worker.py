@@ -107,6 +107,28 @@ _PENDING_READS_ENV = os.getenv("WORKER_PENDING_MAX_JSON_READS") or os.getenv("WO
 WORKER_PENDING_MAX_JSON_READS = max(2000, int(_PENDING_READS_ENV or "200000"))
 # Back-compat alias for logs / env docs
 WORKER_PENDING_MAX_SCAN = WORKER_PENDING_MAX_JSON_READS
+# Modes this worker is allowed to claim and recover. Default keeps single-instance behaviour
+# (one worker handles every video mode). Set to "dots" or "skeleton" on each Render service when
+# splitting the video worker into two parallel instances — that way each worker only touches its
+# own jobs and recovery sweeps don't yank the other worker's in-flight processing/<id>.json.
+def _parse_handles_modes(value: str) -> frozenset:
+    items = {seg.strip().lower() for seg in (value or "").split(",") if seg.strip()}
+    return frozenset(items) if items else frozenset({"dots", "skeleton"})
+
+
+WORKER_HANDLES_MODES = _parse_handles_modes(os.getenv("WORKER_HANDLES_MODES") or "dots,skeleton")
+WORKER_HANDLES_ALL_VIDEO_MODES = WORKER_HANDLES_MODES == frozenset({"dots", "skeleton"})
+
+
+def _job_mode_handled_here(mode: str) -> bool:
+    """True if a pending/processing JSON's mode belongs to this worker. Always False for report modes."""
+    m = (mode or "").strip().lower()
+    if not m:
+        # Unknown mode — only the back-compat "handles all video modes" worker should sweep it.
+        return WORKER_HANDLES_ALL_VIDEO_MODES
+    if m in REPORT_JOB_MODES:
+        return False
+    return m in WORKER_HANDLES_MODES
 
 # Skeleton/dots ready emails: also notify these addresses (not shown in Streamlit). Set to "" to disable.
 _DEFAULT_INTERNAL_ANALYSIS_NOTIFY_EMAILS = "rungnapa@imagematters.at,petchpat@gmail.com"
@@ -373,6 +395,10 @@ def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
                 if mode in REPORT_JOB_MODES:
                     report_skips += 1
                     continue
+                # Skip modes that another worker instance is responsible for (e.g. when this
+                # process is the dots-only worker and the key is mode=skeleton).
+                if not _job_mode_handled_here(mode):
+                    continue
                 if mode == "dots":
                     dots_keys.append(key)
                 elif mode == "skeleton":
@@ -380,7 +406,10 @@ def list_pending(limit: int = 200, max_scan: Optional[int] = None) -> List[str]:
                 else:
                     other_keys.append(key)
             except Exception:
-                other_keys.append(key)
+                # On read failure default to handling the key only if this worker is the
+                # back-compat "handles all" instance; otherwise skip so the specialised peer can claim it.
+                if WORKER_HANDLES_ALL_VIDEO_MODES:
+                    other_keys.append(key)
             picked = len(dots_keys) + len(skeleton_keys) + len(other_keys)
             if picked >= limit:
                 return (dots_keys + skeleton_keys + other_keys)[:limit]
@@ -419,17 +448,18 @@ def count_jobs(prefix: str) -> int:
 
 
 def force_recover_all_processing_on_startup(max_items: int) -> int:
-    """Unconditionally move every jobs/processing/*.json back to pending.
+    """Unconditionally move every jobs/processing/*.json **of this worker's modes** back to pending.
 
-    Safe only because the video worker is deployed as a single instance (see render.yaml):
-    when this process starts, no other worker is holding a live claim, so every file under
-    processing/ belongs to a crashed predecessor. The age-based stale recovery can be fooled
-    for several minutes after a crash because the dying process's ProcessingHeartbeat may
-    have just refreshed LastModified; this bypass closes that window.
+    Originally this swept every processing JSON because the video worker was deployed as a
+    single instance. With WORKER_HANDLES_MODES splitting dots and skeleton into separate
+    services, this worker MUST only reclaim its own modes — otherwise the dots-worker boot
+    would yank the skeleton-worker's in-flight processing/<id>.json (and vice versa), causing
+    duplicate processing and duplicate emails.
     """
     max_items = max(1, int(max_items or 1))
     recovered = 0
     scanned = 0
+    skipped_other_mode = 0
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=AWS_BUCKET, Prefix=PROCESSING):
         for item in page.get("Contents", []):
@@ -437,17 +467,41 @@ def force_recover_all_processing_on_startup(max_items: int) -> int:
             if not key.endswith(".json"):
                 continue
             scanned += 1
+            # Only reclaim processing JSONs whose mode this worker is responsible for.
+            # When WORKER_HANDLES_MODES is the default (both modes), this is a no-op cost wise
+            # but adds one S3 read per processing key — acceptable tradeoff for safety.
+            try:
+                body = s3_read_json(key)
+                mode = str(body.get("mode") or "").strip().lower()
+            except Exception as e:
+                logging.warning("[startup_force_recovery] could not read key=%s err=%s — skipping", key, e)
+                continue
+            if not _job_mode_handled_here(mode):
+                skipped_other_mode += 1
+                continue
             try:
                 move_job(key, PENDING)
                 recovered += 1
                 logging.warning(
-                    "[startup_force_recovery] reclaimed orphaned processing->pending key=%s (single-instance worker)",
+                    "[startup_force_recovery] reclaimed orphaned processing->pending key=%s mode=%s (worker_modes=%s)",
                     key,
+                    mode or "<missing>",
+                    sorted(WORKER_HANDLES_MODES),
                 )
             except Exception as e:
                 logging.warning("[startup_force_recovery] failed to move key=%s err=%s", key, e)
             if scanned >= max_items:
+                if skipped_other_mode:
+                    logging.info(
+                        "[startup_force_recovery] skipped %s processing JSON(s) belonging to other worker modes",
+                        skipped_other_mode,
+                    )
                 return recovered
+    if skipped_other_mode:
+        logging.info(
+            "[startup_force_recovery] skipped %s processing JSON(s) belonging to other worker modes",
+            skipped_other_mode,
+        )
     return recovered
 
 
@@ -455,7 +509,8 @@ def recover_orphaned_processing_by_worker_id(current_worker_id: str, max_items: 
     """Reclaim any processing JSON whose worker_id differs from this process's WORKER_ID.
 
     Run only while this worker holds no active claim (idle sweep). A JSON without a
-    worker_id field is treated as legacy/orphan and reclaimed too.
+    worker_id field is treated as legacy/orphan and reclaimed too. With mode-split workers,
+    only modes this worker handles are eligible.
     """
     max_items = max(1, int(max_items or 1))
     recovered = 0
@@ -472,6 +527,9 @@ def recover_orphaned_processing_by_worker_id(current_worker_id: str, max_items: 
             except Exception as e:
                 logging.warning("[orphan_sweep] could not read key=%s err=%s", key, e)
                 continue
+            mode = str(body.get("mode") or "").strip().lower()
+            if not _job_mode_handled_here(mode):
+                continue
             owner = str(body.get("worker_id") or "").strip()
             if owner == current_worker_id:
                 continue
@@ -479,8 +537,9 @@ def recover_orphaned_processing_by_worker_id(current_worker_id: str, max_items: 
                 move_job(key, PENDING)
                 recovered += 1
                 logging.warning(
-                    "[orphan_sweep] reclaimed key=%s owner=%r (current worker_id=%s)",
+                    "[orphan_sweep] reclaimed key=%s mode=%s owner=%r (current worker_id=%s)",
                     key,
+                    mode or "<missing>",
                     owner or "<missing>",
                     current_worker_id,
                 )
@@ -492,6 +551,7 @@ def recover_orphaned_processing_by_worker_id(current_worker_id: str, max_items: 
 
 
 def recover_stale_processing_jobs(stale_minutes: int, max_items: int) -> int:
+    """Reclaim processing JSONs older than `stale_minutes`, restricted to this worker's modes."""
     stale_minutes = max(1, int(stale_minutes or 1))
     max_items = max(1, int(max_items or 1))
     now_ts = time.time()
@@ -510,12 +570,22 @@ def recover_stale_processing_jobs(stale_minutes: int, max_items: int) -> int:
             age_minutes = (now_ts - float(last_modified.timestamp())) / 60.0
             if age_minutes < float(stale_minutes):
                 continue
+            # Read mode before moving so we don't reclaim another worker's stale-but-still-its-own job.
+            try:
+                body = s3_read_json(key)
+                mode = str(body.get("mode") or "").strip().lower()
+            except Exception as e:
+                logging.warning("[startup_recovery] could not read stale key=%s err=%s — skipping", key, e)
+                continue
+            if not _job_mode_handled_here(mode):
+                continue
             try:
                 move_job(key, PENDING)
                 recovered += 1
                 logging.warning(
-                    "[startup_recovery] moved stale processing->pending key=%s age_minutes=%.1f",
+                    "[startup_recovery] moved stale processing->pending key=%s mode=%s age_minutes=%.1f",
                     key,
+                    mode or "<missing>",
                     age_minutes,
                 )
             except Exception as e:
@@ -1410,7 +1480,8 @@ def main_loop(poll_seconds: int = 3) -> None:
         WORKER_PENDING_MAX_JSON_READS,
     )
     logging.info(
-        "Scope: only modes dots|skeleton. mode=report stays in %s for the REPORT worker — both should run in parallel.",
+        "Scope: WORKER_HANDLES_MODES=%s (default: dots,skeleton). mode=report stays in %s for the REPORT worker — both should run in parallel.",
+        ",".join(sorted(WORKER_HANDLES_MODES)),
         PENDING,
     )
     logging.info(

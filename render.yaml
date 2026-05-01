@@ -1,20 +1,30 @@
-# --- ต้องมี 2 Worker services พร้อมกัน (ไม่ใช่รันคำสั่งเดียว) ---
-# Render แต่ละ Worker = 1 process เดียว → video กับ report ต้องเป็น 2 services แยกกัน ทั้งคู่ต้องสถานะ Live
+# --- ต้องมี 3 Worker services พร้อมกัน (ไม่ใช่รันคำสั่งเดียว) ---
+# Render แต่ละ Worker = 1 process เดียว → dots, skeleton, report ต้องเป็น 3 services แยกกัน ทั้งหมดต้อง Live
 # (อย่า Suspend ตัวใดตัวหนึ่ง ถ้าต้องการ dots/skeleton + PDF พร้อมกัน)
 #
-# --- Two workers = run IN PARALLEL (แยก service แต่ทำพร้อมกัน) ---
-# One upload enqueues e.g. skeleton + report with the SAME group_id under jobs/groups/<id>/.
-# - Video worker: encodes dots/skeleton from input.mp4 (modes dots | skeleton only).
-# - Report worker: analyzes the SAME input.mp4 for DOCX/PDF (mode report). It does NOT wait for
-#   skeleton.mp4 to exist — only email sequencing cares about expect_skeleton.
-# Both poll jobs/pending/ independently → heavy work runs concurrently. Keep BOTH services Live.
-# Same AWS_BUCKET (+ keys or IAM) on every service, or one worker "sees" an empty queue.
+# --- Three workers = run IN PARALLEL (แยก service แต่ทำพร้อมกัน) ---
+# One upload enqueues dots + skeleton + report with the SAME group_id under jobs/groups/<id>/.
+# - Dots worker (configured manually on Render dashboard, NOT in this yaml — service name
+#   ai-people-reader-worker, repo switched to rungnapalumi/ai-people-reader-v2): processes mode=dots only.
+#   Required env vars on dashboard:
+#     WORKER_HANDLES_MODES = "dots"
+#     PROCESSING_STALE_MINUTES = "5"
+#     PYTHON_VERSION = "3.11.9"
+#     + AWS_BUCKET / AWS_REGION / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (copy from video-worker).
+#   Build/start commands identical to ai-people-reader-v2-video-worker (xvfb-run -a python src/worker.py).
+# - Skeleton worker (this file: ai-people-reader-v2-video-worker): processes mode=skeleton only.
+# - Report worker (this file: ai-people-reader-v2-report-worker): mode=report only.
+# Each video worker filters jobs/pending/ via WORKER_HANDLES_MODES so they never claim or recover the
+# other worker's processing/<id>.json (see _job_mode_handled_here() + recovery sweeps in src/worker.py).
+# Both poll jobs/pending/ independently → heavy work runs concurrently. Keep ALL services Live.
+# Same AWS_BUCKET (+ keys or IAM) on every service, or workers "see" an empty queue.
 #
 # MediaPipe needs a virtual framebuffer on headless Linux: xvfb-run + libgl1 in build/start (below).
 #
-# Dots/Skeleton worker: processes dots and skeleton video jobs from S3 queue
-# Scale this service to **1 instance** if possible; multiple replicas claim dots+skeleton in parallel and
-# skeleton used to finish before dots — mitigated in code by waiting for dots.mp4 (see SKELETON_WAIT_FOR_DOTS).
+# Skeleton worker: only processes mode=skeleton from the S3 pending queue.
+# Run scale = 1 instance. Pair with the dots worker service so the two modes execute in parallel.
+# History: this service used to handle BOTH dots+skeleton. We split them and assigned dots to the
+# legacy ai-people-reader-worker service (after pointing it at this same v2 repo).
 - type: worker
   name: ai-people-reader-v2-video-worker
   runtime: python
@@ -34,6 +44,12 @@
   envVars:
     - key: PYTHON_VERSION
       value: 3.11.9
+    # This service only handles mode=skeleton. The peer dots worker (ai-people-reader-worker,
+    # configured manually on Render dashboard) handles mode=dots with WORKER_HANDLES_MODES=dots.
+    - key: WORKER_HANDLES_MODES
+      value: "skeleton"
+    # Skeleton output is gated until dots.mp4 exists — keeps People Reader bundle email expecting
+    # both videos in S3 before sending. Dots worker runs the heavier mediapipe pass.
     - key: SKELETON_WAIT_FOR_DOTS
       value: "true"
     - key: PROCESSING_STALE_MINUTES
