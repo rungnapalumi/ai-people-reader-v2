@@ -1046,6 +1046,7 @@ def clear_state() -> None:
         "people_reader_audience_mode",
         "people_reader_video_upload",
         "people_reader_jobs_by_group",
+        "people_reader_processed_upload_id",
     ):
         st.session_state.pop(k, None)
 
@@ -1145,32 +1146,45 @@ if uploaded is not None:
     uploaded_size_mb = float((uploaded.size or 0) / (1024 * 1024))
     st.caption(f"Selected file: `{uploaded_name}` ({uploaded_size_mb:.2f} MB)")
 
-run = st.button(
-    "Start Analysis",
-    type="primary",
-    use_container_width=True,
-    disabled=(uploaded is None or not AWS_BUCKET or AWS_BUCKET == "local"),
+# Auto-trigger analysis when name + email + file are all provided. The session-state guard
+# prevents re-running on subsequent Streamlit reruns (e.g., user clicking Refresh) for the
+# same uploaded file; selecting a different file (different name/size) will trigger again.
+_upload_signature = ""
+if uploaded is not None:
+    _upload_signature = f"{uploaded.name}__{uploaded.size or 0}"
+
+_already_processed_upload = str(
+    st.session_state.get("people_reader_processed_upload_id") or ""
 )
+_name_ok = bool(name_value.strip())
+_email_str = str(report_notify_email or "").strip()
+_email_ok = bool(_email_str) and is_valid_email_format(_email_str)
+_config_ok = bool(AWS_BUCKET) and AWS_BUCKET != "local"
+
+run = (
+    uploaded is not None
+    and bool(_upload_signature)
+    and _upload_signature != _already_processed_upload
+    and _name_ok
+    and _email_ok
+    and _config_ok
+)
+
+# Helpful hints when something is missing — auto-analysis only fires when everything is ready.
+if uploaded is not None and not run and _upload_signature != _already_processed_upload:
+    if not _config_ok:
+        st.error("S3 bucket is not configured. Set AWS_BUCKET in your .env to enable analysis.")
+    elif not _name_ok:
+        st.info("Enter your name above — analysis will start automatically once everything is filled in.")
+    elif not _email_str:
+        st.info("Enter your email above to receive the report.")
+    elif not _email_ok:
+        st.warning("Email format looks invalid — please check before uploading again.")
 
 st.caption(SUPPORT_TEXT)
 
 if run:
-    if not AWS_BUCKET or AWS_BUCKET == "local":
-        st.error("ขั้นตอน 1 — โครงสร้างพื้นฐาน: ต้องตั้งค่า S3 (AWS_BUCKET) ใน .env")
-        st.stop()
     org_payload = people_reader_fixed_settings()
-    if uploaded is None:
-        st.warning("ขั้นตอน 6 — วิดีโอ: กรุณาอัปโหลดไฟล์วิดีโอก่อน")
-        st.stop()
-    if not name_value.strip():
-        st.warning("ขั้นตอน 6 — ชื่อ: กรุณากรอกชื่อก่อน")
-        st.stop()
-    if not str(report_notify_email or "").strip():
-        st.warning("ขั้นตอน 6 — อีเมล: กรุณากรอกอีเมลสำหรับส่งรายงาน PDF")
-        st.stop()
-    if not is_valid_email_format(str(report_notify_email)):
-        st.warning("ขั้นตอน 6 — อีเมล: รูปแบบอีเมลไม่ถูกต้อง")
-        st.stop()
 
     langs = [str(x).strip().lower() for x in (org_payload.get("languages") or ["en"]) if str(x).strip()]
     if not langs:
@@ -1206,11 +1220,11 @@ if run:
         except Exception as e:
             status.update(label="Upload failed", state="error")
             err_msg = _format_exception(e)
-            st.error(f"ขั้นตอน 7 — อัปโหลดวิดีโอ: ล้มเหลว — {err_msg}")
+            st.error(f"Upload failed: {err_msg}")
             st.caption(
                 "If the message above is empty or mentions a connection/closed-file error, the Render "
-                "instance likely restarted mid-upload. Hard-refresh the page (Cmd/Ctrl+Shift+R), "
-                "re-select the video, and click Start Analysis again."
+                "instance likely restarted mid-upload. Hard-refresh the page (Cmd/Ctrl+Shift+R) and "
+                "re-select the video to retry."
             )
             st.stop()
 
@@ -1309,11 +1323,14 @@ if run:
             enqueue_legacy_job(job_report)
         except Exception as e:
             status.update(label="Queue failed", state="error")
-            st.error(f"ขั้นตอน 8 — คิวงาน: ล้มเหลว — {e}")
+            st.error(f"Failed to queue jobs: {e}")
             st.stop()
 
         st.write("✓ Jobs queued.")
         status.update(label="Complete", state="complete")
+        # Mark this uploaded file as processed so Streamlit reruns don't re-trigger analysis
+        # for the same file (only a NEW selection or "Clear and Start New Upload" resets it).
+        st.session_state["people_reader_processed_upload_id"] = _upload_signature
         st.session_state["people_reader_last_group_id"] = group_id
         st.session_state["people_reader_submission_id_override"] = group_id
         if "people_reader_jobs_by_group" not in st.session_state:
@@ -1439,37 +1456,21 @@ if current_group_id:
 
     n_items = len(status_items)
     overall_pct = int(round((sum(1 for _, ready in status_items if ready) / max(n_items, 1)) * 100))
-    st.progress(overall_pct, text=f"Overall progress: {overall_pct}%")
-
-    _jobs_by_group = st.session_state.get("people_reader_jobs_by_group") or {}
-    _session_report_job_id = str((_jobs_by_group.get(current_group_id) or {}).get("report_job_id") or "").strip() or None
-    job_hints = scan_dots_skeleton_job_status(
-        current_group_id,
-        preferred_report_job_id=_session_report_job_id,
-    )
-    _report_hint_line = str(job_hints.get("report") or "").strip()
-    _report_status_says_finished = _report_hint_line.startswith("Finished")
-    for label, ready in status_items:
-        if ready:
-            bar_pct, bar_txt = 100, f"{label}: Ready to download"
-        elif label == "English Report (PDF)" and wants_en and (not en_report_ready) and _report_status_says_finished and bool(
-            report_en_pdf_key
-        ):
-            # Job JSON can show "Finished" while Streamlit IAM/HEAD has not yet seen the PDF — avoid "Finished" vs Processing clash.
-            bar_pct, bar_txt = 50, f"{label}: Worker finished — verifying PDF on S3…"
-        elif label == "Thai Report (PDF)" and wants_th and (not th_report_ready) and _report_status_says_finished and bool(
-            report_th_pdf_key
-        ):
-            bar_pct, bar_txt = 50, f"{label}: Worker finished — verifying PDF on S3…"
-        else:
-            bar_pct, bar_txt = 0, f"{label}: Processing"
-        st.progress(bar_pct, text=bar_txt)
+    ready_labels = [label for label, ready in status_items if ready]
+    if overall_pct >= 100:
+        progress_text = f"Overall progress: {overall_pct}% (all ready)"
+    elif ready_labels:
+        progress_text = f"Overall progress: {overall_pct}% (ready: {', '.join(ready_labels)})"
+    else:
+        progress_text = f"Overall progress: {overall_pct}%"
+    st.progress(overall_pct, text=progress_text)
 
     st.markdown("---")
     st.subheader("Available Downloads")
     st.caption(
-        "แต่ละไฟล์จะกดดาวน์โหลดได้เมื่อขึ้น **Ready to download** ด้านบน — "
-        "เมื่อครบ **100%** ระบบจะส่ง **อีเมลเดียว** (รายงาน + วิดีโอ) ไปที่อีเมลที่คุณกรอก"
+        "Each file becomes downloadable as soon as it is ready. "
+        "When **Overall progress** reaches **100%**, you'll also receive **one email** "
+        "(report + videos) at the address you entered."
     )
 
     if expect_dots:
