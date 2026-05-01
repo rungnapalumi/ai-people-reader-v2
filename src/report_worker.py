@@ -4603,6 +4603,29 @@ def process_job(job_json_key: str, raw_job: Optional[Dict[str, Any]] = None) -> 
 
     logger.info("[process_job] job_id=%s group_id=%s mode=%s key=%s", job_id, group_id, mode, job_json_key)
 
+    # Idempotency guard: if this job_id is already in finished/, never reprocess.
+    # force_recover_all_processing_on_startup or stale-recovery sweeps can push a
+    # processing/<id>.json (or its stale pending sibling) back into pending/ even after
+    # the job has actually completed and emails have been sent. Reprocessing would
+    # regenerate reports + fire bundle email AGAIN to every recipient.
+    finished_key_check = f"{FINISHED_PREFIX}/{job_id}.json"
+    if s3_key_exists(finished_key_check):
+        logger.warning(
+            "[process_job] job_id=%s already in finished/ — skip duplicate processing "
+            "(likely force_recover artefact). Deleting stale pending key=%s",
+            job_id,
+            job_json_key,
+        )
+        try:
+            s3.delete_object(Bucket=AWS_BUCKET, Key=job_json_key)
+        except Exception as exc:
+            logger.warning(
+                "[process_job] could not delete stale pending key=%s err=%s",
+                job_json_key,
+                exc,
+            )
+        return
+
     # Check if this worker should handle this job type
     if mode not in ("report", "report_th_en", "report_generator"):
         logger.info("[process_job] Skipping job_id=%s group_id=%s mode=%s (not a report job)", job_id, group_id, mode)
