@@ -1109,7 +1109,7 @@ if name_value:
     st.session_state["people_reader_last_name"] = name_value
 
 report_notify_email = st.text_input(
-    "Email for English PDF report",
+    "Email (Please check in your junkmail if it's not in the inbox)",
     key="people_reader_notify_email",
     placeholder="you@company.com",
     help="The report worker emails the English People Reader PDF here (AWS SES/SMTP).",
