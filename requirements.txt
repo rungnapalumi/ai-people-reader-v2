@@ -1,4 +1,5 @@
 streamlit
+streamlit-autorefresh
 tornado==6.4.2
 boto3
 python-dotenv

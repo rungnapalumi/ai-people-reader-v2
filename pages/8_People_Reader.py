@@ -16,6 +16,15 @@ from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+try:
+    # Optional dep: keeps the page polling for finished outputs without the user
+    # clicking Refresh. If the package isn't installed, fall back to a no-op so
+    # the page still works (user just has to refresh the browser tab manually).
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:  # pragma: no cover — soft dep
+    def st_autorefresh(*_args: Any, **_kwargs: Any) -> int:
+        return 0
+
 # -------------------------
 # Page setup
 # -------------------------
@@ -1371,20 +1380,15 @@ current_group_id = _sanitize_group_id(
 if not current_group_id:
     st.caption("Upload a video above to start a new analysis. The Group ID will appear here automatically once it's queued.")
 
-col1, col2 = st.columns(2)
-
-with col1:
-    if st.button("Refresh", key="people_reader_refresh"):
-        st.rerun()
-
-with col2:
-    has_prev = bool(
-        st.session_state.get("people_reader_submission_id_override")
-        or st.session_state.get("people_reader_last_group_id")
-    )
-    if has_prev and st.button("Clear and Start New Upload", key="people_reader_clear", type="secondary"):
-        clear_state()
-        st.rerun()
+# Manual Refresh removed: the page auto-refreshes every 15s while a job is in
+# flight (see st_autorefresh call below, after readiness is computed).
+has_prev = bool(
+    st.session_state.get("people_reader_submission_id_override")
+    or st.session_state.get("people_reader_last_group_id")
+)
+if has_prev and st.button("Clear and Start New Upload", key="people_reader_clear", type="secondary"):
+    clear_state()
+    st.rerun()
 
 if current_group_id:
     st.info(f"Current Group ID: `{current_group_id}`")
@@ -1454,7 +1458,13 @@ if current_group_id:
     else:
         st.info(
             "Your video is being processed on the server. "
-            "Click **Refresh** every few minutes to update the progress and reveal downloads as they appear."
+            "This page refreshes automatically every 15 seconds — downloads will appear here as they become ready."
+        )
+        # Auto-refresh only while in progress; stops as soon as everything is ready
+        # so we don't keep hammering S3 head_object calls forever.
+        st_autorefresh(
+            interval=15_000,
+            key=f"people_reader_autorefresh_{current_group_id}",
         )
     st.progress(overall_pct, text=progress_text)
 
@@ -1503,13 +1513,13 @@ if current_group_id:
             ready=en_report_ready,
         )
     if wants_en and (not en_report_ready) and report_en_pdf_key:
-        st.caption("English report key found but the file is not visible yet — click **Refresh**.")
+        st.caption("English report is being finalized — it will appear here automatically.")
     if wants_th and (not th_report_ready) and report_th_pdf_key:
-        st.caption("Thai report key found but the file is not visible yet — click **Refresh**.")
+        st.caption("Thai report is being finalized — it will appear here automatically.")
 
     _any_report_ready = (wants_en and en_report_ready) or (wants_th and th_report_ready)
     if not any([dots_ready, skeleton_ready, _any_report_ready]):
-        st.caption("Files are not ready yet. Please wait a few minutes and click Refresh.")
+        st.caption("Files are not ready yet. Hang tight — this page will update on its own.")
 
 else:
     st.caption("Upload a video above or paste an existing Group ID to download results.")
