@@ -22,7 +22,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 st.set_page_config(page_title="People Reader", layout="wide")
 
 PAGE_TITLE = "People Reader"
-SUPPORT_TEXT = "If you need help, please contact 0817008484"
 
 THEME_CSS = """
 <style>
@@ -1181,8 +1180,6 @@ if uploaded is not None and not run and _upload_signature != _already_processed_
     elif not _email_ok:
         st.warning("Email format looks invalid — please check before uploading again.")
 
-st.caption(SUPPORT_TEXT)
-
 if run:
     org_payload = people_reader_fixed_settings()
 
@@ -1452,6 +1449,13 @@ if current_group_id:
         progress_text = f"Overall progress: {overall_pct}% (ready: {', '.join(ready_labels)})"
     else:
         progress_text = f"Overall progress: {overall_pct}%"
+    if overall_pct >= 100:
+        st.success("All outputs are ready — download below.")
+    else:
+        st.info(
+            "Your video is being processed on the server. "
+            "Click **Refresh** every few minutes to update the progress and reveal downloads as they appear."
+        )
     st.progress(overall_pct, text=progress_text)
 
     st.markdown("---")
