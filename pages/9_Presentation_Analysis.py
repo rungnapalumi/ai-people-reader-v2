@@ -1534,7 +1534,7 @@ st.markdown("## Recording Guidelines")
 st.markdown(
     """
 1. Record in portrait orientation and show the full body from head to toe  
-2. Recommended video size: **720 x 1280** in **MP4** or **MOV**  
+2. Recommended video size: **480 x 854** in **MP4** or **MOV**  
 3. Avoid wearing white, black, or colors similar to the wall  
 4. Stand in front of a light-colored wall, or wear light-colored clothes if the wall is dark  
 5. Move naturally and use hand gestures naturally  
