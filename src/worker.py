@@ -189,7 +189,14 @@ def wait_for_dots_mp4_before_skeleton(job: Dict[str, Any], group_id: str) -> Non
     When Render (or any host) runs **more than one** video-worker replica, pending dots + skeleton
     jobs can be claimed in parallel — skeleton may finish before dots.mp4 exists. People Reader expects
     dots before skeleton in UX; bundle email also expects both files. Poll S3 for the canonical dots key.
+
+    NOTE: With the split dots/skeleton worker architecture (WORKER_HANDLES_MODES=skeleton on this
+    process, dots produced by a peer worker), this wait would serialise execution and defeat the
+    whole point of splitting. Skip the wait entirely on skeleton-only workers — bundle email is
+    gated by report-worker's S3 check, so completion order doesn't matter for customer email.
     """
+    if not WORKER_HANDLES_ALL_VIDEO_MODES:
+        return
     if str(os.getenv("SKELETON_WAIT_FOR_DOTS", "true")).strip().lower() not in ("1", "true", "yes", "on"):
         return
     if bool(job.get("skip_wait_for_dots")):
@@ -1621,7 +1628,15 @@ def main_loop(poll_seconds: int = 3) -> None:
                 )
                 continue
 
-            if pending_mode == "skeleton" and pending_job.get("require_dots_output") is True:
+            if (
+                pending_mode == "skeleton"
+                and pending_job.get("require_dots_output") is True
+                and WORKER_HANDLES_ALL_VIDEO_MODES
+            ):
+                # Only defer when this worker is the legacy single-instance one that ALSO handles dots —
+                # otherwise dots is being produced by a peer (skeleton-only) worker and deferring here
+                # just turns parallel execution into sequential. With a split dots-worker + skeleton-worker
+                # setup we want skeleton mediapipe to start immediately alongside dots rendering.
                 gid = str(pending_job.get("group_id") or "").strip()
                 dots_key = str(pending_job.get("dots_output_wait_key") or "").strip() or (
                     f"jobs/output/groups/{gid}/dots.mp4" if gid else ""
