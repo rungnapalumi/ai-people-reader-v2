@@ -45,6 +45,10 @@ from src.presentation_scorer import score_presentation  # noqa: E402
 
 GROUND_TRUTH_XLSX = os.path.join(REPO_ROOT, "New Video Analysis_with comments.xlsx")
 GROUND_TRUTH_XLSX_10TYPES = os.path.join(REPO_ROOT, "Movement Combinations for Report 10 types.xlsx")
+# Optional JSON sidecar for additional labelled clips (names + H/M/L per category).
+# Keeps the original XLSX immutable while letting us extend the training set
+# in-repo without touching openpyxl. See README in the file itself.
+GROUND_TRUTH_EXTRA_JSON = os.path.join(REPO_ROOT, "extra_ground_truth.json")
 FEATURE_CACHE = os.path.join(HERE, ".presentation_features_cache.json")
 
 CATEGORIES = [
@@ -114,7 +118,59 @@ def load_ground_truth() -> List[Dict[str, Any]]:
             records.append(rec)
             seen_slugs.add(rec["slug"])
 
+    # --- Source 3: optional JSON sidecar (extra labelled clips) -----------
+    # Lets us add new students/professor labels without touching the XLSX.
+    # JSON shape: list of objects, each:
+    #   {"name": "Tiffany 2", "categories": {"eye_contact": "High",
+    #    "uprightness": "Moderate", "stance": "Low", ...}}
+    if os.path.exists(GROUND_TRUTH_EXTRA_JSON):
+        for rec in _load_extra_json():
+            if rec["slug"] in seen_slugs:
+                continue
+            records.append(rec)
+            seen_slugs.add(rec["slug"])
+
     return records
+
+
+def _load_extra_json() -> List[Dict[str, Any]]:
+    """Parse ``extra_ground_truth.json`` if present.
+
+    Each entry should already be a dict with at minimum a ``name`` and a
+    ``categories`` mapping. Bands are normalised through :func:`_norm_band` so
+    callers can use H/M/L shorthand or the full word.
+    """
+    try:
+        with open(GROUND_TRUTH_EXTRA_JSON, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except Exception as exc:  # pragma: no cover — operator-facing tooling
+        print(f"[extra-gt] could not load {GROUND_TRUTH_EXTRA_JSON}: {exc}")
+        return []
+    if not isinstance(raw, list):
+        print(f"[extra-gt] expected a list at top level, got {type(raw).__name__}")
+        return []
+    out: List[Dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        cats_raw = entry.get("categories") or {}
+        if not name or not isinstance(cats_raw, dict):
+            continue
+        cats: Dict[str, str] = {}
+        for key, val in cats_raw.items():
+            band = _norm_band(val)
+            if band and key in CATEGORIES:
+                cats[key] = band
+        if not cats:
+            continue
+        out.append({
+            "name": name,
+            "slug": _slug(name),
+            "categories": cats,
+            "source": "extra",
+        })
+    return out
 
 
 def _load_primary_xlsx() -> List[Dict[str, Any]]:

@@ -1,0 +1,51 @@
+[
+  {
+    "_comment": "Additional labelled clips beyond the 18 primary + 10 archetype set. Each entry needs a name (matched to a video file by slug — e.g. 'Tiffany 2' looks for 'Tiffany 2.mov' / 'Tiffany2.mov') and a 'categories' dict with H/M/L (or High/Moderate/Low) per category. Used by scripts/calibrate_presentation_analysis.py and scripts/train_presentation_models.py.",
+    "name": "Tiffany 2",
+    "categories": {
+      "eye_contact": "H",
+      "uprightness": "M",
+      "stance": "L",
+      "engaging": "H",
+      "confidence": "M",
+      "authority": "L",
+      "adaptability": "M"
+    }
+  },
+  {
+    "name": "Julius",
+    "categories": {
+      "eye_contact": "H",
+      "uprightness": "H",
+      "stance": "M",
+      "engaging": "H",
+      "confidence": "L",
+      "authority": "M",
+      "adaptability": "M"
+    }
+  },
+  {
+    "name": "SL",
+    "categories": {
+      "eye_contact": "H",
+      "uprightness": "M",
+      "stance": "M",
+      "engaging": "M",
+      "confidence": "L",
+      "authority": "L",
+      "adaptability": "L"
+    }
+  },
+  {
+    "name": "Metta",
+    "categories": {
+      "eye_contact": "H",
+      "uprightness": "M",
+      "stance": "M",
+      "engaging": "H",
+      "confidence": "L",
+      "authority": "M",
+      "adaptability": "M"
+    }
+  }
+]
