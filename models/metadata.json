@@ -229,84 +229,84 @@
     "adaptability": {
       "n": 32,
       "class_distribution": {
-        "Low": 17,
+        "Low": 19,
         "High": 5,
-        "Moderate": 10
+        "Moderate": 8
       },
       "rf_loocv": {
-        "exact": 19,
+        "exact": 23,
         "adj": 28,
-        "exact_pct": 59.38,
+        "exact_pct": 71.88,
         "adj_pct": 87.5
       },
       "rule_based": {
-        "exact": 11,
+        "exact": 13,
         "adj": 29,
-        "exact_pct": 34.38,
+        "exact_pct": 40.62,
         "adj_pct": 90.62
       },
       "top_features": [
         {
-          "name": "punching_share",
-          "importance": 0.0455
-        },
-        {
           "name": "audio_pitch_range",
-          "importance": 0.0443
+          "importance": 0.0505
         },
         {
-          "name": "hesitation_score",
-          "importance": 0.0408
+          "name": "punching_share",
+          "importance": 0.0466
         },
         {
           "name": "movement_intentionality",
-          "importance": 0.0377
+          "importance": 0.0444
         },
         {
           "name": "audio_speech_ratio",
-          "importance": 0.037
+          "importance": 0.0369
+        },
+        {
+          "name": "right_hand_openness",
+          "importance": 0.0366
         }
       ]
     },
     "confidence": {
       "n": 32,
       "class_distribution": {
-        "Low": 15,
-        "Moderate": 8,
+        "Low": 13,
+        "Moderate": 10,
         "High": 9
       },
       "rf_loocv": {
         "exact": 7,
-        "adj": 18,
+        "adj": 21,
         "exact_pct": 21.88,
-        "adj_pct": 56.25
+        "adj_pct": 65.62
       },
       "rule_based": {
-        "exact": 9,
-        "adj": 25,
-        "exact_pct": 28.12,
-        "adj_pct": 78.12
+        "exact": 10,
+        "adj": 26,
+        "exact_pct": 31.25,
+        "adj_pct": 81.25
       },
       "top_features": [
         {
           "name": "audio_volume_dynamic_range",
-          "importance": 0.0435
-        },
-        {
-          "name": "upright_pct",
-          "importance": 0.0367
+          "importance": 0.043
         },
         {
           "name": "stance_stability_norm",
-          "importance": 0.0365
-        },
-        {
-          "name": "audio_pitch_range",
-          "importance": 0.0346
+          "importance": 0.0423
         },
         {
           "name": "finger_variation",
-          "importance": 0.03
+          "importance": 0.04
+        },
+        {
+          "name": "distinct_hand_shapes",
+          "importance": 0.038
+        },
+        {
+          "name": "upright_pct",
+          "importance": 0.0307
         }
       ]
     },
@@ -354,10 +354,10 @@
     }
   },
   "total": {
-    "rf_loocv_exact": 117,
-    "rf_loocv_adj": 189,
-    "rule_based_exact": 98,
-    "rule_based_adj": 199,
+    "rf_loocv_exact": 121,
+    "rf_loocv_adj": 192,
+    "rule_based_exact": 101,
+    "rule_based_adj": 200,
     "n": 224
   }
 }

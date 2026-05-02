@@ -19,9 +19,9 @@
       "uprightness": "H",
       "stance": "M",
       "engaging": "H",
-      "confidence": "L",
-      "authority": "M",
-      "adaptability": "M"
+      "adaptability": "L",
+      "confidence": "M",
+      "authority": "M"
     }
   },
   {
@@ -43,9 +43,9 @@
       "uprightness": "M",
       "stance": "M",
       "engaging": "H",
-      "confidence": "L",
-      "authority": "M",
-      "adaptability": "M"
+      "adaptability": "L",
+      "confidence": "M",
+      "authority": "M"
     }
   }
 ]
